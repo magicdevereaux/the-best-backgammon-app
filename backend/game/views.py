@@ -36,8 +36,6 @@ class GameViewSet(viewsets.ModelViewSet):
         from .game_logic import roll_dice
         new_dice = roll_dice()
 
-        # TODO (stretch): validate that it's actually this player's turn
-        #                 and that the previous dice have been used up.
         game.dice_values = new_dice
         game.save()
 
@@ -53,13 +51,11 @@ class GameViewSet(viewsets.ModelViewSet):
           { "from_point": int, "to_point": int }
 
         Points are 1-indexed (1–24). Use 0 for the bar, 25 for bearing off.
-
-        TODO (stretch): Validate the move against board_state and dice_values,
-                        apply the move, flip current_turn, and check for a winner.
         """
         game = self.get_object()
         from_point = request.data.get("from_point")
         to_point = request.data.get("to_point")
+        curr = game.board_state
 
         if from_point is None or to_point is None:
             return Response(
@@ -67,7 +63,27 @@ class GameViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # TODO: implement move validation and board mutation here
+        p = game.current_turn
+        if from_point != 0:
+            curr["points"][from_point - 1] -= 1
+        else:
+            curr["bar"][p] -= 1
+
+        if 1 <= to_point <= 24:
+            curr["points"][to_point - 1] += 1
+        elif to_point == 25:
+            curr["off"][p] += 1
+            if curr["off"][p] == 15:
+                game.status = "finished"
+                game.winner = p
+
+        distance = from_point if to_point == 25 else abs(to_point - from_point)
+        dice = list(game.dice_values)
+        if distance in dice:
+            dice.remove(distance)
+        game.dice_values = dice
+        game.board_state = curr
+        game.save()
 
         serializer = self.get_serializer(game)
         return Response(serializer.data)

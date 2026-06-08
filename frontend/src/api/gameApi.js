@@ -1,26 +1,13 @@
-// Base URL for the Django API. The React dev server proxies /api/* to
-// localhost:8000 (configured via "proxy" in package.json).
-const BASE_URL = "/api/games";
+const BASE_URL = "/api/games/";
 
-// -----------------------------------------------------------------------------
-// TODO: Implement the fetch calls in each function below.
-//
-// All functions should:
-//   - Use the native fetch() API (or axios if you prefer — add it to package.json)
-//   - Throw an error if the HTTP response is not ok (response.ok === false)
-//   - Return the parsed JSON body
-//
-// Hint: a reusable helper might look like:
-//   async function request(path, options = {}) {
-//     const res = await fetch(BASE_URL + path, {
-//       headers: { "Content-Type": "application/json" },
-//       ...options,
-//     });
-//     if (!res.ok) throw new Error(`API error: ${res.status}`);
-//     return res.json();
-//   }
-// -----------------------------------------------------------------------------
-
+async function request(path, options = {}) {
+  const res = await fetch(BASE_URL + path, {
+    headers: { "Content-Type": "application/json" },
+    ...options,
+  });
+  if (!res.ok) throw new Error(`API error: ${res.status}`);
+  return res.json();
+}
 
 /**
  * Fetch all games from the API.
@@ -28,10 +15,8 @@ const BASE_URL = "/api/games";
  * Returns: Game[]
  */
 export async function fetchGames() {
-  // TODO: make a GET request to BASE_URL + "/" and return the JSON array
-  throw new Error("fetchGames() is not yet implemented");
+  return request("");
 }
-
 
 /**
  * Fetch a single game by its ID.
@@ -39,10 +24,8 @@ export async function fetchGames() {
  * Returns: Game
  */
 export async function fetchGame(id) {
-  // TODO: make a GET request to BASE_URL + `/${id}/` and return the JSON object
-  throw new Error("fetchGame() is not yet implemented");
+  return request(`${id}/`);
 }
-
 
 /**
  * Create a new game.
@@ -51,10 +34,8 @@ export async function fetchGame(id) {
  * Returns: Game (the newly created object including its assigned id)
  */
 export async function createGame(data) {
-  // TODO: make a POST request with JSON body `data` and return the created Game
-  throw new Error("createGame() is not yet implemented");
+  return request("", { method: "POST", body: JSON.stringify(data) });
 }
-
 
 /**
  * Ask the server to roll dice for the given game.
@@ -62,11 +43,8 @@ export async function createGame(data) {
  * Returns: Game (updated with new dice_values)
  */
 export async function rollDice(id) {
-  // TODO: make a POST request to BASE_URL + `/${id}/roll_dice/` and return
-  //       the updated Game object
-  throw new Error("rollDice() is not yet implemented");
+  return request(`${id}/roll_dice/`, { method: "POST" });
 }
-
 
 /**
  * Move a checker on the given game.
@@ -75,7 +53,8 @@ export async function rollDice(id) {
  * Returns: Game (updated board_state and dice_values)
  */
 export async function moveChecker(id, fromPoint, toPoint) {
-  // TODO: make a POST request with body { from_point, to_point } and return
-  //       the updated Game object
-  throw new Error("moveChecker() is not yet implemented");
+  return request(`${id}/move_checker/`, {
+    method: "POST",
+    body: JSON.stringify({ from_point: fromPoint, to_point: toPoint }),
+  });
 }

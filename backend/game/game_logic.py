@@ -5,8 +5,6 @@ def roll_dice():
     """
     Roll two six-sided dice for a backgammon turn.
 
-    TODO: Implement this function.
-
     Rules:
       - Roll two dice, each producing a value from 1–6.
       - If both dice show the same number (doubles), the player gets to move
@@ -15,11 +13,11 @@ def roll_dice():
       - Otherwise return both values as a two-element list, e.g. [3, 5].
 
     Expected return type: list[int]
-
-    Hint: random.randint(1, 6) rolls one die.
     """
-    # TODO: remove this placeholder and implement the real logic
-    raise NotImplementedError("roll_dice() is not yet implemented")
+    x = random.randint(1,6)
+    y = random.randint(1,6)
+    if x == y: return [x]*4
+    return [x,y]
 
 
 def get_initial_board_state():
