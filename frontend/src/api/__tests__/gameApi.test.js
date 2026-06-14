@@ -1,4 +1,4 @@
-import { fetchGames, fetchGame, createGame, rollDice, moveChecker } from '../gameApi';
+import { fetchGames, fetchGame, createGame, rollDice, moveChecker, confirmTurn } from '../gameApi';
 
 /*
  * All tests here FAIL until you implement the functions in gameApi.js.
@@ -191,5 +191,47 @@ describe('moveChecker(id, fromPoint, toPoint)', () => {
     fetch.mockReturnValueOnce(mockResponse(updated));
     const result = await moveChecker(1, 1, 2);
     expect(result).toEqual(updated);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// confirmTurn
+// ---------------------------------------------------------------------------
+
+describe('confirmTurn(id, moves)', () => {
+  const moves = [{ from_point: 1, to_point: 2 }, { from_point: 2, to_point: 4 }];
+
+  test('makes a POST request', async () => {
+    fetch.mockReturnValueOnce(mockResponse({}));
+    await confirmTurn(1, moves);
+    const [, options] = fetch.mock.calls[0];
+    expect(options.method.toUpperCase()).toBe('POST');
+  });
+
+  test('hits the confirm_turn endpoint for the given id', async () => {
+    fetch.mockReturnValueOnce(mockResponse({}));
+    await confirmTurn(5, moves);
+    const [url] = fetch.mock.calls[0];
+    expect(url).toMatch(/5/);
+    expect(url).toMatch(/confirm_turn/);
+  });
+
+  test('sends the moves array in the body', async () => {
+    fetch.mockReturnValueOnce(mockResponse({}));
+    await confirmTurn(1, moves);
+    const [, options] = fetch.mock.calls[0];
+    expect(JSON.parse(options.body)).toEqual({ moves });
+  });
+
+  test('returns the updated game object', async () => {
+    const updated = { id: 1, board_state: {}, current_turn: 'p2', dice_values: [] };
+    fetch.mockReturnValueOnce(mockResponse(updated));
+    const result = await confirmTurn(1, moves);
+    expect(result).toEqual(updated);
+  });
+
+  test('throws and surfaces the server error message on an illegal move', async () => {
+    fetch.mockReturnValueOnce(mockResponse({ error: 'Illegal move.' }, { ok: false, status: 400 }));
+    await expect(confirmTurn(1, moves)).rejects.toThrow('Illegal move.');
   });
 });

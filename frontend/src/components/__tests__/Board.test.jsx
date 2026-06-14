@@ -144,17 +144,35 @@ describe('Board — off/borne-off areas (FAIL until rendered)', () => {
 });
 
 describe('Board — move interaction', () => {
-  test('selecting own checker then a destination calls onMove with from and to', () => {
+  test('selecting own checker then a legal destination calls onMove with from and to', () => {
     const onMove = jest.fn();
-    render(<Board boardState={INITIAL_BOARD} currentPlayer="p1" onMove={onMove} />);
+    const legalMoves = [[1, 2, 1]];
+    render(
+      <Board boardState={INITIAL_BOARD} currentPlayer="p1" legalMoves={legalMoves} onMove={onMove} />
+    );
     fireEvent.click(screen.getByTestId('point-1'));
     fireEvent.click(screen.getByTestId('point-2'));
     expect(onMove).toHaveBeenCalledWith(1, 2);
   });
 
+  test('clicking a point with no legal moves does not select it', () => {
+    const onMove = jest.fn();
+    // Point 12 has p1 checkers, but no legal move originates there.
+    const legalMoves = [[1, 2, 1]];
+    render(
+      <Board boardState={INITIAL_BOARD} currentPlayer="p1" legalMoves={legalMoves} onMove={onMove} />
+    );
+    fireEvent.click(screen.getByTestId('point-12'));
+    fireEvent.click(screen.getByTestId('point-13'));
+    expect(onMove).not.toHaveBeenCalled();
+  });
+
   test('clicking an opponent checker does not select it as a source', () => {
     const onMove = jest.fn();
-    render(<Board boardState={INITIAL_BOARD} currentPlayer="p1" onMove={onMove} />);
+    const legalMoves = [[1, 2, 1]];
+    render(
+      <Board boardState={INITIAL_BOARD} currentPlayer="p1" legalMoves={legalMoves} onMove={onMove} />
+    );
     fireEvent.click(screen.getByTestId('point-6')); // p2 checkers
     fireEvent.click(screen.getByTestId('point-7'));
     expect(onMove).not.toHaveBeenCalled();
@@ -162,17 +180,33 @@ describe('Board — move interaction', () => {
 
   test('clicking the same point twice deselects it', () => {
     const onMove = jest.fn();
-    render(<Board boardState={INITIAL_BOARD} currentPlayer="p1" onMove={onMove} />);
+    const legalMoves = [[1, 2, 1]];
+    render(
+      <Board boardState={INITIAL_BOARD} currentPlayer="p1" legalMoves={legalMoves} onMove={onMove} />
+    );
     fireEvent.click(screen.getByTestId('point-1'));
     fireEvent.click(screen.getByTestId('point-1'));
     fireEvent.click(screen.getByTestId('point-2'));
     expect(onMove).not.toHaveBeenCalled();
   });
 
+  test('clicking another of the player\'s checkers re-selects it instead of moving', () => {
+    const onMove = jest.fn();
+    const legalMoves = [[1, 2, 1], [12, 13, 1]];
+    render(
+      <Board boardState={INITIAL_BOARD} currentPlayer="p1" legalMoves={legalMoves} onMove={onMove} />
+    );
+    fireEvent.click(screen.getByTestId('point-1'));
+    fireEvent.click(screen.getByTestId('point-12')); // not a destination of point 1
+    fireEvent.click(screen.getByTestId('point-13')); // legal destination of point 12
+    expect(onMove).toHaveBeenCalledWith(12, 13);
+  });
+
   test('selecting the bar then a point enters from the bar (from_point 0)', () => {
     const onMove = jest.fn();
     const board = { ...INITIAL_BOARD, bar: { p1: 1, p2: 0 } };
-    render(<Board boardState={board} currentPlayer="p1" onMove={onMove} />);
+    const legalMoves = [[0, 3, 3]];
+    render(<Board boardState={board} currentPlayer="p1" legalMoves={legalMoves} onMove={onMove} />);
     fireEvent.click(screen.getByTestId('bar'));
     fireEvent.click(screen.getByTestId('point-3'));
     expect(onMove).toHaveBeenCalledWith(0, 3);
@@ -180,7 +214,10 @@ describe('Board — move interaction', () => {
 
   test('selecting a checker then the matching off area bears it off (to_point 25)', () => {
     const onMove = jest.fn();
-    render(<Board boardState={INITIAL_BOARD} currentPlayer="p1" onMove={onMove} />);
+    const legalMoves = [[19, 25, 6]];
+    render(
+      <Board boardState={INITIAL_BOARD} currentPlayer="p1" legalMoves={legalMoves} onMove={onMove} />
+    );
     fireEvent.click(screen.getByTestId('point-19'));
     fireEvent.click(screen.getByTestId('off-p1'));
     expect(onMove).toHaveBeenCalledWith(19, 25);
@@ -192,5 +229,53 @@ describe('Board — move interaction', () => {
     fireEvent.click(screen.getByTestId('point-1'));
     fireEvent.click(screen.getByTestId('point-2'));
     expect(onMove).not.toHaveBeenCalled();
+  });
+});
+
+describe('Board — legal destination highlighting', () => {
+  test('highlights all legal destination points after selecting a checker', () => {
+    const legalMoves = [[1, 2, 1], [1, 4, 3]];
+    render(
+      <Board boardState={INITIAL_BOARD} currentPlayer="p1" legalMoves={legalMoves} onMove={() => {}} />
+    );
+    fireEvent.click(screen.getByTestId('point-1'));
+
+    expect(screen.getByTestId('point-2')).toHaveAttribute('data-legal-destination', 'true');
+    expect(screen.getByTestId('point-4')).toHaveAttribute('data-legal-destination', 'true');
+    expect(screen.getByTestId('point-3')).not.toHaveAttribute('data-legal-destination');
+  });
+
+  test('no destinations are highlighted before a checker is selected', () => {
+    const legalMoves = [[1, 2, 1], [1, 4, 3]];
+    render(
+      <Board boardState={INITIAL_BOARD} currentPlayer="p1" legalMoves={legalMoves} onMove={() => {}} />
+    );
+    expect(screen.getByTestId('point-2')).not.toHaveAttribute('data-legal-destination');
+    expect(screen.getByTestId('point-4')).not.toHaveAttribute('data-legal-destination');
+  });
+
+  test('the bar is marked as a legal source when entering from the bar is required', () => {
+    const board = { ...INITIAL_BOARD, bar: { p1: 1, p2: 0 } };
+    const legalMoves = [[0, 3, 3]];
+    render(<Board boardState={board} currentPlayer="p1" legalMoves={legalMoves} onMove={() => {}} />);
+    expect(screen.getByTestId('bar')).toHaveAttribute('data-legal-destination', 'true');
+  });
+
+  test('off-p1 is highlighted as a legal destination for a bear-off move', () => {
+    const legalMoves = [[19, 25, 6]];
+    render(
+      <Board boardState={INITIAL_BOARD} currentPlayer="p1" legalMoves={legalMoves} onMove={() => {}} />
+    );
+    fireEvent.click(screen.getByTestId('point-19'));
+    expect(screen.getByTestId('off-p1')).toHaveAttribute('data-legal-destination', 'true');
+  });
+
+  test('off-p1 is not highlighted when bearing off is not the selected checker\'s move', () => {
+    const legalMoves = [[1, 2, 1], [19, 25, 6]];
+    render(
+      <Board boardState={INITIAL_BOARD} currentPlayer="p1" legalMoves={legalMoves} onMove={() => {}} />
+    );
+    fireEvent.click(screen.getByTestId('point-1'));
+    expect(screen.getByTestId('off-p1')).not.toHaveAttribute('data-legal-destination');
   });
 });

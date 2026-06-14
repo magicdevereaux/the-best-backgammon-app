@@ -7,7 +7,20 @@ import { useGame } from "../hooks/useGame";
 
 export default function GamePage() {
   const { id } = useParams();
-  const { game, loading, error, actionError, rollDice, moveChecker } = useGame(id);
+  const {
+    game,
+    loading,
+    error,
+    actionError,
+    rollDice,
+    stagedBoard,
+    stagedDice,
+    pendingMoves,
+    legalMoves,
+    stageMove,
+    resetTurn,
+    confirmTurn,
+  } = useGame(id);
 
   if (loading) return <p>Loading game…</p>;
   if (error) return <p>Error: {error}</p>;
@@ -22,16 +35,20 @@ export default function GamePage() {
       </p>
 
       <Board
-        boardState={game.board_state}
+        boardState={stagedBoard}
         currentPlayer={game.current_turn}
-        onMove={moveChecker}
+        legalMoves={legalMoves}
+        onMove={stageMove}
       />
 
-      <Dice diceValues={game.dice_values} />
+      <Dice diceValues={stagedDice} />
 
       <GameControls
         game={game}
         onRollDice={rollDice}
+        onResetTurn={resetTurn}
+        onConfirmTurn={confirmTurn}
+        hasPendingMoves={pendingMoves.length > 0}
       />
 
       {actionError && <p style={{ color: "#c0392b" }}>{actionError}</p>}

@@ -62,3 +62,16 @@ export async function moveChecker(id, fromPoint, toPoint) {
     body: JSON.stringify({ from_point: fromPoint, to_point: toPoint }),
   });
 }
+
+/**
+ * Commit a sequence of staged moves and end the current turn.
+ * POST /api/games/:id/confirm_turn/
+ * Body: { moves: [{ from_point: int, to_point: int }, ...] }
+ * Returns: Game (updated board_state, dice_values cleared, turn switched)
+ */
+export async function confirmTurn(id, moves) {
+  return request(`${id}/confirm_turn/`, {
+    method: "POST",
+    body: JSON.stringify({ moves }),
+  });
+}

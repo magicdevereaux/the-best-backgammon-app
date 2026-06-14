@@ -5,6 +5,7 @@ const P2 = { fill: "#3a1e0a", stroke: "#8b5a30" };
 const TRI_A = "#9b3510";
 const TRI_B = "#c8a050";
 const SELECTED_BG = "rgba(255, 255, 255, 0.25)";
+const LEGAL_DEST_BG = "rgba(120, 220, 120, 0.35)";
 
 function Checker({ player }) {
   const c = player === "p1" ? P1 : P2;
@@ -41,7 +42,7 @@ function Triangle({ down, color }) {
   );
 }
 
-function Point({ num, value, isTop, colorIndex, isSelected, onClick }) {
+function Point({ num, value, isTop, colorIndex, isSelected, isLegalDestination, onClick }) {
   const player = value > 0 ? "p1" : value < 0 ? "p2" : null;
   const n = Math.abs(value);
   const shown = Math.min(n, 5);
@@ -73,6 +74,7 @@ function Point({ num, value, isTop, colorIndex, isSelected, onClick }) {
   return (
     <div
       data-testid={`point-${num}`}
+      data-legal-destination={isLegalDestination ? "true" : undefined}
       onClick={onClick}
       style={{
         width: 34,
@@ -80,7 +82,11 @@ function Point({ num, value, isTop, colorIndex, isSelected, onClick }) {
         flexDirection: "column",
         alignItems: "center",
         padding: "2px 0",
-        background: isSelected ? SELECTED_BG : "transparent",
+        background: isSelected
+          ? SELECTED_BG
+          : isLegalDestination
+          ? LEGAL_DEST_BG
+          : "transparent",
         cursor: onClick ? "pointer" : "default",
       }}
     >
@@ -105,7 +111,7 @@ function Point({ num, value, isTop, colorIndex, isSelected, onClick }) {
   );
 }
 
-export default function Board({ boardState, currentPlayer, onMove }) {
+export default function Board({ boardState, currentPlayer, legalMoves = [], onMove }) {
   const [selected, setSelected] = useState(null);
 
   if (!boardState) {
@@ -119,18 +125,25 @@ export default function Board({ boardState, currentPlayer, onMove }) {
   const { points, bar, off } = boardState;
   const interactive = Boolean(onMove && currentPlayer);
 
-  const ownsPoint = (pointNum) => {
-    const value = points[pointNum - 1];
-    return currentPlayer === "p1" ? value > 0 : value < 0;
-  };
+  // Points (or 0 for the bar) that have at least one legal move.
+  const legalFromPoints = new Set(legalMoves.map((m) => m[0]));
+  // Legal destinations (1-24, or 25 for bear-off) for the selected checker.
+  const destinations =
+    selected !== null
+      ? new Set(legalMoves.filter((m) => m[0] === selected).map((m) => m[1]))
+      : new Set();
 
   const handlePointClick = (pointNum) => {
     if (selected === null) {
-      if (ownsPoint(pointNum)) setSelected(pointNum);
+      if (legalFromPoints.has(pointNum)) setSelected(pointNum);
     } else if (selected === pointNum) {
       setSelected(null);
-    } else {
+    } else if (destinations.has(pointNum)) {
       onMove(selected, pointNum);
+      setSelected(null);
+    } else if (legalFromPoints.has(pointNum)) {
+      setSelected(pointNum);
+    } else {
       setSelected(null);
     }
   };
@@ -138,13 +151,13 @@ export default function Board({ boardState, currentPlayer, onMove }) {
   const handleBarClick = () => {
     if (selected === 0) {
       setSelected(null);
-    } else if (selected === null && bar[currentPlayer] > 0) {
+    } else if (selected === null && legalFromPoints.has(0)) {
       setSelected(0);
     }
   };
 
   const handleOffClick = (player) => {
-    if (selected !== null && player === currentPlayer) {
+    if (selected !== null && player === currentPlayer && destinations.has(25)) {
       onMove(selected, 25);
       setSelected(null);
     }
@@ -166,6 +179,7 @@ export default function Board({ boardState, currentPlayer, onMove }) {
         isTop={isTop}
         colorIndex={pos}
         isSelected={selected === idx + 1}
+        isLegalDestination={destinations.has(idx + 1)}
         onClick={interactive ? () => handlePointClick(idx + 1) : undefined}
       />
     ));
@@ -190,6 +204,7 @@ export default function Board({ boardState, currentPlayer, onMove }) {
 
         <div
           data-testid="bar"
+          data-legal-destination={legalFromPoints.has(0) && selected === null ? "true" : undefined}
           onClick={interactive ? handleBarClick : undefined}
           style={{
             width: 34,
@@ -197,7 +212,12 @@ export default function Board({ boardState, currentPlayer, onMove }) {
             flexDirection: "column",
             alignItems: "center",
             justifyContent: "center",
-            background: selected === 0 ? SELECTED_BG : "#1a3f14",
+            background:
+              selected === 0
+                ? SELECTED_BG
+                : legalFromPoints.has(0)
+                ? LEGAL_DEST_BG
+                : "#1a3f14",
             flexShrink: 0,
             gap: 2,
             padding: "4px 0",
@@ -247,12 +267,16 @@ export default function Board({ boardState, currentPlayer, onMove }) {
       >
         <div
           data-testid="off-p1"
+          data-legal-destination={
+            currentPlayer === "p1" && destinations.has(25) ? "true" : undefined
+          }
           onClick={interactive ? () => handleOffClick("p1") : undefined}
           style={{
             display: "flex",
             alignItems: "center",
             gap: 4,
-            background: selected !== null && currentPlayer === "p1" ? SELECTED_BG : "transparent",
+            background:
+              currentPlayer === "p1" && destinations.has(25) ? LEGAL_DEST_BG : "transparent",
             cursor: interactive ? "pointer" : "default",
           }}
         >
@@ -261,12 +285,16 @@ export default function Board({ boardState, currentPlayer, onMove }) {
         </div>
         <div
           data-testid="off-p2"
+          data-legal-destination={
+            currentPlayer === "p2" && destinations.has(25) ? "true" : undefined
+          }
           onClick={interactive ? () => handleOffClick("p2") : undefined}
           style={{
             display: "flex",
             alignItems: "center",
             gap: 4,
-            background: selected !== null && currentPlayer === "p2" ? SELECTED_BG : "transparent",
+            background:
+              currentPlayer === "p2" && destinations.has(25) ? LEGAL_DEST_BG : "transparent",
             cursor: interactive ? "pointer" : "default",
           }}
         >

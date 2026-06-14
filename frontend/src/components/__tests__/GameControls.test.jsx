@@ -84,3 +84,63 @@ describe('GameControls component', () => {
     expect(screen.queryByText(/game over/i)).not.toBeInTheDocument();
   });
 });
+
+describe('GameControls — Reset Turn / Confirm Turn', () => {
+  test('renders Reset Turn and Confirm Turn buttons', () => {
+    render(<GameControls game={activeGameWithDice} onRollDice={() => {}} />);
+    expect(screen.getByRole('button', { name: /reset turn/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /confirm turn/i })).toBeInTheDocument();
+  });
+
+  test('Confirm Turn is disabled when no dice have been rolled', () => {
+    render(<GameControls game={activeGameNoDice} onRollDice={() => {}} />);
+    expect(screen.getByRole('button', { name: /confirm turn/i })).toBeDisabled();
+  });
+
+  test('Confirm Turn is enabled once dice have been rolled', () => {
+    render(<GameControls game={activeGameWithDice} onRollDice={() => {}} />);
+    expect(screen.getByRole('button', { name: /confirm turn/i })).not.toBeDisabled();
+  });
+
+  test('Reset Turn is disabled when there are no pending moves', () => {
+    render(<GameControls game={activeGameWithDice} onRollDice={() => {}} hasPendingMoves={false} />);
+    expect(screen.getByRole('button', { name: /reset turn/i })).toBeDisabled();
+  });
+
+  test('Reset Turn is enabled once a move has been staged', () => {
+    render(<GameControls game={activeGameWithDice} onRollDice={() => {}} hasPendingMoves={true} />);
+    expect(screen.getByRole('button', { name: /reset turn/i })).not.toBeDisabled();
+  });
+
+  test('Reset Turn is disabled when no dice have been rolled, even with pending moves', () => {
+    render(<GameControls game={activeGameNoDice} onRollDice={() => {}} hasPendingMoves={true} />);
+    expect(screen.getByRole('button', { name: /reset turn/i })).toBeDisabled();
+  });
+
+  test('calls onConfirmTurn when Confirm Turn is clicked', () => {
+    const onConfirmTurn = jest.fn();
+    render(<GameControls game={activeGameWithDice} onRollDice={() => {}} onConfirmTurn={onConfirmTurn} />);
+    fireEvent.click(screen.getByRole('button', { name: /confirm turn/i }));
+    expect(onConfirmTurn).toHaveBeenCalledTimes(1);
+  });
+
+  test('calls onResetTurn when Reset Turn is clicked', () => {
+    const onResetTurn = jest.fn();
+    render(
+      <GameControls
+        game={activeGameWithDice}
+        onRollDice={() => {}}
+        onResetTurn={onResetTurn}
+        hasPendingMoves={true}
+      />
+    );
+    fireEvent.click(screen.getByRole('button', { name: /reset turn/i }));
+    expect(onResetTurn).toHaveBeenCalledTimes(1);
+  });
+
+  test('both buttons are disabled once the game is finished', () => {
+    render(<GameControls game={finishedGameP1Wins} onRollDice={() => {}} hasPendingMoves={true} />);
+    expect(screen.getByRole('button', { name: /reset turn/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /confirm turn/i })).toBeDisabled();
+  });
+});

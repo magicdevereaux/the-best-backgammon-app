@@ -1,3 +1,6 @@
+import copy
+from unittest.mock import patch
+
 from django.test import TestCase
 from rest_framework.test import APIClient
 from game.models import Game
@@ -489,3 +492,204 @@ class RollDiceValidationTest(TestCase):
         game = make_game(status="waiting", dice_values=[])
         response = self.client.post(f"/api/games/{game.pk}/roll_dice/")
         self.assertEqual(response.status_code, 400)
+
+
+# ---------------------------------------------------------------------------
+# POST /api/games/:id/confirm_turn/
+# ---------------------------------------------------------------------------
+
+class ConfirmTurnTest(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+
+    def test_confirm_turn_applies_all_moves_and_switches_turn(self):
+        game = make_game(dice_values=[1, 2], current_turn="p1")
+
+        response = self.client.post(
+            f"/api/games/{game.pk}/confirm_turn/",
+            {"moves": [{"from_point": 1, "to_point": 2}, {"from_point": 2, "to_point": 4}]},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+
+        game.refresh_from_db()
+        # One checker moved from point 1 all the way to point 4 (1 -> 2 -> 4)
+        self.assertEqual(game.board_state["points"][0], 1)  # point 1: one checker left
+        self.assertEqual(game.board_state["points"][1], 0)  # point 2: empty again
+        self.assertEqual(game.board_state["points"][3], 1)  # point 4: the moved checker
+        self.assertEqual(game.current_turn, "p2")
+        self.assertEqual(game.dice_values, [])
+
+    def test_confirm_turn_with_no_moves_passes_the_turn(self):
+        game = make_game(dice_values=[1, 2], current_turn="p1")
+
+        response = self.client.post(
+            f"/api/games/{game.pk}/confirm_turn/",
+            {"moves": []},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+
+        game.refresh_from_db()
+        self.assertEqual(game.board_state, get_initial_board_state())
+        self.assertEqual(game.current_turn, "p2")
+        self.assertEqual(game.dice_values, [])
+
+    def test_confirm_turn_ends_turn_even_with_unused_dice(self):
+        # Only one die is used even though two were rolled.
+        game = make_game(dice_values=[1, 2], current_turn="p1")
+
+        response = self.client.post(
+            f"/api/games/{game.pk}/confirm_turn/",
+            {"moves": [{"from_point": 1, "to_point": 2}]},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+
+        game.refresh_from_db()
+        self.assertEqual(game.current_turn, "p2")
+        self.assertEqual(game.dice_values, [])
+
+    def test_confirm_turn_rejects_illegal_move_in_sequence(self):
+        game = make_game(dice_values=[1, 2], current_turn="p1")
+        original_board = copy.deepcopy(game.board_state)
+
+        response = self.client.post(
+            f"/api/games/{game.pk}/confirm_turn/",
+            # die 1 -> point 2 is legal, but die 2 -> point 5 from point 2 would
+            # require a checker to actually be on point 2 first; instead make the
+            # second move illegal by reusing a die value that isn't available.
+            {"moves": [{"from_point": 1, "to_point": 2}, {"from_point": 1, "to_point": 4}]},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("error", response.json())
+
+        game.refresh_from_db()
+        self.assertEqual(game.board_state, original_board)
+        self.assertEqual(game.dice_values, [1, 2])
+        self.assertEqual(game.current_turn, "p1")
+
+    def test_confirm_turn_returns_400_when_no_dice_rolled(self):
+        game = make_game(dice_values=[], current_turn="p1")
+
+        response = self.client.post(
+            f"/api/games/{game.pk}/confirm_turn/",
+            {"moves": []},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_confirm_turn_returns_400_when_game_not_active(self):
+        game = make_game(status="finished", dice_values=[1, 2], current_turn="p1")
+
+        response = self.client.post(
+            f"/api/games/{game.pk}/confirm_turn/",
+            {"moves": []},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_confirm_turn_bearing_off_last_checker_finishes_game(self):
+        board = empty_board()
+        board["points"][23] = 1
+        board["off"]["p1"] = 14
+        game = make_game(dice_values=[1], board_state=board, current_turn="p1")
+
+        response = self.client.post(
+            f"/api/games/{game.pk}/confirm_turn/",
+            {"moves": [{"from_point": 24, "to_point": 25}]},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+
+        game.refresh_from_db()
+        self.assertEqual(game.status, "finished")
+        self.assertEqual(game.winner, "p1")
+        self.assertEqual(game.board_state["off"]["p1"], 15)
+        self.assertEqual(game.current_turn, "p1")
+        self.assertEqual(game.dice_values, [])
+
+
+# ---------------------------------------------------------------------------
+# Turn passing when the current player has a checker on the bar
+# ---------------------------------------------------------------------------
+
+ALL_DICE_ROLLS = [[d, d, d, d] for d in range(1, 7)] + [
+    [a, b] for a in range(1, 7) for b in range(a + 1, 7)
+]
+
+
+class BarNoLegalMovesTurnPassingTest(TestCase):
+    """
+    When the current player has a checker on the bar and every entry point
+    is blocked, no roll can produce a legal move. roll_dice always records
+    the roll (so the player can see it), and the player passes the turn by
+    confirming with no moves. This must work for every possible dice roll.
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+
+    def test_every_roll_passes_turn_via_confirm_when_all_entries_blocked(self):
+        for roll in ALL_DICE_ROLLS:
+            board = {
+                "points": [-2, -2, -2, -2, -2, -2] + [0] * 18,
+                "bar": {"p1": 1, "p2": 0},
+                "off": {"p1": 0, "p2": 0},
+            }
+            game = make_game(dice_values=[], current_turn="p1", board_state=board)
+
+            with patch("game.views.roll_dice", return_value=roll):
+                response = self.client.post(f"/api/games/{game.pk}/roll_dice/")
+
+            self.assertEqual(response.status_code, 200, roll)
+
+            game.refresh_from_db()
+            # The roll is shown to the player; the turn hasn't passed yet.
+            self.assertEqual(game.current_turn, "p1", f"roll={roll}")
+            self.assertEqual(game.dice_values, roll, f"roll={roll}")
+
+            response = self.client.post(
+                f"/api/games/{game.pk}/confirm_turn/",
+                {"moves": []},
+                format="json",
+            )
+            self.assertEqual(response.status_code, 200, roll)
+
+            game.refresh_from_db()
+            self.assertEqual(game.current_turn, "p2", f"roll={roll}")
+            self.assertEqual(game.dice_values, [], f"roll={roll}")
+
+    def test_every_roll_eventually_passes_turn_when_one_entry_open(self):
+        """
+        Only point 3 is open for entry. Whether or not the roll includes a
+        3 (giving the player a single legal entry move), confirming with no
+        moves must still pass the turn to the opponent.
+        """
+        for roll in ALL_DICE_ROLLS:
+            board = {
+                "points": [-2, -2, 0, -2, -2, -2] + [0] * 18,
+                "bar": {"p1": 1, "p2": 0},
+                "off": {"p1": 0, "p2": 0},
+            }
+            game = make_game(dice_values=[], current_turn="p1", board_state=board)
+
+            with patch("game.views.roll_dice", return_value=roll):
+                response = self.client.post(f"/api/games/{game.pk}/roll_dice/")
+            self.assertEqual(response.status_code, 200, roll)
+            game.refresh_from_db()
+
+            self.assertEqual(game.current_turn, "p1", f"roll={roll}")
+            self.assertEqual(game.dice_values, roll, f"roll={roll}")
+
+            response = self.client.post(
+                f"/api/games/{game.pk}/confirm_turn/",
+                {"moves": []},
+                format="json",
+            )
+            self.assertEqual(response.status_code, 200, roll)
+            game.refresh_from_db()
+
+            self.assertEqual(game.current_turn, "p2", f"roll={roll}")
+            self.assertEqual(game.dice_values, [], f"roll={roll}")

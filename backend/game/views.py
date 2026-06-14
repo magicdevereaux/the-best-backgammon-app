@@ -1,3 +1,5 @@
+import copy
+
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -14,6 +16,27 @@ from .game_logic import (
 )
 
 
+def _apply_single_move(board, player, dice, from_point, to_point):
+    """
+    Validate (from_point, to_point) against the legal moves for `player` given
+    `board`/`dice`, then apply it in place.
+
+    Returns the updated dice list (with the consumed die removed). Raises
+    ValueError("Illegal move.") if the move isn't legal.
+    """
+    legal_moves = get_legal_moves(board, player, dice)
+    matches = [m for m in legal_moves if m[0] == from_point and m[1] == to_point]
+    if not matches:
+        raise ValueError("Illegal move.")
+
+    die_used = matches[0][2]
+    dice = list(dice)
+    dice.remove(die_used)
+
+    apply_move(board, player, from_point, to_point)
+    return dice
+
+
 class GameViewSet(viewsets.ModelViewSet):
     """
     Provides standard CRUD endpoints for Game:
@@ -27,6 +50,7 @@ class GameViewSet(viewsets.ModelViewSet):
     Custom actions are wired below and live at:
       POST   /api/games/{id}/roll_dice/
       POST   /api/games/{id}/move_checker/
+      POST   /api/games/{id}/confirm_turn/
     """
 
     queryset = Game.objects.all()
@@ -46,8 +70,10 @@ class GameViewSet(viewsets.ModelViewSet):
         """
         Roll the dice for the current player's turn.
 
-        If the resulting roll leaves the player with no legal moves at all,
-        the turn passes immediately to the opponent.
+        The rolled values are always recorded, even if they leave the player
+        with no legal moves at all. In that case the player sees the roll,
+        finds no destinations highlighted, and calls confirm_turn with no
+        moves to pass the turn to the opponent.
         """
         game = self.get_object()
 
@@ -62,15 +88,7 @@ class GameViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        new_dice = roll_dice()
-        player = game.current_turn
-
-        if get_legal_moves(game.board_state, player, new_dice):
-            game.dice_values = new_dice
-        else:
-            game.dice_values = []
-            game.current_turn = opponent(player)
-
+        game.dice_values = roll_dice()
         game.save()
 
         serializer = self.get_serializer(game)
@@ -111,17 +129,11 @@ class GameViewSet(viewsets.ModelViewSet):
         board = game.board_state
         dice = list(game.dice_values)
 
-        legal_moves = get_legal_moves(board, player, dice)
-        matches = [m for m in legal_moves if m[0] == from_point and m[1] == to_point]
-        if not matches:
-            return Response(
-                {"error": "Illegal move."}, status=status.HTTP_400_BAD_REQUEST
-            )
+        try:
+            dice = _apply_single_move(board, player, dice, from_point, to_point)
+        except ValueError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
-        die_used = matches[0][2]
-        dice.remove(die_used)
-
-        board = apply_move(board, player, from_point, to_point)
         game.board_state = board
 
         winner = check_winner(board)
@@ -134,6 +146,73 @@ class GameViewSet(viewsets.ModelViewSet):
             game.dice_values = []
         else:
             game.dice_values = dice
+
+        game.save()
+
+        serializer = self.get_serializer(game)
+        return Response(serializer.data)
+
+    @action(detail=True, methods=["post"], url_path="confirm_turn")
+    def confirm_turn(self, request, pk=None):
+        """
+        Commit a sequence of staged moves for the current player's turn and
+        pass the turn to the opponent.
+
+        Expected request body:
+          { "moves": [{ "from_point": int, "to_point": int }, ...] }
+
+        The moves are applied in order against the current board state and
+        remaining dice, using the same validation as `move_checker`. If any
+        move in the sequence is illegal, the whole request is rejected with a
+        400 response and nothing is saved. On success, the turn always passes
+        to the opponent (or the game finishes if the moves bear off a
+        player's last checker), regardless of whether dice remain unused.
+        """
+        game = self.get_object()
+
+        if game.status != "active":
+            return Response(
+                {"error": "Game is not active."}, status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if not game.dice_values:
+            return Response(
+                {"error": "No dice rolled for this turn."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        moves = request.data.get("moves", [])
+        if not isinstance(moves, list):
+            return Response(
+                {"error": "moves must be a list."}, status=status.HTTP_400_BAD_REQUEST
+            )
+
+        player = game.current_turn
+        board = copy.deepcopy(game.board_state)
+        dice = list(game.dice_values)
+
+        for move in moves:
+            from_point = move.get("from_point")
+            to_point = move.get("to_point")
+            if from_point is None or to_point is None:
+                return Response(
+                    {"error": "Each move requires from_point and to_point."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            try:
+                dice = _apply_single_move(board, player, dice, from_point, to_point)
+            except ValueError as exc:
+                return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        game.board_state = board
+
+        winner = check_winner(board)
+        if winner:
+            game.status = "finished"
+            game.winner = winner
+        else:
+            game.current_turn = opponent(player)
+        game.dice_values = []
 
         game.save()
 
