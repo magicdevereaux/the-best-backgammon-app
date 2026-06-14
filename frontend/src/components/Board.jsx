@@ -1,9 +1,10 @@
-import React from "react";
+import React, { useState } from "react";
 
 const P1 = { fill: "#f0dca0", stroke: "#b8902a" };
 const P2 = { fill: "#3a1e0a", stroke: "#8b5a30" };
 const TRI_A = "#9b3510";
 const TRI_B = "#c8a050";
+const SELECTED_BG = "rgba(255, 255, 255, 0.25)";
 
 function Checker({ player }) {
   const c = player === "p1" ? P1 : P2;
@@ -40,7 +41,7 @@ function Triangle({ down, color }) {
   );
 }
 
-function Point({ num, value, isTop, colorIndex }) {
+function Point({ num, value, isTop, colorIndex, isSelected, onClick }) {
   const player = value > 0 ? "p1" : value < 0 ? "p2" : null;
   const n = Math.abs(value);
   const shown = Math.min(n, 5);
@@ -72,12 +73,15 @@ function Point({ num, value, isTop, colorIndex }) {
   return (
     <div
       data-testid={`point-${num}`}
+      onClick={onClick}
       style={{
         width: 34,
         display: "flex",
         flexDirection: "column",
         alignItems: "center",
         padding: "2px 0",
+        background: isSelected ? SELECTED_BG : "transparent",
+        cursor: onClick ? "pointer" : "default",
       }}
     >
       {isTop ? (
@@ -101,7 +105,9 @@ function Point({ num, value, isTop, colorIndex }) {
   );
 }
 
-export default function Board({ boardState }) {
+export default function Board({ boardState, currentPlayer, onMove }) {
+  const [selected, setSelected] = useState(null);
+
   if (!boardState) {
     return (
       <div style={{ padding: "1rem", color: "#888", fontFamily: "sans-serif" }}>
@@ -111,6 +117,38 @@ export default function Board({ boardState }) {
   }
 
   const { points, bar, off } = boardState;
+  const interactive = Boolean(onMove && currentPlayer);
+
+  const ownsPoint = (pointNum) => {
+    const value = points[pointNum - 1];
+    return currentPlayer === "p1" ? value > 0 : value < 0;
+  };
+
+  const handlePointClick = (pointNum) => {
+    if (selected === null) {
+      if (ownsPoint(pointNum)) setSelected(pointNum);
+    } else if (selected === pointNum) {
+      setSelected(null);
+    } else {
+      onMove(selected, pointNum);
+      setSelected(null);
+    }
+  };
+
+  const handleBarClick = () => {
+    if (selected === 0) {
+      setSelected(null);
+    } else if (selected === null && bar[currentPlayer] > 0) {
+      setSelected(0);
+    }
+  };
+
+  const handleOffClick = (player) => {
+    if (selected !== null && player === currentPlayer) {
+      onMove(selected, 25);
+      setSelected(null);
+    }
+  };
 
   // top row left-to-right: points 13–18 | 19–24  (indices 12–17 | 18–23)
   const topLeft  = [12, 13, 14, 15, 16, 17];
@@ -121,7 +159,15 @@ export default function Board({ boardState }) {
 
   const renderPoints = (indices, isTop) =>
     indices.map((idx, pos) => (
-      <Point key={idx} num={idx + 1} value={points[idx]} isTop={isTop} colorIndex={pos} />
+      <Point
+        key={idx}
+        num={idx + 1}
+        value={points[idx]}
+        isTop={isTop}
+        colorIndex={pos}
+        isSelected={selected === idx + 1}
+        onClick={interactive ? () => handlePointClick(idx + 1) : undefined}
+      />
     ));
 
   return (
@@ -144,16 +190,18 @@ export default function Board({ boardState }) {
 
         <div
           data-testid="bar"
+          onClick={interactive ? handleBarClick : undefined}
           style={{
             width: 34,
             display: "flex",
             flexDirection: "column",
             alignItems: "center",
             justifyContent: "center",
-            background: "#1a3f14",
+            background: selected === 0 ? SELECTED_BG : "#1a3f14",
             flexShrink: 0,
             gap: 2,
             padding: "4px 0",
+            cursor: interactive ? "pointer" : "default",
           }}
         >
           {bar.p2 > 0 &&
@@ -197,11 +245,31 @@ export default function Board({ boardState }) {
           color: "#ccc",
         }}
       >
-        <div data-testid="off-p1" style={{ display: "flex", alignItems: "center", gap: 4 }}>
+        <div
+          data-testid="off-p1"
+          onClick={interactive ? () => handleOffClick("p1") : undefined}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 4,
+            background: selected !== null && currentPlayer === "p1" ? SELECTED_BG : "transparent",
+            cursor: interactive ? "pointer" : "default",
+          }}
+        >
           <span style={{ color: P1.fill }}>●</span>
           <span>P1 off: {off.p1}</span>
         </div>
-        <div data-testid="off-p2" style={{ display: "flex", alignItems: "center", gap: 4 }}>
+        <div
+          data-testid="off-p2"
+          onClick={interactive ? () => handleOffClick("p2") : undefined}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 4,
+            background: selected !== null && currentPlayer === "p2" ? SELECTED_BG : "transparent",
+            cursor: interactive ? "pointer" : "default",
+          }}
+        >
           <span style={{ color: P2.fill }}>●</span>
           <span>P2 off: {off.p2}</span>
         </div>

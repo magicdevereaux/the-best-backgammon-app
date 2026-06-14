@@ -60,3 +60,147 @@ def get_initial_board_state():
         "bar": {"p1": 0, "p2": 0},
         "off": {"p1": 0, "p2": 0},
     }
+
+
+# ---------------------------------------------------------------------------
+# Move validation and application
+#
+# Coordinate conventions used throughout this module:
+#   - Points are numbered 1-24 (index = point - 1 in board_state["points"]).
+#   - from_point == 0 means the move enters a checker from the bar.
+#   - to_point == 25 means the move bears a checker off (for either player —
+#     it is always interpreted relative to the moving player's home board).
+#   - Player 1 moves in the direction of increasing point numbers (home
+#     board = points 19-24); Player 2 moves toward decreasing point numbers
+#     (home board = points 1-6).
+# ---------------------------------------------------------------------------
+
+P1 = "p1"
+P2 = "p2"
+
+DIRECTION = {P1: 1, P2: -1}
+
+# Index ranges (0-based) of each player's home board.
+HOME_INDICES = {P1: range(18, 24), P2: range(0, 6)}
+
+
+def opponent(player):
+    """Return the other player's identifier."""
+    return P2 if player == P1 else P1
+
+
+def _checker_sign(player):
+    """+1 for player 1's checkers, -1 for player 2's checkers."""
+    return 1 if player == P1 else -1
+
+
+def _entry_point(player, die):
+    """Point number (1-24) a checker enters on from the bar with the given die."""
+    return die if player == P1 else 25 - die
+
+
+def _bear_off_distance(player, from_point):
+    """Pip distance required to bear a checker off from from_point."""
+    return (25 - from_point) if player == P1 else from_point
+
+
+def _is_point_open(board_state, player, point):
+    """True if `player` may land a checker on the given 1-24 point."""
+    value = board_state["points"][point - 1]
+    return value * _checker_sign(player) >= -1
+
+
+def can_bear_off(board_state, player):
+    """True if all of player's checkers are in their home board and none are on the bar."""
+    if board_state["bar"][player] > 0:
+        return False
+    sign = _checker_sign(player)
+    for idx, value in enumerate(board_state["points"]):
+        if value * sign > 0 and idx not in HOME_INDICES[player]:
+            return False
+    return True
+
+
+def get_legal_moves(board_state, player, dice_values):
+    """
+    Return the set of legal moves for `player` given the current board and
+    remaining dice, as a set of (from_point, to_point, die) tuples.
+
+    If the player has checkers on the bar, only bar-entry moves are returned
+    (entering from the bar always takes priority over other moves).
+    """
+    moves = set()
+    if not dice_values:
+        return moves
+
+    sign = _checker_sign(player)
+    distinct_dice = set(dice_values)
+
+    if board_state["bar"][player] > 0:
+        for die in distinct_dice:
+            entry = _entry_point(player, die)
+            if _is_point_open(board_state, player, entry):
+                moves.add((0, entry, die))
+        return moves
+
+    bear_off_ok = can_bear_off(board_state, player)
+    home_distances = [
+        _bear_off_distance(player, idx + 1)
+        for idx in HOME_INDICES[player]
+        if board_state["points"][idx] * sign > 0
+    ] if bear_off_ok else []
+    max_home_distance = max(home_distances) if home_distances else 0
+
+    for idx, value in enumerate(board_state["points"]):
+        if value * sign <= 0:
+            continue
+        from_point = idx + 1
+        for die in distinct_dice:
+            to_point = from_point + DIRECTION[player] * die
+            if 1 <= to_point <= 24:
+                if _is_point_open(board_state, player, to_point):
+                    moves.add((from_point, to_point, die))
+            elif bear_off_ok:
+                dist = _bear_off_distance(player, from_point)
+                if die == dist or (die > dist and dist == max_home_distance):
+                    moves.add((from_point, 25, die))
+
+    return moves
+
+
+def apply_move(board_state, player, from_point, to_point):
+    """
+    Apply a legal move to board_state, mutating and returning it.
+
+    Handles entering from the bar, hitting a lone opponent checker (sending
+    it to the bar), and bearing off.
+    """
+    points = board_state["points"]
+    sign = _checker_sign(player)
+
+    if from_point == 0:
+        board_state["bar"][player] -= 1
+    else:
+        points[from_point - 1] -= sign
+
+    if to_point == 25:
+        board_state["off"][player] += 1
+    else:
+        idx = to_point - 1
+        if points[idx] * sign < 0:
+            # Hitting a lone opponent blot sends it to the bar.
+            points[idx] = sign
+            board_state["bar"][opponent(player)] += 1
+        else:
+            points[idx] += sign
+
+    return board_state
+
+
+def check_winner(board_state):
+    """Return 'p1' or 'p2' if that player has borne off all 15 checkers, else None."""
+    if board_state["off"][P1] == 15:
+        return P1
+    if board_state["off"][P2] == 15:
+        return P2
+    return None

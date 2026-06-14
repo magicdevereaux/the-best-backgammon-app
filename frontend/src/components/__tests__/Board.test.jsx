@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import Board from '../Board';
 
 // Standard backgammon starting position
@@ -35,10 +35,7 @@ describe('Board — 24 points (FAIL until rendered)', () => {
   test('renders an element for each of the 24 points', () => {
     render(<Board boardState={INITIAL_BOARD} />);
     for (let i = 1; i <= 24; i++) {
-      expect(
-        screen.getByTestId(`point-${i}`),
-        `Missing data-testid="point-${i}"`
-      ).toBeInTheDocument();
+      expect(screen.getByTestId(`point-${i}`)).toBeInTheDocument();
     }
   });
 
@@ -143,5 +140,57 @@ describe('Board — off/borne-off areas (FAIL until rendered)', () => {
     const offP2 = screen.getByTestId('off-p2');
     expect(offP1.querySelectorAll('[data-testid="p1-checker"]')).toHaveLength(0);
     expect(offP2.querySelectorAll('[data-testid="p2-checker"]')).toHaveLength(0);
+  });
+});
+
+describe('Board — move interaction', () => {
+  test('selecting own checker then a destination calls onMove with from and to', () => {
+    const onMove = jest.fn();
+    render(<Board boardState={INITIAL_BOARD} currentPlayer="p1" onMove={onMove} />);
+    fireEvent.click(screen.getByTestId('point-1'));
+    fireEvent.click(screen.getByTestId('point-2'));
+    expect(onMove).toHaveBeenCalledWith(1, 2);
+  });
+
+  test('clicking an opponent checker does not select it as a source', () => {
+    const onMove = jest.fn();
+    render(<Board boardState={INITIAL_BOARD} currentPlayer="p1" onMove={onMove} />);
+    fireEvent.click(screen.getByTestId('point-6')); // p2 checkers
+    fireEvent.click(screen.getByTestId('point-7'));
+    expect(onMove).not.toHaveBeenCalled();
+  });
+
+  test('clicking the same point twice deselects it', () => {
+    const onMove = jest.fn();
+    render(<Board boardState={INITIAL_BOARD} currentPlayer="p1" onMove={onMove} />);
+    fireEvent.click(screen.getByTestId('point-1'));
+    fireEvent.click(screen.getByTestId('point-1'));
+    fireEvent.click(screen.getByTestId('point-2'));
+    expect(onMove).not.toHaveBeenCalled();
+  });
+
+  test('selecting the bar then a point enters from the bar (from_point 0)', () => {
+    const onMove = jest.fn();
+    const board = { ...INITIAL_BOARD, bar: { p1: 1, p2: 0 } };
+    render(<Board boardState={board} currentPlayer="p1" onMove={onMove} />);
+    fireEvent.click(screen.getByTestId('bar'));
+    fireEvent.click(screen.getByTestId('point-3'));
+    expect(onMove).toHaveBeenCalledWith(0, 3);
+  });
+
+  test('selecting a checker then the matching off area bears it off (to_point 25)', () => {
+    const onMove = jest.fn();
+    render(<Board boardState={INITIAL_BOARD} currentPlayer="p1" onMove={onMove} />);
+    fireEvent.click(screen.getByTestId('point-19'));
+    fireEvent.click(screen.getByTestId('off-p1'));
+    expect(onMove).toHaveBeenCalledWith(19, 25);
+  });
+
+  test('without onMove or currentPlayer, clicking points does not trigger a move', () => {
+    const onMove = jest.fn();
+    render(<Board boardState={INITIAL_BOARD} />);
+    fireEvent.click(screen.getByTestId('point-1'));
+    fireEvent.click(screen.getByTestId('point-2'));
+    expect(onMove).not.toHaveBeenCalled();
   });
 });

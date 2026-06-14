@@ -4,6 +4,14 @@ from rest_framework.response import Response
 
 from .models import Game
 from .serializers import GameSerializer
+from .game_logic import (
+    roll_dice,
+    get_initial_board_state,
+    get_legal_moves,
+    apply_move,
+    check_winner,
+    opponent,
+)
 
 
 class GameViewSet(viewsets.ModelViewSet):
@@ -24,19 +32,45 @@ class GameViewSet(viewsets.ModelViewSet):
     queryset = Game.objects.all()
     serializer_class = GameSerializer
 
+    def perform_create(self, serializer):
+        """New games start active, with the standard starting position and p1 to move."""
+        serializer.save(
+            board_state=get_initial_board_state(),
+            current_turn="p1",
+            dice_values=[],
+            status="active",
+        )
+
     @action(detail=True, methods=["post"], url_path="roll_dice")
     def roll_dice(self, request, pk=None):
         """
         Roll the dice for the current player's turn.
-        Calls game_logic.roll_dice() and saves the result to the game.
-        Returns the updated game object.
+
+        If the resulting roll leaves the player with no legal moves at all,
+        the turn passes immediately to the opponent.
         """
         game = self.get_object()
 
-        from .game_logic import roll_dice
-        new_dice = roll_dice()
+        if game.status != "active":
+            return Response(
+                {"error": "Game is not active."}, status=status.HTTP_400_BAD_REQUEST
+            )
 
-        game.dice_values = new_dice
+        if game.dice_values:
+            return Response(
+                {"error": "Dice have already been rolled for this turn."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        new_dice = roll_dice()
+        player = game.current_turn
+
+        if get_legal_moves(game.board_state, player, new_dice):
+            game.dice_values = new_dice
+        else:
+            game.dice_values = []
+            game.current_turn = opponent(player)
+
         game.save()
 
         serializer = self.get_serializer(game)
@@ -50,12 +84,17 @@ class GameViewSet(viewsets.ModelViewSet):
         Expected request body:
           { "from_point": int, "to_point": int }
 
-        Points are 1-indexed (1–24). Use 0 for the bar, 25 for bearing off.
+        Points are 1-indexed (1-24). Use 0 for from_point to enter from the
+        bar, and 25 for to_point to bear off.
+
+        The move is validated against the current board state and remaining
+        dice; illegal moves are rejected with a 400 response. After a legal
+        move, the used die is consumed and, if no dice or legal moves remain,
+        the turn passes to the opponent.
         """
         game = self.get_object()
         from_point = request.data.get("from_point")
         to_point = request.data.get("to_point")
-        curr = game.board_state
 
         if from_point is None or to_point is None:
             return Response(
@@ -63,26 +102,39 @@ class GameViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        p = game.current_turn
-        if from_point != 0:
-            curr["points"][from_point - 1] -= 1
-        else:
-            curr["bar"][p] -= 1
+        if game.status != "active":
+            return Response(
+                {"error": "Game is not active."}, status=status.HTTP_400_BAD_REQUEST
+            )
 
-        if 1 <= to_point <= 24:
-            curr["points"][to_point - 1] += 1
-        elif to_point == 25:
-            curr["off"][p] += 1
-            if curr["off"][p] == 15:
-                game.status = "finished"
-                game.winner = p
-
-        distance = from_point if to_point == 25 else abs(to_point - from_point)
+        player = game.current_turn
+        board = game.board_state
         dice = list(game.dice_values)
-        if distance in dice:
-            dice.remove(distance)
-        game.dice_values = dice
-        game.board_state = curr
+
+        legal_moves = get_legal_moves(board, player, dice)
+        matches = [m for m in legal_moves if m[0] == from_point and m[1] == to_point]
+        if not matches:
+            return Response(
+                {"error": "Illegal move."}, status=status.HTTP_400_BAD_REQUEST
+            )
+
+        die_used = matches[0][2]
+        dice.remove(die_used)
+
+        board = apply_move(board, player, from_point, to_point)
+        game.board_state = board
+
+        winner = check_winner(board)
+        if winner:
+            game.status = "finished"
+            game.winner = winner
+            game.dice_values = []
+        elif not dice or not get_legal_moves(board, player, dice):
+            game.current_turn = opponent(player)
+            game.dice_values = []
+        else:
+            game.dice_values = dice
+
         game.save()
 
         serializer = self.get_serializer(game)
