@@ -1,9 +1,16 @@
+from django.contrib.auth.models import User
 from django.db import models
 
 
 class Game(models.Model):
+    player1_user = models.ForeignKey(
+        User, null=True, blank=True, on_delete=models.SET_NULL, related_name="games_as_p1"
+    )
+    player2_user = models.ForeignKey(
+        User, null=True, blank=True, on_delete=models.SET_NULL, related_name="games_as_p2"
+    )
     player1_name = models.CharField(max_length=200)
-    player2_name = models.CharField(max_length=200)
+    player2_name = models.CharField(max_length=200, blank=True)
     board_state = models.JSONField(default=dict)
     current_turn = models.CharField(
         max_length=100, choices=[("p1", "Player 1"), ("p2", "Player 2")], default="p1"

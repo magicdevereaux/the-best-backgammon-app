@@ -1,10 +1,23 @@
+import { getAccessToken, refreshAccessToken } from "./authApi";
+
 const BASE_URL = "/api/games/";
 
 async function request(path, options = {}) {
-  const res = await fetch(BASE_URL + path, {
-    headers: { "Content-Type": "application/json" },
-    ...options,
-  });
+  const headers = { "Content-Type": "application/json", ...options.headers };
+  const token = getAccessToken();
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+
+  let res = await fetch(BASE_URL + path, { ...options, headers });
+
+  // On 401, attempt a silent token refresh and retry once.
+  if (res.status === 401) {
+    const newToken = await refreshAccessToken();
+    if (newToken) {
+      headers["Authorization"] = `Bearer ${newToken}`;
+      res = await fetch(BASE_URL + path, { ...options, headers });
+    }
+  }
+
   const data = await res.json().catch(() => null);
   if (!res.ok) {
     const message = (data && data.error) || `API error: ${res.status}`;
@@ -13,49 +26,33 @@ async function request(path, options = {}) {
   return data;
 }
 
-/**
- * Fetch all games from the API.
- * GET /api/games/
- * Returns: Game[]
- */
 export async function fetchGames() {
   return request("");
 }
 
-/**
- * Fetch a single game by its ID.
- * GET /api/games/:id/
- * Returns: Game
- */
+export async function fetchLobby() {
+  return request("?status=waiting");
+}
+
 export async function fetchGame(id) {
   return request(`${id}/`);
 }
 
-/**
- * Create a new game.
- * POST /api/games/
- * Body: { player1_name: string, player2_name: string }
- * Returns: Game (the newly created object including its assigned id)
- */
 export async function createGame(data) {
   return request("", { method: "POST", body: JSON.stringify(data) });
 }
 
-/**
- * Ask the server to roll dice for the given game.
- * POST /api/games/:id/roll_dice/
- * Returns: Game (updated with new dice_values)
- */
+export async function joinGame(id, player2Name) {
+  return request(`${id}/join/`, {
+    method: "POST",
+    body: JSON.stringify(player2Name ? { player2_name: player2Name } : {}),
+  });
+}
+
 export async function rollDice(id) {
   return request(`${id}/roll_dice/`, { method: "POST" });
 }
 
-/**
- * Move a checker on the given game.
- * POST /api/games/:id/move_checker/
- * Body: { from_point: int, to_point: int }
- * Returns: Game (updated board_state and dice_values)
- */
 export async function moveChecker(id, fromPoint, toPoint) {
   return request(`${id}/move_checker/`, {
     method: "POST",
@@ -63,12 +60,6 @@ export async function moveChecker(id, fromPoint, toPoint) {
   });
 }
 
-/**
- * Commit a sequence of staged moves and end the current turn.
- * POST /api/games/:id/confirm_turn/
- * Body: { moves: [{ from_point: int, to_point: int }, ...] }
- * Returns: Game (updated board_state, dice_values cleared, turn switched)
- */
 export async function confirmTurn(id, moves) {
   return request(`${id}/confirm_turn/`, {
     method: "POST",

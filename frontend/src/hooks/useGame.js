@@ -32,6 +32,8 @@ export function useGame(gameId) {
   const [stagedDice, setStagedDice] = useState([]);
   const [pendingMoves, setPendingMoves] = useState([]);
 
+  const [reloadToken, setReloadToken] = useState(0);
+
   useEffect(() => {
     if (!gameId) return;
     setLoading(true);
@@ -39,7 +41,9 @@ export function useGame(gameId) {
       .then(setGame)
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
-  }, [gameId]);
+  }, [gameId, reloadToken]);
+
+  const reload = useCallback(() => setReloadToken((t) => t + 1), []);
 
   // Whenever the authoritative game state changes (initial load, a dice
   // roll, or a confirmed turn), start a fresh staged turn from it.
@@ -114,5 +118,6 @@ export function useGame(gameId) {
     stageMove,
     resetTurn,
     confirmTurn,
+    reload,
   };
 }

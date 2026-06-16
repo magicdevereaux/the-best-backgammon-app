@@ -1,11 +1,13 @@
 import copy
 
-from rest_framework import viewsets, status
+from rest_framework import generics, viewsets, status
 from rest_framework.decorators import action
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+from rest_framework_simplejwt.tokens import RefreshToken
 
 from .models import Game
-from .serializers import GameSerializer
+from .serializers import GameSerializer, RegisterSerializer, UserSerializer
 from .game_logic import (
     roll_dice,
     get_initial_board_state,
@@ -16,13 +18,44 @@ from .game_logic import (
 )
 
 
+# ---------------------------------------------------------------------------
+# Auth views
+# ---------------------------------------------------------------------------
+
+class RegisterView(generics.CreateAPIView):
+    serializer_class = RegisterSerializer
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        user = serializer.save()
+        refresh = RefreshToken.for_user(user)
+        return Response(
+            {
+                "user": UserSerializer(user).data,
+                "refresh": str(refresh),
+                "access": str(refresh.access_token),
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class MeView(generics.RetrieveAPIView):
+    serializer_class = UserSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_object(self):
+        return self.request.user
+
+
+# ---------------------------------------------------------------------------
+# Game helpers
+# ---------------------------------------------------------------------------
+
 def _apply_single_move(board, player, dice, from_point, to_point):
     """
-    Validate (from_point, to_point) against the legal moves for `player` given
-    `board`/`dice`, then apply it in place.
-
-    Returns the updated dice list (with the consumed die removed). Raises
-    ValueError("Illegal move.") if the move isn't legal.
+    Validate and apply one move in place. Returns the updated dice list.
+    Raises ValueError("Illegal move.") if the move isn't legal.
     """
     legal_moves = get_legal_moves(board, player, dice)
     matches = [m for m in legal_moves if m[0] == from_point and m[1] == to_point]
@@ -37,33 +70,82 @@ def _apply_single_move(board, player, dice, from_point, to_point):
     return dice
 
 
+# ---------------------------------------------------------------------------
+# Game viewset
+# ---------------------------------------------------------------------------
+
 class GameViewSet(viewsets.ModelViewSet):
     """
-    Provides standard CRUD endpoints for Game:
-      GET    /api/games/         — list all games
-      POST   /api/games/         — create a new game
-      GET    /api/games/{id}/    — retrieve a single game
-      PUT    /api/games/{id}/    — full update
-      PATCH  /api/games/{id}/    — partial update
-      DELETE /api/games/{id}/    — delete
-
-    Custom actions are wired below and live at:
-      POST   /api/games/{id}/roll_dice/
-      POST   /api/games/{id}/move_checker/
-      POST   /api/games/{id}/confirm_turn/
+    Standard CRUD for Game plus custom actions:
+      POST /api/games/{id}/roll_dice/
+      POST /api/games/{id}/move_checker/
+      POST /api/games/{id}/confirm_turn/
+      POST /api/games/{id}/join/
     """
 
-    queryset = Game.objects.all()
     serializer_class = GameSerializer
 
+    def get_queryset(self):
+        qs = Game.objects.all()
+        status_filter = self.request.query_params.get("status")
+        if status_filter:
+            qs = qs.filter(status=status_filter)
+        return qs
+
     def perform_create(self, serializer):
-        """New games start active, with the standard starting position and p1 to move."""
+        user = self.request.user if self.request.user.is_authenticated else None
+
+        player1_name = (
+            serializer.validated_data.get("player1_name")
+            or (user.username if user else "Player 1")
+        )
+        player2_name = serializer.validated_data.get("player2_name", "")
+
+        # Hotseat / guest: both names provided → start immediately active.
+        # Lobby: only player1 → start waiting for an opponent.
+        game_status = "active" if player2_name else "waiting"
+
         serializer.save(
+            player1_user=user,
+            player1_name=player1_name,
+            player2_name=player2_name,
             board_state=get_initial_board_state(),
             current_turn="p1",
             dice_values=[],
-            status="active",
+            status=game_status,
         )
+
+    @action(detail=True, methods=["post"], url_path="join")
+    def join(self, request, pk=None):
+        """
+        Join an open (waiting) game as player 2.
+
+        Authenticated users use their username automatically.
+        Guests must supply { "player2_name": "..." }.
+        """
+        game = self.get_object()
+
+        if game.status != "waiting":
+            return Response(
+                {"error": "Game is not open to join."}, status=status.HTTP_400_BAD_REQUEST
+            )
+
+        user = request.user if request.user.is_authenticated else None
+        player2_name = request.data.get("player2_name") or (user.username if user else None)
+
+        if not player2_name:
+            return Response(
+                {"error": "player2_name is required when joining as a guest."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        game.player2_user = user
+        game.player2_name = player2_name
+        game.status = "active"
+        game.save()
+
+        serializer = self.get_serializer(game)
+        return Response(serializer.data)
 
     @action(detail=True, methods=["post"], url_path="roll_dice")
     def roll_dice(self, request, pk=None):
@@ -99,16 +181,8 @@ class GameViewSet(viewsets.ModelViewSet):
         """
         Move a checker for the current player.
 
-        Expected request body:
-          { "from_point": int, "to_point": int }
-
-        Points are 1-indexed (1-24). Use 0 for from_point to enter from the
-        bar, and 25 for to_point to bear off.
-
-        The move is validated against the current board state and remaining
-        dice; illegal moves are rejected with a 400 response. After a legal
-        move, the used die is consumed and, if no dice or legal moves remain,
-        the turn passes to the opponent.
+        Expected body: { "from_point": int, "to_point": int }
+        Points are 1-indexed (1-24); use 0 for bar entry, 25 for bear-off.
         """
         game = self.get_object()
         from_point = request.data.get("from_point")
@@ -155,18 +229,13 @@ class GameViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"], url_path="confirm_turn")
     def confirm_turn(self, request, pk=None):
         """
-        Commit a sequence of staged moves for the current player's turn and
-        pass the turn to the opponent.
+        Commit a sequence of staged moves and pass the turn to the opponent.
 
-        Expected request body:
-          { "moves": [{ "from_point": int, "to_point": int }, ...] }
+        Expected body: { "moves": [{ "from_point": int, "to_point": int }, ...] }
 
-        The moves are applied in order against the current board state and
-        remaining dice, using the same validation as `move_checker`. If any
-        move in the sequence is illegal, the whole request is rejected with a
-        400 response and nothing is saved. On success, the turn always passes
-        to the opponent (or the game finishes if the moves bear off a
-        player's last checker), regardless of whether dice remain unused.
+        If any move is illegal the whole request is rejected and nothing is
+        saved. On success the turn always passes to the opponent regardless of
+        unused dice (or the game finishes if the last checker is borne off).
         """
         game = self.get_object()
 
