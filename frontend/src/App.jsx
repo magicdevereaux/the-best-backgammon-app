@@ -5,6 +5,7 @@ import GamePage from "./pages/GamePage";
 import LobbyPage from "./pages/LobbyPage";
 import LoginPage from "./pages/LoginPage";
 import RegisterPage from "./pages/RegisterPage";
+import ProfilePage from "./pages/ProfilePage";
 
 function Nav() {
   const { user, logout } = useAuth();
@@ -21,7 +22,9 @@ function Nav() {
       <span style={{ flex: 1 }} />
       {user === undefined ? null : user ? (
         <>
-          <span style={{ color: "#555" }}>{user.username} — {user.wins}W / {user.losses}L</span>
+          <Link to="/profile" style={{ color: "#555", textDecoration: "none" }}>
+            {user.username} — {user.wins}W / {user.losses}L
+          </Link>
           <button onClick={handleLogout}>Logout</button>
         </>
       ) : (
@@ -44,6 +47,7 @@ export default function App() {
           <Route path="/login" element={<LoginPage />} />
           <Route path="/register" element={<RegisterPage />} />
           <Route path="/game/:id" element={<GamePage />} />
+          <Route path="/profile" element={<ProfilePage />} />
         </Routes>
       </BrowserRouter>
     </AuthProvider>

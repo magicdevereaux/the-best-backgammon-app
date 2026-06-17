@@ -2,10 +2,11 @@ from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
-from .views import GameViewSet, RegisterView, MeView
+from .views import GameViewSet, MatchViewSet, RegisterView, MeView
 
 router = DefaultRouter()
 router.register(r"games", GameViewSet, basename="game")
+router.register(r"matches", MatchViewSet, basename="match")
 
 urlpatterns = [
     path("", include(router.urls)),

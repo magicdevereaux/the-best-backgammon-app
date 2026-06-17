@@ -1,14 +1,18 @@
-import React, { useState } from "react";
-import { useParams } from "react-router-dom";
+import React, { useState, useEffect } from "react";
+import { useParams, useNavigate } from "react-router-dom";
 import Board from "../components/Board";
 import Dice from "../components/Dice";
 import GameControls from "../components/GameControls";
+import GameOverScreen from "../components/GameOverScreen";
+import MatchScore from "../components/MatchScore";
 import { useGame } from "../hooks/useGame";
 import { useAuth } from "../context/AuthContext";
-import { joinGame } from "../api/gameApi";
+import { joinGame, createGame } from "../api/gameApi";
+import { fetchMatch, nextGame } from "../api/matchApi";
 
 export default function GamePage() {
   const { id } = useParams();
+  const navigate = useNavigate();
   const { user } = useAuth();
   const {
     game,
@@ -28,6 +32,12 @@ export default function GamePage() {
 
   const [guestJoinName, setGuestJoinName] = useState("");
   const [joinError, setJoinError] = useState(null);
+  const [match, setMatch] = useState(null);
+
+  useEffect(() => {
+    if (!game?.match) return;
+    fetchMatch(game.match).then(setMatch).catch(() => {});
+  }, [game?.match, game?.status]);
 
   if (loading) return <p>Loading game…</p>;
   if (error) return <p>Error: {error}</p>;
@@ -45,6 +55,31 @@ export default function GamePage() {
       reload();
     } catch (err) {
       setJoinError(err.message);
+    }
+  }
+
+  async function handleNextGame() {
+    try {
+      const newGame = await nextGame(game.match);
+      navigate(`/game/${newGame.id}`);
+    } catch (err) {
+      console.error(err);
+    }
+  }
+
+  async function handleNewMatch() {
+    navigate("/");
+  }
+
+  async function handleRematch() {
+    try {
+      const newGame = await createGame({
+        player1_name: game.player1_name,
+        player2_name: game.player2_name,
+      });
+      navigate(`/game/${newGame.id}`);
+    } catch (err) {
+      console.error(err);
     }
   }
 
@@ -75,7 +110,20 @@ export default function GamePage() {
 
   return (
     <div style={{ padding: "1rem" }}>
+      {game.status === "finished" && (
+        <GameOverScreen
+          game={game}
+          match={match}
+          onNextGame={handleNextGame}
+          onNewMatch={game.match ? handleNewMatch : handleRematch}
+          onLobby={handleNewMatch}
+        />
+      )}
+
       <h2>Game #{game.id}</h2>
+
+      {match && <MatchScore match={match} />}
+
       <p>
         {game.player1_name} vs {game.player2_name}
         {game.status === "active" && (

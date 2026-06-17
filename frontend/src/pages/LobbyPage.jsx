@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { createGame, fetchLobby, joinGame } from "../api/gameApi";
+import { createMatch } from "../api/matchApi";
 import { useAuth } from "../context/AuthContext";
 
 export default function LobbyPage() {
@@ -11,6 +12,11 @@ export default function LobbyPage() {
   const [joinName, setJoinName] = useState("");
   const [guestName, setGuestName] = useState("");
   const [actionError, setActionError] = useState(null);
+
+  // Match creation state
+  const [showMatchForm, setShowMatchForm] = useState(false);
+  const [matchPoints, setMatchPoints] = useState(5);
+  const [matchP2Name, setMatchP2Name] = useState("");
 
   useEffect(() => {
     fetchLobby()
@@ -35,6 +41,22 @@ export default function LobbyPage() {
     try {
       const game = await createGame({ player1_name: p1, player2_name: "Player 2" });
       navigate(`/game/${game.id}`);
+    } catch (err) {
+      setActionError(err.message);
+    }
+  }
+
+  async function handleCreateMatch() {
+    setActionError(null);
+    const p1 = user ? user.username : (guestName || "Player 1");
+    const p2 = matchP2Name || "Player 2";
+    try {
+      const match = await createMatch({
+        target_points: matchPoints,
+        player1_name: p1,
+        player2_name: p2,
+      });
+      navigate(`/game/${match.current_game_id}`);
     } catch (err) {
       setActionError(err.message);
     }
@@ -66,28 +88,70 @@ export default function LobbyPage() {
       <section style={{ marginBottom: "2rem" }}>
         <h2>Start a game</h2>
 
-        {user ? (
-          <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
-            <button onClick={handleCreateOnline}>
-              Create online game (shareable link)
-            </button>
-            <button onClick={handleCreateHotseat}>
-              Hotseat (local 2-player)
-            </button>
-          </div>
-        ) : (
-          <div>
-            <p style={{ color: "#555" }}>
-              <a href="/login">Log in</a> to create an online game, or play hotseat as guest:
-            </p>
+        {!user && (
+          <div style={{ marginBottom: "0.75rem" }}>
             <input
               placeholder="Your name (optional)"
               value={guestName}
               onChange={(e) => setGuestName(e.target.value)}
               style={{ marginRight: "0.5rem" }}
             />
-            <button onClick={handleCreateHotseat}>Hotseat</button>
           </div>
+        )}
+
+        <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap", marginBottom: "1rem" }}>
+          {user && (
+            <button onClick={handleCreateOnline}>
+              Create online game (shareable link)
+            </button>
+          )}
+          <button onClick={handleCreateHotseat}>
+            Single game — hotseat
+          </button>
+          <button onClick={() => setShowMatchForm((v) => !v)}>
+            {showMatchForm ? "Cancel match" : "Match (first to N points)"}
+          </button>
+        </div>
+
+        {showMatchForm && (
+          <div
+            style={{
+              border: "1px solid #ddd",
+              borderRadius: 8,
+              padding: "1rem",
+              maxWidth: 340,
+              background: "#fafafa",
+            }}
+          >
+            <h3 style={{ marginTop: 0 }}>New match</h3>
+            <label style={{ display: "block", marginBottom: "0.5rem" }}>
+              Match length:{" "}
+              <select
+                value={matchPoints}
+                onChange={(e) => setMatchPoints(Number(e.target.value))}
+              >
+                <option value={3}>First to 3</option>
+                <option value={5}>First to 5</option>
+                <option value={7}>First to 7</option>
+                <option value={9}>First to 9</option>
+              </select>
+            </label>
+            <label style={{ display: "block", marginBottom: "0.75rem" }}>
+              Player 2 name:{" "}
+              <input
+                placeholder="Player 2"
+                value={matchP2Name}
+                onChange={(e) => setMatchP2Name(e.target.value)}
+              />
+            </label>
+            <button onClick={handleCreateMatch}>Start match</button>
+          </div>
+        )}
+
+        {!user && (
+          <p style={{ color: "#555", marginTop: "0.5rem" }}>
+            <a href="/login">Log in</a> to create online games.
+          </p>
         )}
       </section>
 

@@ -204,3 +204,36 @@ def check_winner(board_state):
     if board_state["off"][P2] == 15:
         return P2
     return None
+
+
+def detect_win_type(board_state, winner):
+    """
+    Classify the win as 'normal' (1 pt), 'gammon' (2 pts), or 'backgammon' (3 pts).
+
+    Gammon: loser has borne off 0 checkers.
+    Backgammon: loser has borne off 0 checkers AND still has a checker on the
+                bar OR in the winner's home board.
+    """
+    loser = opponent(winner)
+
+    if board_state["off"][loser] > 0:
+        return "normal"
+
+    # Loser has 0 borne off — check for backgammon
+    if board_state["bar"][loser] > 0:
+        return "backgammon"
+
+    loser_sign = _checker_sign(loser)
+    for idx in HOME_INDICES[winner]:
+        if board_state["points"][idx] * loser_sign > 0:
+            return "backgammon"
+
+    return "gammon"
+
+
+WIN_POINTS = {"normal": 1, "gammon": 2, "backgammon": 3}
+
+
+def win_points(win_type):
+    """Return the number of points awarded for the given win type."""
+    return WIN_POINTS[win_type]

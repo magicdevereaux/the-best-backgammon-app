@@ -6,14 +6,16 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from .models import Game
-from .serializers import GameSerializer, RegisterSerializer, UserSerializer
+from .models import Game, Match
+from .serializers import GameSerializer, MatchSerializer, RegisterSerializer, UserSerializer
 from .game_logic import (
     roll_dice,
     get_initial_board_state,
     get_legal_moves,
     apply_move,
     check_winner,
+    detect_win_type,
+    win_points,
     opponent,
 )
 
@@ -68,6 +70,150 @@ def _apply_single_move(board, player, dice, from_point, to_point):
 
     apply_move(board, player, from_point, to_point)
     return dice
+
+
+def _finish_game(game, board, winner):
+    """
+    Set finished-game fields and update the linked match's score.
+    Does NOT call game.save() — the caller is responsible.
+    """
+    wtype = detect_win_type(board, winner)
+    pts = win_points(wtype)
+
+    game.status = "finished"
+    game.winner = winner
+    game.win_type = wtype
+    game.points_value = pts
+    game.dice_values = []
+
+    if game.match_id:
+        match = game.match
+        if winner == "p1":
+            match.player1_score += pts
+            if match.player1_score >= match.target_points:
+                match.status = "finished"
+                match.winner = "p1"
+        else:
+            match.player2_score += pts
+            if match.player2_score >= match.target_points:
+                match.status = "finished"
+                match.winner = "p2"
+        match.save()
+
+
+# ---------------------------------------------------------------------------
+# Match viewset
+# ---------------------------------------------------------------------------
+
+class MatchViewSet(viewsets.ModelViewSet):
+    serializer_class = MatchSerializer
+
+    def get_queryset(self):
+        return Match.objects.all()
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        user = request.user if request.user.is_authenticated else None
+        player1_name = (
+            serializer.validated_data.get("player1_name")
+            or (user.username if user else "Player 1")
+        )
+        player2_name = serializer.validated_data.get("player2_name", "")
+
+        target_points = serializer.validated_data.get("target_points", 5)
+        if target_points not in (3, 5, 7, 9):
+            return Response(
+                {"error": "target_points must be 3, 5, 7, or 9."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        match = serializer.save(
+            player1_user=user,
+            player1_name=player1_name,
+            player2_name=player2_name,
+        )
+
+        # Create the first game of this match
+        game_status = "active" if player2_name else "waiting"
+        Game.objects.create(
+            match=match,
+            player1_user=match.player1_user,
+            player2_user=match.player2_user,
+            player1_name=match.player1_name,
+            player2_name=match.player2_name,
+            board_state=get_initial_board_state(),
+            current_turn="p1",
+            dice_values=[],
+            status=game_status,
+        )
+
+        return Response(self.get_serializer(match).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=["post"], url_path="next_game")
+    def next_game(self, request, pk=None):
+        """Start the next game in the match after the previous one has finished."""
+        match = self.get_object()
+
+        if match.status == "finished":
+            return Response(
+                {"error": "Match is already finished."}, status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if match.games.filter(status__in=["active", "waiting"]).exists():
+            return Response(
+                {"error": "A game is already in progress."}, status=status.HTTP_400_BAD_REQUEST
+            )
+
+        last_game = match.games.filter(status="finished").first()
+        next_turn = last_game.winner if last_game else "p1"
+
+        game = Game.objects.create(
+            match=match,
+            player1_user=match.player1_user,
+            player2_user=match.player2_user,
+            player1_name=match.player1_name,
+            player2_name=match.player2_name,
+            board_state=get_initial_board_state(),
+            current_turn=next_turn,
+            dice_values=[],
+            status="active",
+        )
+
+        return Response(GameSerializer(game).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=["post"], url_path="join")
+    def join(self, request, pk=None):
+        """Join a match as player 2 (for online match links)."""
+        match = self.get_object()
+
+        if match.player2_name:
+            return Response(
+                {"error": "Match already has two players."}, status=status.HTTP_400_BAD_REQUEST
+            )
+
+        user = request.user if request.user.is_authenticated else None
+        player2_name = request.data.get("player2_name") or (user.username if user else None)
+
+        if not player2_name:
+            return Response(
+                {"error": "player2_name is required for guest join."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        match.player2_user = user
+        match.player2_name = player2_name
+        match.save()
+
+        waiting_game = match.games.filter(status="waiting").first()
+        if waiting_game:
+            waiting_game.player2_user = user
+            waiting_game.player2_name = player2_name
+            waiting_game.status = "active"
+            waiting_game.save()
+
+        return Response(self.get_serializer(match).data)
 
 
 # ---------------------------------------------------------------------------
@@ -212,9 +358,7 @@ class GameViewSet(viewsets.ModelViewSet):
 
         winner = check_winner(board)
         if winner:
-            game.status = "finished"
-            game.winner = winner
-            game.dice_values = []
+            _finish_game(game, board, winner)
         elif not dice or not get_legal_moves(board, player, dice):
             game.current_turn = opponent(player)
             game.dice_values = []
@@ -277,11 +421,10 @@ class GameViewSet(viewsets.ModelViewSet):
 
         winner = check_winner(board)
         if winner:
-            game.status = "finished"
-            game.winner = winner
+            _finish_game(game, board, winner)
         else:
             game.current_turn = opponent(player)
-        game.dice_values = []
+            game.dice_values = []
 
         game.save()
 
