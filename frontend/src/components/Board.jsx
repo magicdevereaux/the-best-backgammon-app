@@ -1,116 +1,101 @@
 import React, { useState } from "react";
 
-const P1 = { fill: "#f0dca0", stroke: "#b8902a" };
-const P2 = { fill: "#3a1e0a", stroke: "#8b5a30" };
-const TRI_A = "#9b3510";
-const TRI_B = "#c8a050";
-const SELECTED_BG = "rgba(255, 255, 255, 0.25)";
-const LEGAL_DEST_BG = "rgba(120, 220, 120, 0.35)";
+// ── Layout constants ────────────────────────────────────────────────────────
+const PW = 58;                        // point (triangle) base width
+const BH = 500;                       // board height
+const TH = 198;                       // triangle height
+const BAR_W = 40;
+const HALF_W = PW * 6;               // 348
+const BAR_START = HALF_W;            // 348
+const BAR_END = HALF_W + BAR_W;      // 388
+const BOARD_W = HALF_W * 2 + BAR_W; // 736
+const OFF_GAP = 10;
+const OFF_W = 54;
+const SVG_W = BOARD_W + OFF_GAP + OFF_W; // 800
+const SVG_H = BH;
 
-function Checker({ player }) {
-  const c = player === "p1" ? P1 : P2;
-  return (
-    <div
-      data-testid={`${player}-checker`}
-      style={{
-        width: 22,
-        height: 22,
-        borderRadius: "50%",
-        background: c.fill,
-        border: `2px solid ${c.stroke}`,
-        margin: "1px 0",
-        flexShrink: 0,
-      }}
-    />
-  );
+const TOP_APEX_Y = TH;               // 198
+const BOT_APEX_Y = BH - TH;         // 302
+
+const CR = 17;                       // checker radius
+const C_STEP = 37;                   // checker stack step
+const MAX_VIS = 5;
+
+const TOP_CY0 = CR + 6;             // 23
+const BOT_CY0 = BH - CR - 6;       // 477
+
+const OCR = 7;                       // off-tray checker radius
+const O_STEP = 14;
+
+// ── Palette ─────────────────────────────────────────────────────────────────
+const FELT       = "#1C4828";
+const FELT_HOME  = "#1A3D22";
+const FRAME_COL  = "#2E1506";
+const BAR_FILL   = "#24100A";
+const TRI_A      = "#7B2222";
+const TRI_B      = "#C8952A";
+const SEL_OVL    = "rgba(255,255,200,0.20)";
+const DEST_SAFE  = "rgba(55,210,85,0.38)";
+const DEST_BLOT  = "rgba(220,165,30,0.46)";
+const OFF_BG     = "#1A0C06";
+const P1_FILL    = "#F0E0B0";
+const P1_STR     = "#A06820";
+const P2_FILL    = "#160903";
+const P2_STR     = "#7A4020";
+
+// ── Static point layout ─────────────────────────────────────────────────────
+const POINT_DEFS = [
+  // Top-left: points 13-18
+  ...Array.from({ length: 6 }, (_, p) => ({ num: 13 + p, idx: 12 + p, lx: p * PW,            isTop: true,  ci: p })),
+  // Top-right: points 19-24
+  ...Array.from({ length: 6 }, (_, p) => ({ num: 19 + p, idx: 18 + p, lx: BAR_END + p * PW,  isTop: true,  ci: p })),
+  // Bottom-left: points 12-7
+  ...Array.from({ length: 6 }, (_, p) => ({ num: 12 - p, idx: 11 - p, lx: p * PW,            isTop: false, ci: p })),
+  // Bottom-right: points 6-1
+  ...Array.from({ length: 6 }, (_, p) => ({ num: 6  - p, idx: 5  - p, lx: BAR_END + p * PW,  isTop: false, ci: p })),
+];
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+function triPts(lx, isTop) {
+  return isTop
+    ? `${lx},0 ${lx + PW},0 ${lx + PW / 2},${TOP_APEX_Y}`
+    : `${lx},${BH} ${lx + PW},${BH} ${lx + PW / 2},${BOT_APEX_Y}`;
 }
 
-function Triangle({ down, color }) {
-  return (
-    <div
-      style={{
-        width: 0,
-        height: 0,
-        borderLeft: "17px solid transparent",
-        borderRight: "17px solid transparent",
-        flexShrink: 0,
-        ...(down
-          ? { borderTop: `55px solid ${color}` }
-          : { borderBottom: `55px solid ${color}` }),
-      }}
-    />
-  );
+function checkerCY(isTop, i) {
+  return isTop ? TOP_CY0 + i * C_STEP : BOT_CY0 - i * C_STEP;
 }
 
-function Point({ num, value, isTop, colorIndex, isSelected, isLegalDestination, onClick }) {
-  const player = value > 0 ? "p1" : value < 0 ? "p2" : null;
-  const n = Math.abs(value);
-  const shown = Math.min(n, 5);
-  const overflow = n > 5 ? n - 5 : 0;
-  const color = colorIndex % 2 === 0 ? TRI_A : TRI_B;
+function isBlotHit(points, player, toPoint) {
+  if (toPoint >= 25 || toPoint <= 0) return false;
+  const v = points[toPoint - 1];
+  return player === "p1" ? v === -1 : v === 1;
+}
 
-  const checkerStack = (
-    <div
-      style={{
-        minHeight: 120,
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        justifyContent: isTop ? "flex-end" : "flex-start",
-      }}
-    >
-      {player &&
-        Array.from({ length: shown }).map((_, i) => (
-          <Checker key={i} player={player} />
-        ))}
-      {overflow > 0 && (
-        <div style={{ fontSize: "0.55rem", color: "#eee", fontWeight: "bold" }}>
-          +{overflow}
-        </div>
+// ── Checker circle (used on points) ─────────────────────────────────────────
+function Pip({ player, cx, cy, r, isTopmost, isSelected }) {
+  const fill   = player === "p1" ? P1_FILL : P2_FILL;
+  const stroke = player === "p1" ? P1_STR  : P2_STR;
+  return (
+    <>
+      <circle
+        data-testid={`${player}-checker`}
+        cx={cx} cy={cy} r={r}
+        fill={fill} stroke={stroke} strokeWidth={2.5}
+      />
+      <circle cx={cx} cy={cy} r={r - 5} fill="none" stroke={stroke} strokeWidth={1} opacity={0.45} />
+      {/* Highlight arc on light checker */}
+      {player === "p1" && (
+        <circle cx={cx} cy={cy - r * 0.28} r={r * 0.45} fill="rgba(255,255,255,0.18)" style={{ pointerEvents: "none" }} />
       )}
-    </div>
-  );
-
-  return (
-    <div
-      data-testid={`point-${num}`}
-      data-legal-destination={isLegalDestination ? "true" : undefined}
-      onClick={onClick}
-      style={{
-        width: 34,
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        padding: "2px 0",
-        background: isSelected
-          ? SELECTED_BG
-          : isLegalDestination
-          ? LEGAL_DEST_BG
-          : "transparent",
-        cursor: onClick ? "pointer" : "default",
-      }}
-    >
-      {isTop ? (
-        <>
-          <div style={{ fontSize: "0.5rem", color: "#bbb", height: 14, lineHeight: "14px" }}>
-            {num}
-          </div>
-          {checkerStack}
-          <Triangle down color={color} />
-        </>
-      ) : (
-        <>
-          <Triangle down={false} color={color} />
-          {checkerStack}
-          <div style={{ fontSize: "0.5rem", color: "#bbb", height: 14, lineHeight: "14px" }}>
-            {num}
-          </div>
-        </>
+      {isTopmost && isSelected && (
+        <circle cx={cx} cy={cy} r={r + 4} fill="none" stroke="#FFE44A" strokeWidth={2.5} />
       )}
-    </div>
+    </>
   );
 }
 
+// ── Board ────────────────────────────────────────────────────────────────────
 export default function Board({ boardState, currentPlayer, legalMoves = [], onMove }) {
   const [selected, setSelected] = useState(null);
 
@@ -125,183 +110,260 @@ export default function Board({ boardState, currentPlayer, legalMoves = [], onMo
   const { points, bar, off } = boardState;
   const interactive = Boolean(onMove && currentPlayer);
 
-  // Points (or 0 for the bar) that have at least one legal move.
   const legalFromPoints = new Set(legalMoves.map((m) => m[0]));
-  // Legal destinations (1-24, or 25 for bear-off) for the selected checker.
   const destinations =
     selected !== null
       ? new Set(legalMoves.filter((m) => m[0] === selected).map((m) => m[1]))
       : new Set();
 
-  const handlePointClick = (pointNum) => {
+  function handlePointClick(num) {
+    if (!interactive) return;
     if (selected === null) {
-      if (legalFromPoints.has(pointNum)) setSelected(pointNum);
-    } else if (selected === pointNum) {
+      if (legalFromPoints.has(num)) setSelected(num);
+    } else if (selected === num) {
       setSelected(null);
-    } else if (destinations.has(pointNum)) {
-      onMove(selected, pointNum);
+    } else if (destinations.has(num)) {
+      onMove(selected, num);
       setSelected(null);
-    } else if (legalFromPoints.has(pointNum)) {
-      setSelected(pointNum);
+    } else if (legalFromPoints.has(num)) {
+      setSelected(num);
     } else {
       setSelected(null);
     }
-  };
+  }
 
-  const handleBarClick = () => {
-    if (selected === 0) {
-      setSelected(null);
-    } else if (selected === null && legalFromPoints.has(0)) {
-      setSelected(0);
-    }
-  };
+  function handleBarClick() {
+    if (!interactive) return;
+    if (selected === 0) setSelected(null);
+    else if (selected === null && legalFromPoints.has(0)) setSelected(0);
+  }
 
-  const handleOffClick = (player) => {
+  function handleOffClick(player) {
+    if (!interactive) return;
     if (selected !== null && player === currentPlayer && destinations.has(25)) {
       onMove(selected, 25);
       setSelected(null);
     }
-  };
+  }
 
-  // top row left-to-right: points 13–18 | 19–24  (indices 12–17 | 18–23)
-  const topLeft  = [12, 13, 14, 15, 16, 17];
-  const topRight = [18, 19, 20, 21, 22, 23];
-  // bottom row left-to-right: points 12–7 | 6–1  (indices 11–6 | 5–0)
-  const botLeft  = [11, 10,  9,  8,  7,  6];
-  const botRight = [ 5,  4,  3,  2,  1,  0];
+  // ── Render a point ─────────────────────────────────────────────────────────
+  function renderPoint({ num, idx, lx, isTop, ci }) {
+    const val    = points[idx];
+    const player = val > 0 ? "p1" : val < 0 ? "p2" : null;
+    const count  = Math.abs(val);
+    const isSelected   = selected === num;
+    const isLegalDest  = destinations.has(num);
+    const triColor = ci % 2 === 0 ? TRI_A : TRI_B;
+    const cx = lx + PW / 2;
+    const shown    = Math.min(count, MAX_VIS);
+    const overflow = count > MAX_VIS ? count : 0;
 
-  const renderPoints = (indices, isTop) =>
-    indices.map((idx, pos) => (
-      <Point
-        key={idx}
-        num={idx + 1}
-        value={points[idx]}
-        isTop={isTop}
-        colorIndex={pos}
-        isSelected={selected === idx + 1}
-        isLegalDestination={destinations.has(idx + 1)}
-        onClick={interactive ? () => handlePointClick(idx + 1) : undefined}
+    let overlayFill = null;
+    if (isSelected)     overlayFill = SEL_OVL;
+    else if (isLegalDest) overlayFill = isBlotHit(points, currentPlayer, num) ? DEST_BLOT : DEST_SAFE;
+
+    return (
+      <g
+        key={num}
+        data-testid={`point-${num}`}
+        data-legal-destination={isLegalDest ? "true" : undefined}
+        onClick={() => handlePointClick(num)}
+        style={{ cursor: interactive ? "pointer" : "default" }}
+      >
+        <polygon points={triPts(lx, isTop)} fill={triColor} />
+        {/* Subtle triangle edge */}
+        <polygon points={triPts(lx, isTop)} fill="none" stroke="rgba(0,0,0,0.25)" strokeWidth={0.5} />
+        {overlayFill && (
+          <polygon points={triPts(lx, isTop)} fill={overlayFill} />
+        )}
+        {/* Checkers */}
+        {player && Array.from({ length: shown }).map((_, i) => (
+          <Pip
+            key={i}
+            player={player}
+            cx={cx}
+            cy={checkerCY(isTop, i)}
+            r={CR}
+            isTopmost={i === shown - 1}
+            isSelected={isSelected}
+          />
+        ))}
+        {/* Overflow badge */}
+        {overflow > 0 && (
+          <text
+            x={cx}
+            y={checkerCY(isTop, shown - 1)}
+            textAnchor="middle"
+            dominantBaseline="central"
+            fill="#fff"
+            fontSize={10}
+            fontWeight="bold"
+            style={{ pointerEvents: "none" }}
+          >
+            {count}
+          </text>
+        )}
+        {/* Point number */}
+        <text
+          x={cx}
+          y={isTop ? BH - 5 : 5}
+          textAnchor="middle"
+          dominantBaseline={isTop ? "auto" : "hanging"}
+          fill="#5A8060"
+          fontSize={8}
+          style={{ pointerEvents: "none" }}
+        >
+          {num}
+        </text>
+      </g>
+    );
+  }
+
+  // ── Bar state ───────────────────────────────────────────────────────────────
+  const barIsLegalSrc = legalFromPoints.has(0) && selected === null;
+  const barSelected   = selected === 0;
+  const barCX = BAR_START + BAR_W / 2;
+
+  // ── Off area ────────────────────────────────────────────────────────────────
+  const offX     = BOARD_W + OFF_GAP;
+  const offCX    = offX + OFF_W / 2;
+  const p2StartY = 22;
+  const p1StartY = BH / 2 + 22;
+  const p1OffLegal = currentPlayer === "p1" && destinations.has(25);
+  const p2OffLegal = currentPlayer === "p2" && destinations.has(25);
+
+  function offCheckers(player, count, startY) {
+    const fill   = player === "p1" ? P1_FILL : P2_FILL;
+    const stroke = player === "p1" ? P1_STR  : P2_STR;
+    return Array.from({ length: Math.min(count, 15) }).map((_, i) => (
+      <circle
+        key={i}
+        data-testid={`${player}-checker`}
+        cx={offCX}
+        cy={startY + i * O_STEP}
+        r={OCR}
+        fill={fill}
+        stroke={stroke}
+        strokeWidth={1.5}
       />
     ));
+  }
 
   return (
-    <div
-      style={{
-        background: "#2d5a27",
-        border: "6px solid #5c3a1e",
-        borderRadius: 4,
-        display: "inline-block",
-        userSelect: "none",
-        fontFamily: "sans-serif",
-      }}
-    >
-      {/* Main board: left half | bar | right half */}
-      <div style={{ display: "flex", alignItems: "stretch" }}>
-        <div style={{ display: "flex", flexDirection: "column" }}>
-          <div style={{ display: "flex" }}>{renderPoints(topLeft, true)}</div>
-          <div style={{ display: "flex" }}>{renderPoints(botLeft, false)}</div>
-        </div>
+    <div style={{
+      display: "inline-block",
+      borderRadius: 10,
+      overflow: "hidden",
+      boxShadow: "0 10px 48px rgba(0,0,0,0.75), 0 2px 10px rgba(0,0,0,0.5)",
+      border: `10px solid ${FRAME_COL}`,
+      background: FRAME_COL,
+      maxWidth: "100%",
+    }}>
+      <svg
+        viewBox={`0 0 ${SVG_W} ${SVG_H}`}
+        style={{ display: "block", width: "100%", maxWidth: SVG_W, height: "auto" }}
+      >
+        {/* ── Felt ──────────────────────────────────────────────────────── */}
+        <rect x={0} y={0} width={BAR_START} height={BH} fill={FELT} />
+        <rect x={BAR_END} y={0} width={HALF_W} height={BH} fill={FELT_HOME} />
 
-        <div
+        {/* ── Off tray ──────────────────────────────────────────────────── */}
+        <rect x={offX - 2} y={0} width={OFF_W + 4} height={BH} fill={OFF_BG} rx={4} />
+        <line x1={offX - 2} y1={BH / 2} x2={offX + OFF_W + 2} y2={BH / 2} stroke="#3A2010" strokeWidth={1} />
+
+        {/* ── 24 points ─────────────────────────────────────────────────── */}
+        {POINT_DEFS.map(renderPoint)}
+
+        {/* ── Centre dividers ───────────────────────────────────────────── */}
+        <line x1={0}       y1={BH / 2} x2={BAR_START} y2={BH / 2} stroke="rgba(0,0,0,0.18)" strokeWidth={1.5} />
+        <line x1={BAR_END} y1={BH / 2} x2={BOARD_W}   y2={BH / 2} stroke="rgba(0,0,0,0.18)" strokeWidth={1.5} />
+
+        {/* ── Bar ───────────────────────────────────────────────────────── */}
+        <g
           data-testid="bar"
-          data-legal-destination={legalFromPoints.has(0) && selected === null ? "true" : undefined}
-          onClick={interactive ? handleBarClick : undefined}
-          style={{
-            width: 34,
-            display: "flex",
-            flexDirection: "column",
-            alignItems: "center",
-            justifyContent: "center",
-            background:
-              selected === 0
-                ? SELECTED_BG
-                : legalFromPoints.has(0)
-                ? LEGAL_DEST_BG
-                : "#1a3f14",
-            flexShrink: 0,
-            gap: 2,
-            padding: "4px 0",
-            cursor: interactive ? "pointer" : "default",
-          }}
+          data-legal-destination={(barIsLegalSrc || barSelected) ? "true" : undefined}
+          onClick={handleBarClick}
+          style={{ cursor: interactive ? "pointer" : "default" }}
         >
-          {bar.p2 > 0 &&
-            Array.from({ length: bar.p2 }).map((_, i) => (
-              <Checker key={`p2-${i}`} player="p2" />
-            ))}
+          <rect x={BAR_START} y={0} width={BAR_W} height={BH} fill={BAR_FILL} />
+          {/* Centre spine */}
+          <line x1={barCX} y1={16} x2={barCX} y2={BH - 16} stroke="#4A2A14" strokeWidth={1} />
+          {barIsLegalSrc && (
+            <rect x={BAR_START} y={0} width={BAR_W} height={BH} fill={DEST_SAFE} />
+          )}
+          {barSelected && (
+            <rect x={BAR_START} y={0} width={BAR_W} height={BH} fill={SEL_OVL} />
+          )}
+          {/* P2 checkers — top half */}
+          {Array.from({ length: Math.min(bar.p2, 6) }).map((_, i) => {
+            const cy = BH / 2 - 28 - i * C_STEP;
+            return (
+              <g key={`p2b${i}`}>
+                <circle data-testid="p2-checker" cx={barCX} cy={cy} r={CR - 1} fill={P2_FILL} stroke={P2_STR} strokeWidth={2} />
+                <circle cx={barCX} cy={cy} r={CR - 6} fill="none" stroke={P2_STR} strokeWidth={1} opacity={0.4} />
+              </g>
+            );
+          })}
+          {/* P1 checkers — bottom half */}
+          {Array.from({ length: Math.min(bar.p1, 6) }).map((_, i) => {
+            const cy = BH / 2 + 28 + i * C_STEP;
+            return (
+              <g key={`p1b${i}`}>
+                <circle data-testid="p1-checker" cx={barCX} cy={cy} r={CR - 1} fill={P1_FILL} stroke={P1_STR} strokeWidth={2} />
+                <circle cx={barCX} cy={cy} r={CR - 6} fill="none" stroke={P1_STR} strokeWidth={1} opacity={0.4} />
+              </g>
+            );
+          })}
           {bar.p1 === 0 && bar.p2 === 0 && (
-            <div
-              style={{
-                fontSize: "0.45rem",
-                color: "#555",
-                writingMode: "vertical-rl",
-                letterSpacing: 3,
-              }}
+            <text
+              x={barCX} y={BH / 2}
+              textAnchor="middle" dominantBaseline="central"
+              fill="#4A2A14" fontSize={7} fontWeight="bold" letterSpacing={2}
+              style={{ pointerEvents: "none" }}
             >
               BAR
-            </div>
+            </text>
           )}
-          {bar.p1 > 0 &&
-            Array.from({ length: bar.p1 }).map((_, i) => (
-              <Checker key={`p1-${i}`} player="p1" />
-            ))}
-        </div>
+        </g>
 
-        <div style={{ display: "flex", flexDirection: "column" }}>
-          <div style={{ display: "flex" }}>{renderPoints(topRight, true)}</div>
-          <div style={{ display: "flex" }}>{renderPoints(botRight, false)}</div>
-        </div>
-      </div>
-
-      {/* Off strip */}
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-around",
-          alignItems: "center",
-          background: "#1d3d18",
-          padding: "5px 8px",
-          gap: 16,
-          fontSize: "0.65rem",
-          color: "#ccc",
-        }}
-      >
-        <div
-          data-testid="off-p1"
-          data-legal-destination={
-            currentPlayer === "p1" && destinations.has(25) ? "true" : undefined
-          }
-          onClick={interactive ? () => handleOffClick("p1") : undefined}
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 4,
-            background:
-              currentPlayer === "p1" && destinations.has(25) ? LEGAL_DEST_BG : "transparent",
-            cursor: interactive ? "pointer" : "default",
-          }}
-        >
-          <span style={{ color: P1.fill }}>●</span>
-          <span>P1 off: {off.p1}</span>
-        </div>
-        <div
+        {/* ── Off — P2 (top) ────────────────────────────────────────────── */}
+        <g
           data-testid="off-p2"
-          data-legal-destination={
-            currentPlayer === "p2" && destinations.has(25) ? "true" : undefined
-          }
-          onClick={interactive ? () => handleOffClick("p2") : undefined}
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 4,
-            background:
-              currentPlayer === "p2" && destinations.has(25) ? LEGAL_DEST_BG : "transparent",
-            cursor: interactive ? "pointer" : "default",
-          }}
+          data-legal-destination={p2OffLegal ? "true" : undefined}
+          onClick={() => handleOffClick("p2")}
+          style={{ cursor: interactive ? "pointer" : "default" }}
         >
-          <span style={{ color: P2.fill }}>●</span>
-          <span>P2 off: {off.p2}</span>
-        </div>
-      </div>
+          <rect x={offX} y={0} width={OFF_W} height={BH / 2 - 2} fill={p2OffLegal ? "rgba(55,210,85,0.18)" : "transparent"} rx={3} />
+          <text x={offCX} y={8} textAnchor="middle" dominantBaseline="hanging" fill="#4A6050" fontSize={7} fontWeight="bold" style={{ pointerEvents: "none" }}>
+            OFF
+          </text>
+          {offCheckers("p2", off.p2, p2StartY)}
+          {off.p2 > 0 && (
+            <text x={offCX} y={BH / 2 - 10} textAnchor="middle" fill="#8A9A88" fontSize={9} style={{ pointerEvents: "none" }}>
+              {off.p2}
+            </text>
+          )}
+        </g>
+
+        {/* ── Off — P1 (bottom) ─────────────────────────────────────────── */}
+        <g
+          data-testid="off-p1"
+          data-legal-destination={p1OffLegal ? "true" : undefined}
+          onClick={() => handleOffClick("p1")}
+          style={{ cursor: interactive ? "pointer" : "default" }}
+        >
+          <rect x={offX} y={BH / 2 + 2} width={OFF_W} height={BH / 2 - 2} fill={p1OffLegal ? "rgba(55,210,85,0.18)" : "transparent"} rx={3} />
+          <text x={offCX} y={BH / 2 + 8} textAnchor="middle" dominantBaseline="hanging" fill="#4A6050" fontSize={7} fontWeight="bold" style={{ pointerEvents: "none" }}>
+            OFF
+          </text>
+          {offCheckers("p1", off.p1, p1StartY)}
+          {off.p1 > 0 && (
+            <text x={offCX} y={BH - 10} textAnchor="middle" fill="#8A9A88" fontSize={9} style={{ pointerEvents: "none" }}>
+              {off.p1}
+            </text>
+          )}
+        </g>
+      </svg>
     </div>
   );
 }

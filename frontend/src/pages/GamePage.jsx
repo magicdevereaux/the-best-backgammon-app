@@ -10,24 +10,24 @@ import { useAuth } from "../context/AuthContext";
 import { joinGame, createGame } from "../api/gameApi";
 import { fetchMatch, nextGame } from "../api/matchApi";
 
+const T = {
+  page:    { minHeight: "100vh", background: "#0F1A12", color: "#D0E8D4", fontFamily: "system-ui, sans-serif", padding: "1.25rem" },
+  heading: { margin: "0 0 0.25rem", fontWeight: 700, fontSize: "1.1rem", color: "#C8D8C0" },
+  sub:     { margin: "0 0 0.75rem", fontSize: "0.85rem", color: "#6A8870" },
+  err:     { color: "#E07060", fontSize: "0.85rem", marginTop: "0.5rem" },
+  input:   { background: "#1A2A1E", border: "1px solid #2A4030", color: "#D0E8D4", borderRadius: 5, padding: "0.45rem 0.7rem", fontSize: "0.85rem" },
+  joinBtn: { padding: "0.5rem 1rem", background: "#C8952A", color: "#1A0A02", border: "none", borderRadius: 5, fontWeight: 600, cursor: "pointer" },
+};
+
 export default function GamePage() {
   const { id } = useParams();
   const navigate = useNavigate();
   const { user } = useAuth();
   const {
-    game,
-    loading,
-    error,
-    actionError,
-    rollDice,
-    stagedBoard,
-    stagedDice,
-    pendingMoves,
-    legalMoves,
-    stageMove,
-    resetTurn,
-    confirmTurn,
-    reload,
+    game, loading, error, actionError,
+    rollDice, stagedBoard, stagedDice,
+    pendingMoves, legalMoves,
+    stageMove, resetTurn, confirmTurn, reload,
   } = useGame(id);
 
   const [guestJoinName, setGuestJoinName] = useState("");
@@ -39,104 +39,84 @@ export default function GamePage() {
     fetchMatch(game.match).then(setMatch).catch(() => {});
   }, [game?.match, game?.status]);
 
-  if (loading) return <p>Loading game…</p>;
-  if (error) return <p>Error: {error}</p>;
-  if (!game) return <p>Game not found.</p>;
+  if (loading) return <div style={T.page}><p style={{ color: "#6A8870" }}>Loading game…</p></div>;
+  if (error)   return <div style={T.page}><p style={T.err}>Error: {error}</p></div>;
+  if (!game)   return <div style={T.page}><p style={T.err}>Game not found.</p></div>;
 
   async function handleJoin() {
     setJoinError(null);
     const name = user ? undefined : guestJoinName;
-    if (!user && !name) {
-      setJoinError("Enter your name to join.");
-      return;
-    }
-    try {
-      await joinGame(id, name);
-      reload();
-    } catch (err) {
-      setJoinError(err.message);
-    }
+    if (!user && !name) { setJoinError("Enter your name to join."); return; }
+    try { await joinGame(id, name); reload(); }
+    catch (err) { setJoinError(err.message); }
   }
 
   async function handleNextGame() {
-    try {
-      const newGame = await nextGame(game.match);
-      navigate(`/game/${newGame.id}`);
-    } catch (err) {
-      console.error(err);
-    }
-  }
-
-  async function handleNewMatch() {
-    navigate("/");
+    try { const g = await nextGame(game.match); navigate(`/game/${g.id}`); }
+    catch (err) { console.error(err); }
   }
 
   async function handleRematch() {
     try {
-      const newGame = await createGame({
-        player1_name: game.player1_name,
-        player2_name: game.player2_name,
-      });
-      navigate(`/game/${newGame.id}`);
-    } catch (err) {
-      console.error(err);
-    }
+      const g = await createGame({ player1_name: game.player1_name, player2_name: game.player2_name });
+      navigate(`/game/${g.id}`);
+    } catch (err) { console.error(err); }
   }
 
   if (game.status === "waiting") {
     return (
-      <div style={{ padding: "1rem" }}>
-        <h2>Game #{game.id}</h2>
-        <p>{game.player1_name} is waiting for an opponent.</p>
-        <p>
-          Share this link to invite someone:{" "}
-          <strong>{window.location.href}</strong>
+      <div style={T.page}>
+        <h2 style={T.heading}>Game #{game.id}</h2>
+        <p style={T.sub}>{game.player1_name} is waiting for an opponent.</p>
+        <p style={{ ...T.sub, marginBottom: "1rem" }}>
+          Share this link:{" "}
+          <span style={{ color: "#C8952A", fontFamily: "monospace" }}>{window.location.href}</span>
         </p>
         {!user && (
           <input
+            style={{ ...T.input, marginRight: "0.5rem" }}
             placeholder="Your name"
             value={guestJoinName}
             onChange={(e) => setGuestJoinName(e.target.value)}
-            style={{ marginRight: "0.5rem" }}
           />
         )}
-        <button onClick={handleJoin}>
+        <button style={T.joinBtn} onClick={handleJoin}>
           {user ? `Join as ${user.username}` : "Join game"}
         </button>
-        {joinError && <p style={{ color: "#c0392b" }}>{joinError}</p>}
+        {joinError && <p style={T.err}>{joinError}</p>}
       </div>
     );
   }
 
+  const turnName = game.current_turn === "p1" ? game.player1_name : game.player2_name;
+
   return (
-    <div style={{ padding: "1rem" }}>
+    <div style={T.page}>
       {game.status === "finished" && (
         <GameOverScreen
           game={game}
           match={match}
           onNextGame={handleNextGame}
-          onNewMatch={game.match ? handleNewMatch : handleRematch}
-          onLobby={handleNewMatch}
+          onNewMatch={() => navigate("/")}
+          onLobby={() => navigate("/")}
         />
       )}
 
-      <h2>Game #{game.id}</h2>
-
       {match && <MatchScore match={match} />}
 
-      <p>
-        {game.player1_name} vs {game.player2_name}
-        {game.status === "active" && (
-          <> — Turn: {game.current_turn === "p1" ? game.player1_name : game.player2_name}</>
-        )}
-      </p>
+      <h2 style={T.heading}>{game.player1_name} vs {game.player2_name}</h2>
+      {game.status === "active" && (
+        <p style={T.sub}>{turnName}'s turn</p>
+      )}
 
-      <Board
-        boardState={stagedBoard}
-        currentPlayer={game.current_turn}
-        legalMoves={legalMoves}
-        onMove={stageMove}
-      />
+      <div style={{ overflowX: "auto" }}>
+        <Board
+          boardState={stagedBoard}
+          currentPlayer={game.current_turn}
+          legalMoves={legalMoves}
+          onMove={stageMove}
+        />
+      </div>
 
       <Dice diceValues={stagedDice} />
 
@@ -148,7 +128,7 @@ export default function GamePage() {
         hasPendingMoves={pendingMoves.length > 0}
       />
 
-      {actionError && <p style={{ color: "#c0392b" }}>{actionError}</p>}
+      {actionError && <p style={T.err}>{actionError}</p>}
     </div>
   );
 }
