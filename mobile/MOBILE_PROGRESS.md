@@ -77,6 +77,49 @@ the other player. Bar entry and bear-off are wired through the same tap flow.
 
 ---
 
+## Session 2 — DONE ✅
+
+Turn-loop polish & correctness. The staging system, Confirm/Reset, and
+bar/bear-off handling already shipped in Session 1, so Session 2 verified those
+and delivered the genuine increment around dice and the turn loop. **Nothing
+from Session 1 was rebuilt.**
+
+### Dice: exact used vs remaining (bug fix)
+- The previous screen passed the *remaining* dice array but a `usedCount` that
+  greyed the first N of them — so a `[3,5]` roll with the 3 played rendered just
+  `[5]` and greyed the 5 (backwards). Now `Dice` takes `rolled` + `remaining`
+  and greys the correct faces via a **multiset difference** (handles mixed dice
+  played out of order, and doubles greying one face per move).
+
+### Tap-to-roll
+- `Dice` has a new `canRoll` state: a tappable **"Tap to roll"** prompt (two `?`
+  dice) shown when it's the player's turn and no dice are rolled yet. Rolling
+  moved off the button and onto the dice, per the Session 2 goal.
+
+### Per-move undo
+- `useGame` gained `undoMove()` — reverts only the **last** staged move by
+  replaying the rest from the authoritative board (shared `replay()` helper, same
+  die-consumption rule as `stageMove`). Sits alongside `resetTurn()` (full
+  revert). New **Undo** button in `GameControls`.
+
+### Pass-turn affordance
+- When a roll yields **no legal moves** and nothing is staged, the screen shows
+  a "No legal moves for this roll — tap Pass Turn" hint and the primary button
+  relabels from **Confirm Turn → Pass Turn**. Confirming zero moves is how the
+  backend records an explicit pass (its silent-pass bug was fixed earlier).
+
+### Touched files
+- `src/components/Dice.jsx` — `rolled`/`remaining`/`canRoll`/`onRoll` API,
+  multiset used-detection, tap-to-roll prompt, `?` die face.
+- `src/components/GameControls.jsx` — Undo / Reset / Confirm-or-Pass; rolling
+  removed (now on the dice). Takes `turnActive`/`hasPendingMoves`/`hasLegalMoves`.
+- `src/game/useGame.js` — `replay()` helper + `undoMove()`.
+- `app/game/[id].jsx` — derived `turnActive`/`canRoll`/`hasLegalMoves`/`mustPass`,
+  new Dice/GameControls wiring, pass hint.
+- Verified: `expo export --platform ios` bundles clean (no errors).
+
+---
+
 ## How to run
 
 ```bash
@@ -100,20 +143,22 @@ feature itself. Left untouched this session per scope.)
 
 ## Not done yet / Next sessions
 
-### Session 2 (suggested) — turn loop polish & game lifecycle
-- [ ] Game-over screen (win type / gammon / backgammon, points) — port
-      `GameOverScreen.jsx`.
-- [ ] "Pass turn" affordance when a roll has no legal moves (confirm with empty
-      moves) — backend already supports it; surface it clearly in the UI.
-- [ ] Per-die "used" tracking is currently inferred from remaining count; make it
-      exact and show which specific die was consumed.
-- [ ] Polling / refresh so the opponent's confirmed turn shows up (no realtime
-      yet; add pull-to-refresh or interval re-fetch on the game screen).
+### Session 2 — completed items
+- [x] Exact per-die used/remaining display (was inferred + buggy).
+- [x] Tap-to-roll dice interaction.
+- [x] Pass-turn affordance when a roll has no legal moves.
+- [x] Per-move undo (in addition to full Reset).
 
-### Session 3 (suggested) — lobby, matches, online play
+### Session 3 (suggested) — game lifecycle & online play
+Carried over from Session 2's lifecycle goals plus online play:
+- [ ] **Game-over screen** — win type (normal / gammon / backgammon) + points;
+      port `frontend/src/components/GameOverScreen.jsx`. The backend already
+      returns `winner` / `win_type` / points on the finished game.
+- [ ] **Refresh for opponent moves** — no realtime yet; add pull-to-refresh and/or
+      an interval re-fetch on the game screen so a confirmed opponent turn shows
+      up (the `reload()` already exists on `useGame`, just needs wiring/polling).
 - [ ] Online game creation + shareable join (deep links via the `backgammon://`
-      scheme).
-- [ ] Join-by-id / waiting-room UI.
+      scheme) and a join-by-id / waiting-room UI.
 - [ ] Match mode (first to N points) + match score display — port `matchApi` and
       `MatchScore` / match flow.
 

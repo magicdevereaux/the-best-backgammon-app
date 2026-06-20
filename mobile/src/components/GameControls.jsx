@@ -20,15 +20,36 @@ function Btn({ label, onPress, disabled, variant = "secondary" }) {
   );
 }
 
-export default function GameControls({ game, onRollDice, onResetTurn, onConfirmTurn, hasPendingMoves = false }) {
-  const canRoll = game.status === "active" && (!game.dice_values || game.dice_values.length === 0);
-  const turnActive = game.status === "active" && game.dice_values && game.dice_values.length > 0;
+/**
+ * Staging controls for the current turn. Rolling now happens by tapping the
+ * dice (see Dice's "Tap to roll" state), so this row focuses on the staged
+ * moves: undo the last one, reset the whole turn, or commit.
+ *
+ * When the roll produced no legal moves at all, the primary button becomes
+ * "Pass Turn" — committing zero moves, which the backend treats as an explicit
+ * turn pass.
+ */
+export default function GameControls({
+  turnActive,
+  hasPendingMoves = false,
+  hasLegalMoves = true,
+  onUndo,
+  onResetTurn,
+  onConfirmTurn,
+}) {
+  const mustPass = turnActive && !hasPendingMoves && !hasLegalMoves;
+  const confirmLabel = mustPass ? "Pass Turn" : "Confirm Turn";
 
   return (
     <View style={styles.row}>
-      <Btn label="Roll Dice" onPress={onRollDice} disabled={!canRoll} variant="primary" />
-      <Btn label="Reset Turn" onPress={onResetTurn} disabled={!turnActive || !hasPendingMoves} />
-      <Btn label="Confirm Turn" onPress={onConfirmTurn} disabled={!turnActive} />
+      <Btn label="Undo" onPress={onUndo} disabled={!hasPendingMoves} />
+      <Btn label="Reset Turn" onPress={onResetTurn} disabled={!hasPendingMoves} />
+      <Btn
+        label={confirmLabel}
+        onPress={onConfirmTurn}
+        disabled={!turnActive}
+        variant="primary"
+      />
     </View>
   );
 }

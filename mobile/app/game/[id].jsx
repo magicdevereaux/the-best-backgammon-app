@@ -14,7 +14,7 @@ export default function GameScreen() {
     game, loading, error, actionError,
     rollDice, stagedBoard, stagedDice,
     pendingMoves, legalMoves, stageMove,
-    resetTurn, confirmTurn,
+    resetTurn, undoMove, confirmTurn,
   } = useGame(id);
 
   if (loading) {
@@ -40,8 +40,15 @@ export default function GameScreen() {
   }
 
   const turnName = game.current_turn === "p1" ? game.player1_name : game.player2_name;
-  // Dice consumed so far this turn (rolled count minus what remains staged).
-  const usedCount = Math.max(0, (game.dice_values?.length || 0) - stagedDice.length);
+
+  const rolledDice = game.dice_values || [];
+  const turnActive = game.status === "active" && rolledDice.length > 0;
+  const canRoll = game.status === "active" && rolledDice.length === 0;
+  const hasPendingMoves = pendingMoves.length > 0;
+  const hasLegalMoves = legalMoves.length > 0;
+  // After rolling, if there are no legal moves and nothing staged, the only
+  // option is to pass the turn.
+  const mustPass = turnActive && !hasPendingMoves && !hasLegalMoves;
 
   return (
     <SafeAreaView style={styles.safe} edges={["bottom"]}>
@@ -67,15 +74,27 @@ export default function GameScreen() {
           interactive={game.status === "active"}
         />
 
-        <Dice diceValues={stagedDice.length ? stagedDice : game.dice_values} usedCount={usedCount} />
+        <Dice
+          rolled={rolledDice}
+          remaining={stagedDice}
+          canRoll={canRoll}
+          onRoll={rollDice}
+        />
+
+        {mustPass && (
+          <Text style={styles.passHint}>
+            No legal moves for this roll — tap “Pass Turn”.
+          </Text>
+        )}
 
         {game.status === "active" && (
           <GameControls
-            game={game}
-            onRollDice={rollDice}
+            turnActive={turnActive}
+            hasPendingMoves={hasPendingMoves}
+            hasLegalMoves={hasLegalMoves}
+            onUndo={undoMove}
             onResetTurn={resetTurn}
             onConfirmTurn={confirmTurn}
-            hasPendingMoves={pendingMoves.length > 0}
           />
         )}
 
@@ -92,6 +111,7 @@ const styles = StyleSheet.create({
   title: { color: colors.text, fontSize: 18, fontWeight: "700" },
   turn: { color: colors.textMuted, fontSize: 14, marginTop: 2, marginBottom: 12 },
   finished: { color: colors.gold, fontSize: 15, fontWeight: "700", marginTop: 2, marginBottom: 12 },
+  passHint: { color: colors.textMuted, fontSize: 13, fontStyle: "italic", marginTop: 2 },
   error: { color: colors.danger, marginTop: 10 },
   muted: { color: colors.textMuted },
 });

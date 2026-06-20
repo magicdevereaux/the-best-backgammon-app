@@ -6,6 +6,27 @@ import {
 } from "../api/games";
 import { getLegalMoves, applyMove } from "./logic";
 
+// Replay a sequence of moves from a base board, returning the resulting board
+// and the dice still remaining. Each move consumes the die its matching legal
+// move used (same rule as stageMove), so the result is identical to having
+// staged those moves one by one.
+function replay(baseBoard, player, rolledDice, moves) {
+  let board = {
+    points: [...baseBoard.points],
+    bar: { ...baseBoard.bar },
+    off: { ...baseBoard.off },
+  };
+  const dice = [...rolledDice];
+  for (const mv of moves) {
+    const match = getLegalMoves(board, player, dice).find(
+      (m) => m[0] === mv.from_point && m[1] === mv.to_point
+    );
+    if (match) dice.splice(dice.indexOf(match[2]), 1);
+    board = applyMove(board, player, mv.from_point, mv.to_point);
+  }
+  return { board, dice };
+}
+
 function cloneBoard(boardState) {
   return {
     points: [...boardState.points],
@@ -92,6 +113,21 @@ export function useGame(gameId) {
     setPendingMoves([]);
   }, [game]);
 
+  // Revert only the most recently staged move by replaying the rest.
+  const undoMove = useCallback(() => {
+    if (!game || pendingMoves.length === 0) return;
+    const keep = pendingMoves.slice(0, -1);
+    const { board, dice } = replay(
+      game.board_state,
+      game.current_turn,
+      game.dice_values,
+      keep
+    );
+    setStagedBoard(board);
+    setStagedDice(dice);
+    setPendingMoves(keep);
+  }, [game, pendingMoves]);
+
   const confirmTurn = useCallback(async () => {
     try {
       setActionError(null);
@@ -114,6 +150,7 @@ export function useGame(gameId) {
     legalMoves,
     stageMove,
     resetTurn,
+    undoMove,
     confirmTurn,
     reload,
   };
