@@ -120,6 +120,66 @@ from Session 1 was rebuilt.**
 
 ---
 
+## Session 3 — DONE ✅
+
+Game lifecycle (game-over + matches) and online play. Ported the web's
+match/game-over/lobby flows to native against the same backend endpoints.
+**Nothing from Sessions 1–2 was rebuilt.**
+
+### Game-over screen
+- New `src/components/GameOverScreen.jsx` — a native `Modal` overlay (port of the
+  web component): winner + win-type line (normal / **gammon** / **backgammon**),
+  points awarded with the explanatory detail, and action buttons. Reads
+  `winner` / `win_type` / `points_value` straight off the finished game.
+
+### Matches (score + completion)
+- New `src/api/matches.js` — `fetchMatch` / `createMatch` / `nextGame` /
+  `joinMatch` (mirrors web `matchApi.js`).
+- New `src/components/MatchScore.jsx` — compact "first to N" score banner shown
+  above the board during a match.
+- Game screen fetches the match when `game.match` is set and re-pulls on status
+  change, so scores update when a game finishes.
+- Match completion: when the match reaches its target, `GameOverScreen` shows
+  "… wins the match!" and offers **New Match**; otherwise it offers **Next Game**
+  (via `matches/{id}/next_game/`). Match creation added to the lobby with a
+  3 / 5 / 7 / 9 length picker.
+
+### Opponent move sync
+- `useGame` now **polls** the backend every 3.5s while the game is `active`,
+  swapping in state only when it actually changed (by `updated_at`) and **never**
+  while the local player has staged moves (guarded via refs) so it can't clobber
+  an in-progress turn.
+- Added **pull-to-refresh** (`RefreshControl`) on the game screen via a new
+  silent `refresh()` / `refreshing` on the hook (doesn't trigger the full-screen
+  loader like `reload()` does).
+
+### Online play
+- Lobby: **Create online game** (logged-in users → a waiting game), **Open
+  games** list with Join, and **Join by code** (numeric game id; works for guests
+  with a name). Hotseat + match creation share the guest-name field.
+- Game screen `waiting` state: shows the **game code**, a **Share invite link**
+  button (`react-native` `Share` + an `expo-linking` `backgammon://game/<id>`
+  deep link), and an on-device Join. Pull-to-refresh while waiting.
+- Deep links resolve through the `backgammon` scheme + expo-router file route, so
+  an opened `backgammon://game/<id>` link lands on that game.
+
+### Touched files
+- New: `src/api/matches.js`, `src/components/MatchScore.jsx`,
+  `src/components/GameOverScreen.jsx`.
+- `src/game/useGame.js` — `refresh()` / `refreshing` + 3.5s active-game poller.
+- `app/game/[id].jsx` — match fetch, waiting/share/join panel, game-over modal,
+  match score banner, pull-to-refresh.
+- `app/index.jsx` — online create, match creation (length chips), open-games
+  list, join-by-code.
+- Verified: `expo export --platform ios` bundles clean (no errors).
+
+> ⚠️ Online play across **separate devices** needs the backend reachable from
+> both and the joining device able to hit it — see the networking note under
+> "How to run" (`ALLOWED_HOSTS`, `runserver 0.0.0.0:8000`). Same-device hotseat
+> and matches work without any of that.
+
+---
+
 ## How to run
 
 ```bash
@@ -149,22 +209,28 @@ feature itself. Left untouched this session per scope.)
 - [x] Pass-turn affordance when a roll has no legal moves.
 - [x] Per-move undo (in addition to full Reset).
 
-### Session 3 (suggested) — game lifecycle & online play
-Carried over from Session 2's lifecycle goals plus online play:
-- [ ] **Game-over screen** — win type (normal / gammon / backgammon) + points;
-      port `frontend/src/components/GameOverScreen.jsx`. The backend already
-      returns `winner` / `win_type` / points on the finished game.
-- [ ] **Refresh for opponent moves** — no realtime yet; add pull-to-refresh and/or
-      an interval re-fetch on the game screen so a confirmed opponent turn shows
-      up (the `reload()` already exists on `useGame`, just needs wiring/polling).
-- [ ] Online game creation + shareable join (deep links via the `backgammon://`
-      scheme) and a join-by-id / waiting-room UI.
-- [ ] Match mode (first to N points) + match score display — port `matchApi` and
-      `MatchScore` / match flow.
+### Session 3 — completed items
+- [x] Game-over screen (winner, normal / gammon / backgammon, points).
+- [x] Match score display + completion (Next Game / New Match).
+- [x] Opponent move sync — 3.5s active-game polling + pull-to-refresh.
+- [x] Online play — create online game, share/deep-link, join by code, open games.
 
-### Session 4 (suggested) — profile & stats
-- [ ] Profile screen with lifetime stats (wins, losses, gammons, points, etc.).
-- [ ] Wire the auth `me` stats already returned by the backend.
+### Session 4 (suggested) — profile, stats & hardening
+- [ ] **Profile screen** with lifetime stats (games, wins, losses, gammons,
+      backgammons, points, win %, gammon rate) — the backend already returns all
+      of these from `/api/auth/me/` (see web `ProfilePage.jsx`). Wire a `/profile`
+      route + a nav entry from the lobby auth row.
+- [ ] **Turn-ownership awareness in online play** — currently any viewer can roll/
+      move on their turn regardless of which account they are. Gate interactivity
+      so a player can only act when it's *their* seat (compare `current_turn` to
+      `player1_user` / `player2_user` vs the logged-in `user.id`); show a
+      "waiting for opponent" state otherwise. (Hotseat should stay fully
+      interactive for both seats.)
+- [ ] **Polling polish** — back off when the screen is unfocused/backgrounded;
+      consider surfacing a subtle "syncing…" indicator. Optional: only poll when
+      it's the opponent's turn.
+- [ ] Surface join/share errors more clearly; handle invalid game codes with a
+      friendlier message than the game screen's "Game not found".
 
 ### Cross-cutting / tech debt
 - [ ] No tests yet on mobile — add Jest + RNTL for `logic.js`, `useGame`, Board

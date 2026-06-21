@@ -1,10 +1,13 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import {
   fetchGame,
   rollDice as apiRollDice,
   confirmTurn as apiConfirmTurn,
 } from "../api/games";
 import { getLegalMoves, applyMove } from "./logic";
+
+// How often to poll the backend for the opponent's moves while a game is active.
+const POLL_MS = 3500;
 
 // Replay a sequence of moves from a base board, returning the resulting board
 // and the dice still remaining. Each move consumes the die its matching legal
@@ -50,6 +53,7 @@ export function useGame(gameId) {
   const [stagedBoard, setStagedBoard] = useState(null);
   const [stagedDice, setStagedDice] = useState([]);
   const [pendingMoves, setPendingMoves] = useState([]);
+  const [refreshing, setRefreshing] = useState(false);
 
   const [reloadToken, setReloadToken] = useState(0);
 
@@ -63,6 +67,44 @@ export function useGame(gameId) {
   }, [gameId, reloadToken]);
 
   const reload = useCallback(() => setReloadToken((t) => t + 1), []);
+
+  // Silent re-fetch (pull-to-refresh / manual sync) — unlike reload() this
+  // doesn't toggle the full-screen loading state.
+  const refresh = useCallback(async () => {
+    if (!gameId) return;
+    setRefreshing(true);
+    try {
+      const fresh = await fetchGame(gameId);
+      setGame((cur) => (cur && fresh.updated_at === cur.updated_at ? cur : fresh));
+    } catch (err) {
+      setActionError(err.message);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [gameId]);
+
+  // Keep refs of the bits the poller needs so the interval can stay stable
+  // (one subscription) without disrupting an in-progress staged turn.
+  const pendingRef = useRef(0);
+  const statusRef = useRef(null);
+  pendingRef.current = pendingMoves.length;
+  statusRef.current = game?.status;
+
+  // Poll for opponent moves while the game is active. Skips polling whenever
+  // the local player has staged moves, so it never clobbers their turn; only
+  // swaps in state that actually changed (by updated_at).
+  useEffect(() => {
+    if (!gameId) return;
+    const interval = setInterval(() => {
+      if (statusRef.current !== "active" || pendingRef.current > 0) return;
+      fetchGame(gameId)
+        .then((fresh) => {
+          setGame((cur) => (cur && fresh.updated_at === cur.updated_at ? cur : fresh));
+        })
+        .catch(() => {});
+    }, POLL_MS);
+    return () => clearInterval(interval);
+  }, [gameId]);
 
   // Whenever the authoritative game state changes, start a fresh staged turn.
   useEffect(() => {
@@ -153,5 +195,7 @@ export function useGame(gameId) {
     undoMove,
     confirmTurn,
     reload,
+    refresh,
+    refreshing,
   };
 }
