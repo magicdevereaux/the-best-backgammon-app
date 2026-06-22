@@ -113,7 +113,11 @@ export default function LobbyScreen() {
             <ActivityIndicator color={colors.gold} />
           ) : user ? (
             <>
-              <Text style={styles.userText}>{user.username}</Text>
+              <Pressable onPress={() => router.push("/profile")}>
+                <Text style={styles.userText}>
+                  {user.username} · {user.wins}W/{user.losses}L
+                </Text>
+              </Pressable>
               <Pressable onPress={logout}><Text style={styles.link}>Log out</Text></Pressable>
             </>
           ) : (

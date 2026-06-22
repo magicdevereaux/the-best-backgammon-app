@@ -1,4 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { AppState } from "react-native";
+import { useFocusEffect } from "expo-router";
 import {
   fetchGame,
   rollDice as apiRollDice,
@@ -90,13 +92,38 @@ export function useGame(gameId) {
   pendingRef.current = pendingMoves.length;
   statusRef.current = game?.status;
 
+  // Only poll while this screen is focused AND the app is foregrounded, so we
+  // don't churn the network in the background or yank state out from under a
+  // user who has navigated away.
+  const focusedRef = useRef(true);
+  const appActiveRef = useRef(AppState.currentState === "active");
+
+  useFocusEffect(
+    useCallback(() => {
+      focusedRef.current = true;
+      return () => {
+        focusedRef.current = false;
+      };
+    }, [])
+  );
+
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", (s) => {
+      appActiveRef.current = s === "active";
+    });
+    return () => sub.remove();
+  }, []);
+
   // Poll for opponent moves while the game is active. Skips polling whenever
-  // the local player has staged moves, so it never clobbers their turn; only
-  // swaps in state that actually changed (by updated_at).
+  // the local player has staged moves (never clobbers their turn), while
+  // unfocused/backgrounded, and only swaps in state that actually changed
+  // (by updated_at) so a steady stream of identical responses causes no
+  // re-render or flicker.
   useEffect(() => {
     if (!gameId) return;
     const interval = setInterval(() => {
       if (statusRef.current !== "active" || pendingRef.current > 0) return;
+      if (!focusedRef.current || !appActiveRef.current) return;
       fetchGame(gameId)
         .then((fresh) => {
           setGame((cur) => (cur && fresh.updated_at === cur.updated_at ? cur : fresh));

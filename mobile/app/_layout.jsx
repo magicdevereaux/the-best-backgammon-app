@@ -20,6 +20,7 @@ export default function RootLayout() {
         >
           <Stack.Screen name="index" options={{ title: "Backgammon" }} />
           <Stack.Screen name="login" options={{ title: "Sign in" }} />
+          <Stack.Screen name="profile" options={{ title: "Profile" }} />
           <Stack.Screen name="game/[id]" options={{ title: "Game" }} />
         </Stack>
       </AuthProvider>

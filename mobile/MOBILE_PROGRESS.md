@@ -180,6 +180,54 @@ match/game-over/lobby flows to native against the same backend endpoints.
 
 ---
 
+## Session 4 — DONE ✅
+
+Online turn-ownership, profile/stats, and polling polish. **Nothing from
+Sessions 1–3 was rebuilt.**
+
+### Turn-ownership gating (online read-only view)
+- The game screen now derives ownership from the seat user FKs already in the
+  game payload (`player1_user` / `player2_user`) vs the logged-in `user.id`.
+- A game between **two distinct accounts** is treated as online and **gated**:
+  a device may only act on the seat its user owns, and only on that seat's turn.
+  When it's the opponent's turn the board is **read-only** with a steady
+  "Waiting for {name}…" indicator (no dice-roll, no controls). A logged-in user
+  who owns **neither** seat sees a **"Spectating · {name}'s turn"** read-only view.
+- **Hotseat / guest games stay fully interactive for both seats** (they aren't a
+  two-distinct-account game), so nothing about local play changed.
+- Known limitation (Session 5): a *guest*-joined online game (opponent has no
+  account, so `player2_user` is null) isn't detected as two-account and stays
+  locally interactive. The main logged-in-vs-logged-in online flow is gated.
+
+### Profile & stats screen
+- New `app/profile.jsx` (+ `profile` route in `_layout`, reachable by tapping the
+  username in the lobby auth row, which now also shows `W/L`). Pulls
+  `/api/auth/me/` via `fetchMe` and shows a headline Wins / Losses / Win-rate
+  trio plus games played, gammons, backgammons, gammon rate, and points won/lost
+  — the full stat set the backend already computes.
+- Refreshes on focus (so finishing a game updates the numbers) and on
+  pull-to-refresh; syncs the fresh `me` back into `AuthContext` so the lobby W/L
+  stays current. Guests get a "log in to track stats" prompt.
+
+### Polling polish (seamless sync)
+- The active-game poller now **pauses when the screen is unfocused or the app is
+  backgrounded** (`useFocusEffect` + `AppState` refs), so it doesn't churn the
+  network or yank state in after navigating away.
+- Combined with the existing `updated_at` de-dupe (no re-render on unchanged
+  responses) and the staged-moves guard, opponent moves now arrive without
+  flashing or resetting an in-progress turn.
+
+### Touched files
+- New: `app/profile.jsx`.
+- `src/game/useGame.js` — focus/AppState gating on the poller.
+- `app/game/[id].jsx` — seat/ownership derivation, read-only + waiting/spectating
+  states, gated dice/controls.
+- `app/_layout.jsx` — `profile` route.
+- `app/index.jsx` — username → profile nav, W/L in the auth row.
+- Verified: `expo export --platform ios` bundles clean (no errors).
+
+---
+
 ## How to run
 
 ```bash
@@ -215,22 +263,25 @@ feature itself. Left untouched this session per scope.)
 - [x] Opponent move sync — 3.5s active-game polling + pull-to-refresh.
 - [x] Online play — create online game, share/deep-link, join by code, open games.
 
-### Session 4 (suggested) — profile, stats & hardening
-- [ ] **Profile screen** with lifetime stats (games, wins, losses, gammons,
-      backgammons, points, win %, gammon rate) — the backend already returns all
-      of these from `/api/auth/me/` (see web `ProfilePage.jsx`). Wire a `/profile`
-      route + a nav entry from the lobby auth row.
-- [ ] **Turn-ownership awareness in online play** — currently any viewer can roll/
-      move on their turn regardless of which account they are. Gate interactivity
-      so a player can only act when it's *their* seat (compare `current_turn` to
-      `player1_user` / `player2_user` vs the logged-in `user.id`); show a
-      "waiting for opponent" state otherwise. (Hotseat should stay fully
-      interactive for both seats.)
-- [ ] **Polling polish** — back off when the screen is unfocused/backgrounded;
-      consider surfacing a subtle "syncing…" indicator. Optional: only poll when
-      it's the opponent's turn.
-- [ ] Surface join/share errors more clearly; handle invalid game codes with a
-      friendlier message than the game screen's "Game not found".
+### Session 4 — completed items
+- [x] Profile & stats screen (headline record + full lifetime stats).
+- [x] Turn-ownership gating in online play (read-only + waiting/spectating).
+- [x] Polling polish — pause when unfocused/backgrounded; no flashing on sync.
+
+### Session 5 (suggested) — hardening & coverage
+- [ ] **Gate guest-joined online games** — a two-device game where the opponent
+      joined as a guest (`player2_user` null) isn't currently detected as online,
+      so it stays locally interactive. Decide a signal (e.g. treat a game as
+      online when the local user owns exactly one seat and a second player is
+      present by name) and gate accordingly, without breaking true hotseat.
+- [ ] **Tests** — still none on mobile. Add Jest + RNTL for `logic.js`,
+      `useGame` (staging/undo/replay), the dice multiset display, and the
+      ownership-gating derivation. The web suite is a good template.
+- [ ] Friendlier invalid-code / join-error handling in the lobby (currently the
+      game screen just shows "Game not found").
+- [ ] Optional polish: only poll on the opponent's turn; a subtle "synced" tick;
+      animate the game-over modal in.
+- [ ] App icons / splash still the Expo defaults; bump Node ≥22.13.
 
 ### Cross-cutting / tech debt
 - [ ] No tests yet on mobile — add Jest + RNTL for `logic.js`, `useGame`, Board
