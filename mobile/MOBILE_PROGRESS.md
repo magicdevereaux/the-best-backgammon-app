@@ -228,11 +228,72 @@ Sessions 1–3 was rebuilt.**
 
 ---
 
+## Session 5 — DONE ✅
+
+Guest-online gating, a mobile test suite, and friendlier join errors. **Nothing
+from Sessions 1–4 was rebuilt** (the gating logic was *extracted* to a pure
+module, not reworked).
+
+### Guest-online gating (seat registry)
+- New `src/game/seatRegistry.js` — a **device-local record of which seat(s) this
+  device controls** per game (`"p1"` / `"p2"` / `"p1p2"` online, or `"local"`
+  hotseat), persisted compactly in SecureStore (survives restart; in-memory
+  writes win over a slow hydrate). Recorded at the moment this device **creates**
+  or **joins** a game, so it knows ownership even when the opponent is a guest.
+- The create/join flows now record seats: lobby Create online → `p1`; lobby
+  Join / Join-by-code and the in-game waiting Join → `p2`; hotseat + match
+  creation → `local`. `_layout` hydrates the registry on launch.
+- New `src/game/gating.js` — `computeGating({ game, userId, seatInfo })` pure
+  function (extracted from the screen) that combines the seat user FKs **and** the
+  registry. Result: a logged-in user vs a **guest** is now correctly gated to
+  their seat (read-only "Waiting for …" on the opponent's turn), while hotseat /
+  single-device games stay fully interactive. The game screen just consumes its
+  result.
+
+### Mobile test suite (Jest + RNTL)
+- Added `jest-expo` + `@testing-library/react-native` + `@react-native/jest-preset`
+  (peer) and a `jest` config / `jest.setup.js` (in-memory SecureStore mock).
+  Run with **`npm test`**. **38 tests across 6 suites, all green.**
+  - `logic.test.js` — legal moves (incl. bar-priority + bear-off), `applyMove`
+    immutability + blot-hit-to-bar, `canBearOff`, `checkWinner` (win detection),
+    `isBlotHit`.
+  - `useGame.test.js` — staging (`stageMove`), `undoMove`, `resetTurn`, and
+    `confirmTurn` (sends staged moves, adopts the returned game) with the API
+    mocked.
+  - `gating.test.js` — hotseat, two-account, **guest-online**, spectator, and
+    finished-game ownership derivation.
+  - `seatRegistry.test.js` — record/get, both-seats collapse, id normalisation.
+  - `GameOverScreen.test.jsx` / `MatchScore.test.jsx` — win-type + points, match
+    score, match completion, Next Game / New Match actions.
+
+### Friendlier join errors
+- New `src/api/errors.js` `friendlyJoinError()` maps backend/network failures to
+  plain language ("That game has already started or is full.", "No game found
+  with that code.", "Enter your name to join as a guest.", offline hint).
+- Lobby **Join by code** now distinguishes *no such game* (clear "No game found
+  with code N") from *exists-but-not-joinable* (opens it so participants can
+  still view), instead of always navigating into a "Game not found" screen.
+
+### Touched files
+- New: `src/game/seatRegistry.js`, `src/game/gating.js`, `src/api/errors.js`,
+  `jest.setup.js`, and 6 test files under `src/**/__tests__/`.
+- `app/game/[id].jsx` — consume `computeGating` + `useSeatInfo`, record `p2` on
+  the waiting Join, friendly join error.
+- `app/index.jsx` — record seats on every create/join path; friendly errors;
+  existence check for invalid codes.
+- `app/_layout.jsx` — hydrate the seat registry on launch.
+- `src/game/useGame.js` — defensive `AppState` listener cleanup.
+- `package.json` — `test` script + jest config; test devDependencies.
+- Verified: `npm test` (38 passing) and `expo export --platform ios` both clean.
+
+---
+
 ## How to run
 
 ```bash
 cd mobile
 npm start            # then press i / a, or scan QR in Expo Go
+npm test             # run the Jest test suite
 ```
 
 **Backend must be reachable from the device.** The Django dev server and its
@@ -268,17 +329,22 @@ feature itself. Left untouched this session per scope.)
 - [x] Turn-ownership gating in online play (read-only + waiting/spectating).
 - [x] Polling polish — pause when unfocused/backgrounded; no flashing on sync.
 
-### Session 5 (suggested) — hardening & coverage
-- [ ] **Gate guest-joined online games** — a two-device game where the opponent
-      joined as a guest (`player2_user` null) isn't currently detected as online,
-      so it stays locally interactive. Decide a signal (e.g. treat a game as
-      online when the local user owns exactly one seat and a second player is
-      present by name) and gate accordingly, without breaking true hotseat.
-- [ ] **Tests** — still none on mobile. Add Jest + RNTL for `logic.js`,
-      `useGame` (staging/undo/replay), the dice multiset display, and the
-      ownership-gating derivation. The web suite is a good template.
-- [ ] Friendlier invalid-code / join-error handling in the lobby (currently the
-      game screen just shows "Game not found").
+### Session 5 — completed items
+- [x] Guest-online gating via a device-local seat registry (+ persisted).
+- [x] Mobile test suite — Jest + RNTL, 38 tests (logic, useGame, gating, components).
+- [x] Friendlier join errors (invalid code / full / already started / offline).
+
+### Session 6 (suggested) — remaining polish
+- [ ] **Seat registry edge cases** — a game opened *only* via a fresh deep link
+      (never created/joined on this device) and not a two-account game has no
+      registry record, so it defaults to interactive. Consider a server-side
+      "is the requester a participant / whose turn" signal to remove the last
+      reliance on local records.
+- [ ] **Broaden test coverage** — Board tap→stage interaction (the transparent
+      overlay), the dice used/remaining multiset rendering, and a render test of
+      the game screen's read-only/waiting states.
+- [ ] Online **match** play (match creation is currently hotseat-only); record
+      seats for `next_game` so online matches stay gated across games.
 - [ ] Optional polish: only poll on the opponent's turn; a subtle "synced" tick;
       animate the game-over modal in.
 - [ ] App icons / splash still the Expo defaults; bump Node ≥22.13.

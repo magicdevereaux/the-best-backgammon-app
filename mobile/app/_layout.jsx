@@ -1,11 +1,15 @@
-import React from "react";
+import React, { useEffect } from "react";
 import { Stack } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { AuthProvider } from "../src/context/AuthContext";
+import { hydrateSeats } from "../src/game/seatRegistry";
 import { colors } from "../src/theme";
 
 export default function RootLayout() {
+  // Load persisted seat-ownership so online-vs-guest gating survives a restart.
+  useEffect(() => { hydrateSeats(); }, []);
+
   return (
     <SafeAreaProvider>
       <AuthProvider>

@@ -3,8 +3,10 @@ import { View, Text, Pressable, ScrollView, ActivityIndicator, StyleSheet, TextI
 import { useRouter, Link, useFocusEffect } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useAuth } from "../src/context/AuthContext";
-import { fetchGames, fetchLobby, createGame, joinGame } from "../src/api/games";
+import { fetchGames, fetchLobby, fetchGame, createGame, joinGame } from "../src/api/games";
 import { createMatch } from "../src/api/matches";
+import { recordOnlineSeat, recordLocalGame } from "../src/game/seatRegistry";
+import { friendlyJoinError } from "../src/api/errors";
 import { colors } from "../src/theme";
 
 const MATCH_LENGTHS = [3, 5, 7, 9];
@@ -52,6 +54,7 @@ export default function LobbyScreen() {
     setError(null);
     try {
       const game = await createGame({ player1_name: guestNameOrDefault(), player2_name: "Player 2" });
+      recordLocalGame(game.id); // single-device game: both seats are local
       router.push(`/game/${game.id}`);
     } catch (e) { setError(e.message); }
   }
@@ -60,6 +63,7 @@ export default function LobbyScreen() {
     setError(null);
     try {
       const game = await createGame({}); // server fills player1 from the logged-in user; waits for an opponent
+      recordOnlineSeat(game.id, "p1"); // creator owns seat p1; opponent joins as p2
       router.push(`/game/${game.id}`);
     } catch (e) { setError(e.message); }
   }
@@ -72,6 +76,7 @@ export default function LobbyScreen() {
         player1_name: guestNameOrDefault(),
         player2_name: "Player 2",
       });
+      recordLocalGame(match.current_game_id); // match creation is hotseat-style
       router.push(`/game/${match.current_game_id}`);
     } catch (e) { setError(e.message); }
   }
@@ -82,8 +87,9 @@ export default function LobbyScreen() {
     const name = user ? undefined : guestName.trim();
     try {
       await joinGame(gameId, name);
+      recordOnlineSeat(gameId, "p2"); // the joiner takes seat p2
       router.push(`/game/${gameId}`);
-    } catch (e) { setError(e.message); }
+    } catch (e) { setError(friendlyJoinError(e)); }
   }
 
   async function handleJoinByCode() {
@@ -92,10 +98,21 @@ export default function LobbyScreen() {
     if (!code) { setError("Enter a game code."); return; }
     if (!requireGuestName()) return;
     const name = user ? undefined : guestName.trim();
-    // Best-effort join (a game already in progress will reject the join, but we
-    // still open it so participants/spectators can view it).
-    try { await joinGame(code, name); } catch { /* open anyway */ }
-    router.push(`/game/${code}`);
+    try {
+      await joinGame(code, name);
+      recordOnlineSeat(code, "p2");
+      router.push(`/game/${code}`);
+    } catch (e) {
+      // Join failed — distinguish "no such game" from "exists but not joinable"
+      // (already started, or we're already a participant) so we can still open
+      // games we're allowed to view.
+      try {
+        await fetchGame(code);
+        router.push(`/game/${code}`);
+      } catch {
+        setError(`No game found with code ${code}.`);
+      }
+    }
   }
 
   function statusLine(g) {

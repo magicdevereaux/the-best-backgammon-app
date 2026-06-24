@@ -12,9 +12,12 @@ import GameControls from "../../src/components/GameControls";
 import GameOverScreen from "../../src/components/GameOverScreen";
 import MatchScore from "../../src/components/MatchScore";
 import { useGame } from "../../src/game/useGame";
+import { computeGating } from "../../src/game/gating";
+import { useSeatInfo, recordOnlineSeat } from "../../src/game/seatRegistry";
 import { useAuth } from "../../src/context/AuthContext";
 import { joinGame } from "../../src/api/games";
 import { fetchMatch, nextGame } from "../../src/api/matches";
+import { friendlyJoinError } from "../../src/api/errors";
 import { colors } from "../../src/theme";
 
 export default function GameScreen() {
@@ -32,6 +35,7 @@ export default function GameScreen() {
   const [match, setMatch] = useState(null);
   const [guestJoinName, setGuestJoinName] = useState("");
   const [joinError, setJoinError] = useState(null);
+  const seatInfo = useSeatInfo(id);
 
   // Pull match info (scores, target) whenever the game belongs to a match, and
   // re-pull when the game's status changes (e.g. it just finished → new scores).
@@ -63,8 +67,13 @@ export default function GameScreen() {
     setJoinError(null);
     const name = user ? undefined : guestJoinName.trim();
     if (!user && !name) { setJoinError("Enter your name to join."); return; }
-    try { await joinGame(game.id, name); reload(); }
-    catch (err) { setJoinError(err.message); }
+    try {
+      await joinGame(game.id, name);
+      recordOnlineSeat(game.id, "p2"); // the joiner always takes seat p2
+      reload();
+    } catch (err) {
+      setJoinError(friendlyJoinError(err));
+    }
   }
 
   async function handleNextGame() {
@@ -124,29 +133,19 @@ export default function GameScreen() {
   const turnName = game.current_turn === "p1" ? game.player1_name : game.player2_name;
   const rolledDice = game.dice_values || [];
 
-  // Turn-ownership gating. A game between two distinct accounts is "online":
-  // each device may only act on the seat its logged-in user owns, and only on
-  // that seat's turn. Hotseat / guest games (not two distinct accounts) stay
-  // fully interactive for both seats on the one device.
-  const iAmP1 = !!user && game.player1_user != null && game.player1_user === user.id;
-  const iAmP2 = !!user && game.player2_user != null && game.player2_user === user.id;
-  const twoAccounts =
-    game.player1_user != null &&
-    game.player2_user != null &&
-    game.player1_user !== game.player2_user;
-  const iOwnASeat = iAmP1 || iAmP2;
-  const mySeat = iAmP1 ? "p1" : iAmP2 ? "p2" : null;
-  const isMyTurn = !twoAccounts || (iOwnASeat && game.current_turn === mySeat);
-  const canInteract = game.status === "active" && isMyTurn;
+  // Turn-ownership gating (see src/game/gating.js). Combines the seat user FKs
+  // with the device-local seat registry so online-vs-guest games gate correctly.
+  const { gated, canInteract, spectating, waitingForOpponent } = computeGating({
+    game,
+    userId: user?.id,
+    seatInfo,
+  });
 
   const turnActive = canInteract && rolledDice.length > 0;
   const canRoll = canInteract && rolledDice.length === 0;
   const hasPendingMoves = pendingMoves.length > 0;
   const hasLegalMoves = legalMoves.length > 0;
   const mustPass = turnActive && !hasPendingMoves && !hasLegalMoves;
-
-  const spectating = twoAccounts && !iOwnASeat && game.status === "active";
-  const waitingForOpponent = twoAccounts && iOwnASeat && !isMyTurn && game.status === "active";
 
   return (
     <SafeAreaView style={styles.safe} edges={["bottom"]}>
@@ -178,7 +177,7 @@ export default function GameScreen() {
             </View>
           ) : spectating ? (
             <Text style={styles.turn}>Spectating · {turnName}'s turn</Text>
-          ) : twoAccounts ? (
+          ) : gated ? (
             <Text style={styles.turnMine}>Your turn</Text>
           ) : (
             <Text style={styles.turn}>{turnName}'s turn</Text>

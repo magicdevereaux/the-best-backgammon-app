@@ -111,7 +111,7 @@ export function useGame(gameId) {
     const sub = AppState.addEventListener("change", (s) => {
       appActiveRef.current = s === "active";
     });
-    return () => sub.remove();
+    return () => sub?.remove?.();
   }, []);
 
   // Poll for opponent moves while the game is active. Skips polling whenever
