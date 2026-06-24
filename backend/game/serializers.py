@@ -6,6 +6,15 @@ from .models import Game, Match
 
 
 class GameSerializer(serializers.ModelSerializer):
+    # Which seat(s) the *requesting* authenticated user owns in this game:
+    # "p1", "p2", "p1p2", or null (guest / not a participant). This is an
+    # authoritative, server-side ownership signal the client uses to gate turns
+    # even on a fresh device with no local seat record (e.g. a deep link opened
+    # for the first time). Guests have no server identity, so it's null for them
+    # and the client falls back to its device-local seat registry.
+    viewer_seat = serializers.SerializerMethodField()
+    viewer_is_participant = serializers.SerializerMethodField()
+
     class Meta:
         model = Game
         fields = "__all__"
@@ -18,6 +27,23 @@ class GameSerializer(serializers.ModelSerializer):
             "player1_name": {"required": False, "allow_blank": True},
             "player2_name": {"required": False, "allow_blank": True},
         }
+
+    def get_viewer_seat(self, obj):
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        if not user or not user.is_authenticated:
+            return None
+        seats = []
+        if obj.player1_user_id == user.id:
+            seats.append("p1")
+        if obj.player2_user_id == user.id:
+            seats.append("p2")
+        if not seats:
+            return None
+        return "p1p2" if len(seats) == 2 else seats[0]
+
+    def get_viewer_is_participant(self, obj):
+        return self.get_viewer_seat(obj) is not None
 
 
 class MatchSerializer(serializers.ModelSerializer):

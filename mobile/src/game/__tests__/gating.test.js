@@ -60,6 +60,46 @@ describe("computeGating", () => {
     expect(oppTurn.waitingForOpponent).toBe(true);
   });
 
+  test("server viewer_seat gates a fresh device with no local record (deep-link case)", () => {
+    // Logged-in p1 vs a guest p2 (player2_user null), opened via deep link so
+    // there is no seat registry record. The server's viewer_seat closes the gap.
+    const base = { player1_user: 1, player2_user: null, viewer_seat: "p1" };
+
+    const myTurn = computeGating({
+      game: game({ ...base, current_turn: "p1" }),
+      userId: 1,
+      seatInfo: null,
+    });
+    expect(myTurn.gated).toBe(true);
+    expect(myTurn.canInteract).toBe(true);
+
+    const oppTurn = computeGating({
+      game: game({ ...base, current_turn: "p2" }),
+      userId: 1,
+      seatInfo: null,
+    });
+    expect(oppTurn.canInteract).toBe(false);
+    expect(oppTurn.waitingForOpponent).toBe(true);
+  });
+
+  test("local seat registry overrides server viewer_seat (hotseat opened by its owner)", () => {
+    // A hotseat game whose creator is logged in: the server reports viewer_seat
+    // "p1", but the device recorded it as local — local record wins, both seats
+    // stay interactive.
+    const g = game({ player1_user: 1, player2_user: null, viewer_seat: "p1", current_turn: "p2" });
+    const seatInfo = { online: false, seats: ["p1", "p2"] };
+    const res = computeGating({ game: g, userId: 1, seatInfo });
+    expect(res.gated).toBe(false);
+    expect(res.canInteract).toBe(true);
+  });
+
+  test("server viewer_seat 'p1p2' (same account both seats) is not gated", () => {
+    const g = game({ player1_user: 1, player2_user: 1, viewer_seat: "p1p2", current_turn: "p2" });
+    const res = computeGating({ game: g, userId: 1, seatInfo: null });
+    expect(res.gated).toBe(false);
+    expect(res.canInteract).toBe(true);
+  });
+
   test("seat registry marked local keeps a single device fully interactive", () => {
     const seatInfo = { online: false, seats: ["p1", "p2"] };
     const g1 = computeGating({ game: game({ current_turn: "p1" }), userId: 1, seatInfo });

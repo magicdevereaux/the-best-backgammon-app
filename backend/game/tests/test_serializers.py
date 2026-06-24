@@ -73,3 +73,11 @@ class GameSerializerTest(TestCase):
     def test_serializer_includes_updated_at(self):
         s = GameSerializer(self.game)
         self.assertIn("updated_at", s.data)
+
+    def test_viewer_seat_null_without_request_context(self):
+        # No request in context (e.g. a guest, or serialization outside a view)
+        # → no server-side ownership signal.
+        s = GameSerializer(self.game)
+        self.assertIn("viewer_seat", s.data)
+        self.assertIsNone(s.data["viewer_seat"])
+        self.assertFalse(s.data["viewer_is_participant"])
