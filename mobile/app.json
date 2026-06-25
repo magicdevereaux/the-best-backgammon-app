@@ -7,8 +7,8 @@
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
-    "backgroundColor": "#0F1A12",
-    "primaryColor": "#C8952A",
+    "backgroundColor": "#181818",
+    "primaryColor": "#C9A227",
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.magicdevereaux.backgammon",
@@ -21,10 +21,8 @@
       "package": "com.magicdevereaux.backgammon",
       "versionCode": 1,
       "adaptiveIcon": {
-        "backgroundColor": "#0F1A12",
-        "foregroundImage": "./assets/android-icon-foreground.png",
-        "backgroundImage": "./assets/android-icon-background.png",
-        "monochromeImage": "./assets/android-icon-monochrome.png"
+        "backgroundColor": "#181818",
+        "foregroundImage": "./assets/adaptive-icon.png"
       }
     },
     "web": {
@@ -36,7 +34,7 @@
       [
         "expo-splash-screen",
         {
-          "backgroundColor": "#0F1A12",
+          "backgroundColor": "#181818",
           "image": "./assets/splash-icon.png",
           "imageWidth": 220
         }
