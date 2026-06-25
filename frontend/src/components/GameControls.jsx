@@ -13,14 +13,14 @@ const btn = {
     transition: "opacity 0.15s, filter 0.15s",
   },
   primary: {
-    background: "#C8952A",
-    color: "#1A0A02",
-    borderColor: "#A07020",
+    background: "var(--gold)",
+    color: "var(--on-gold)",
+    borderColor: "var(--gold-dark)",
   },
   secondary: {
-    background: "#2A3A2E",
-    color: "#A0C0A8",
-    borderColor: "#3A5040",
+    background: "var(--surface)",
+    color: "var(--ivory)",
+    borderColor: "var(--border)",
   },
   disabled: {
     opacity: 0.35,
@@ -73,7 +73,7 @@ export default function GameControls({
         disabled={!turnActive}
       />
       {game.status === "finished" && (
-        <p style={{ margin: 0, color: "#A0C0A8", fontSize: "0.85rem" }}>
+        <p style={{ margin: 0, color: "var(--text-secondary)", fontSize: "0.85rem" }}>
           Game over!{" "}
           <strong>{game.winner === "p1" ? game.player1_name : game.player2_name}</strong> wins.
         </p>

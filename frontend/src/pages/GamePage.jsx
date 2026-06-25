@@ -11,12 +11,12 @@ import { joinGame, createGame } from "../api/gameApi";
 import { fetchMatch, nextGame } from "../api/matchApi";
 
 const T = {
-  page:    { minHeight: "100vh", background: "#0F1A12", color: "#D0E8D4", fontFamily: "system-ui, sans-serif", padding: "1.25rem" },
-  heading: { margin: "0 0 0.25rem", fontWeight: 700, fontSize: "1.1rem", color: "#C8D8C0" },
-  sub:     { margin: "0 0 0.75rem", fontSize: "0.85rem", color: "#6A8870" },
-  err:     { color: "#E07060", fontSize: "0.85rem", marginTop: "0.5rem" },
-  input:   { background: "#1A2A1E", border: "1px solid #2A4030", color: "#D0E8D4", borderRadius: 5, padding: "0.45rem 0.7rem", fontSize: "0.85rem" },
-  joinBtn: { padding: "0.5rem 1rem", background: "#C8952A", color: "#1A0A02", border: "none", borderRadius: 5, fontWeight: 600, cursor: "pointer" },
+  page:    { minHeight: "100vh", background: "var(--bg)", color: "var(--ivory)", fontFamily: "system-ui, sans-serif", padding: "1.25rem" },
+  heading: { margin: "0 0 0.25rem", fontWeight: 700, fontSize: "1.1rem", color: "var(--ivory)" },
+  sub:     { margin: "0 0 0.75rem", fontSize: "0.85rem", color: "var(--text-secondary)" },
+  err:     { color: "var(--error)", fontSize: "0.85rem", marginTop: "0.5rem" },
+  input:   { background: "var(--surface)", border: "1px solid var(--border)", color: "var(--ivory)", borderRadius: 5, padding: "0.45rem 0.7rem", fontSize: "0.85rem" },
+  joinBtn: { padding: "0.5rem 1rem", background: "var(--gold)", color: "var(--on-gold)", border: "none", borderRadius: 5, fontWeight: 600, cursor: "pointer" },
 };
 
 export default function GamePage() {
@@ -39,7 +39,7 @@ export default function GamePage() {
     fetchMatch(game.match).then(setMatch).catch(() => {});
   }, [game?.match, game?.status]);
 
-  if (loading) return <div style={T.page}><p style={{ color: "#6A8870" }}>Loading game…</p></div>;
+  if (loading) return <div style={T.page}><p style={{ color: "var(--text-secondary)" }}>Loading game…</p></div>;
   if (error)   return <div style={T.page}><p style={T.err}>Error: {error}</p></div>;
   if (!game)   return <div style={T.page}><p style={T.err}>Game not found.</p></div>;
 
@@ -70,7 +70,7 @@ export default function GamePage() {
         <p style={T.sub}>{game.player1_name} is waiting for an opponent.</p>
         <p style={{ ...T.sub, marginBottom: "1rem" }}>
           Share this link:{" "}
-          <span style={{ color: "#C8952A", fontFamily: "monospace" }}>{window.location.href}</span>
+          <span style={{ color: "var(--gold)", fontFamily: "monospace" }}>{window.location.href}</span>
         </p>
         {!user && (
           <input

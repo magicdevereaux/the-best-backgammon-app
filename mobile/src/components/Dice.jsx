@@ -21,7 +21,7 @@ function DieFace({ value, used }) {
   const pips = PIP_LAYOUT[value];
   const bg = used ? colors.dieFaceUsed : colors.dieFace;
   const pipFill = used ? colors.diePipUsed : colors.diePip;
-  const border = used ? "#1A1A1A" : colors.dieBorder;
+  const border = used ? colors.dieBorderUsed : colors.dieBorder;
 
   return (
     <View style={[styles.dieWrap, used && styles.dieUsed]}>

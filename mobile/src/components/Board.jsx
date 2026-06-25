@@ -62,7 +62,7 @@ function Pip({ player, cx, cy, r, ring = true, highlight }) {
         <Circle cx={cx} cy={cy - r * 0.28} r={r * 0.45} fill="rgba(255,255,255,0.18)" />
       )}
       {highlight && (
-        <Circle cx={cx} cy={cy} r={r + 4} fill="none" stroke="#FFE44A" strokeWidth={2.5} />
+        <Circle cx={cx} cy={cy} r={r + 4} fill="none" stroke={colors.checkerSelected} strokeWidth={2.5} />
       )}
     </>
   );
@@ -168,7 +168,7 @@ export default function Board({ boardState, currentPlayer, legalMoves = [], onMo
 
             {/* Off tray */}
             <Rect x={offX - 2} y={0} width={OFF_W + 4} height={BH} fill={colors.offBg} rx={4} />
-            <Line x1={offX - 2} y1={BH / 2} x2={offX + OFF_W + 2} y2={BH / 2} stroke="#3A2010" strokeWidth={1} />
+            <Line x1={offX - 2} y1={BH / 2} x2={offX + OFF_W + 2} y2={BH / 2} stroke={colors.border} strokeWidth={1} />
 
             {/* Points */}
             {POINT_DEFS.map(({ num, idx, lx, isTop, ci }) => {
@@ -203,11 +203,11 @@ export default function Board({ boardState, currentPlayer, legalMoves = [], onMo
                       />
                     ))}
                   {overflow && (
-                    <SvgText x={cx} y={checkerCY(isTop, shown - 1)} fill="#fff" fontSize={11} fontWeight="bold" textAnchor="middle" alignmentBaseline="central">
+                    <SvgText x={cx} y={checkerCY(isTop, shown - 1)} fill={colors.text} fontSize={11} fontWeight="bold" textAnchor="middle" alignmentBaseline="central">
                       {count}
                     </SvgText>
                   )}
-                  <SvgText x={cx} y={isTop ? BH - 6 : 12} fill="#5A8060" fontSize={9} textAnchor="middle">
+                  <SvgText x={cx} y={isTop ? BH - 6 : 12} fill={colors.textMuted} fontSize={9} textAnchor="middle">
                     {num}
                   </SvgText>
                 </React.Fragment>
@@ -220,7 +220,7 @@ export default function Board({ boardState, currentPlayer, legalMoves = [], onMo
 
             {/* Bar */}
             <Rect x={BAR_START} y={0} width={BAR_W} height={BH} fill={colors.barFill} />
-            <Line x1={barCX} y1={16} x2={barCX} y2={BH - 16} stroke="#4A2A14" strokeWidth={1} />
+            <Line x1={barCX} y1={16} x2={barCX} y2={BH - 16} stroke={colors.border} strokeWidth={1} />
             {barIsLegalSrc && <Rect x={BAR_START} y={0} width={BAR_W} height={BH} fill={colors.destSafe} />}
             {barSelected && <Rect x={BAR_START} y={0} width={BAR_W} height={BH} fill={colors.selOverlay} />}
             {Array.from({ length: Math.min(bar.p2, 6) }).map((_, i) => (
@@ -230,29 +230,29 @@ export default function Board({ boardState, currentPlayer, legalMoves = [], onMo
               <Pip key={`p1b${i}`} player="p1" cx={barCX} cy={BH / 2 + 28 + i * C_STEP} r={CR - 1} />
             ))}
             {bar.p1 === 0 && bar.p2 === 0 && (
-              <SvgText x={barCX} y={BH / 2} fill="#4A2A14" fontSize={8} fontWeight="bold" textAnchor="middle" alignmentBaseline="central">
+              <SvgText x={barCX} y={BH / 2} fill={colors.textMuted} fontSize={8} fontWeight="bold" textAnchor="middle" alignmentBaseline="central">
                 BAR
               </SvgText>
             )}
 
             {/* Off — P2 (top) */}
-            {p2OffLegal && <Rect x={offX} y={0} width={OFF_W} height={BH / 2 - 2} fill="rgba(55,210,85,0.20)" rx={3} />}
-            <SvgText x={offCX} y={14} fill="#4A6050" fontSize={8} fontWeight="bold" textAnchor="middle">OFF</SvgText>
+            {p2OffLegal && <Rect x={offX} y={0} width={OFF_W} height={BH / 2 - 2} fill={colors.offLegal} rx={3} />}
+            <SvgText x={offCX} y={14} fill={colors.textMuted} fontSize={8} fontWeight="bold" textAnchor="middle">OFF</SvgText>
             {Array.from({ length: Math.min(off.p2, 15) }).map((_, i) => (
               <Circle key={`o2${i}`} cx={offCX} cy={22 + i * O_STEP} r={OCR} fill={colors.p2Fill} stroke={colors.p2Stroke} strokeWidth={1.5} />
             ))}
             {off.p2 > 0 && (
-              <SvgText x={offCX} y={BH / 2 - 10} fill="#8A9A88" fontSize={10} textAnchor="middle">{off.p2}</SvgText>
+              <SvgText x={offCX} y={BH / 2 - 10} fill={colors.textMuted} fontSize={10} textAnchor="middle">{off.p2}</SvgText>
             )}
 
             {/* Off — P1 (bottom) */}
-            {p1OffLegal && <Rect x={offX} y={BH / 2 + 2} width={OFF_W} height={BH / 2 - 2} fill="rgba(55,210,85,0.20)" rx={3} />}
-            <SvgText x={offCX} y={BH / 2 + 14} fill="#4A6050" fontSize={8} fontWeight="bold" textAnchor="middle">OFF</SvgText>
+            {p1OffLegal && <Rect x={offX} y={BH / 2 + 2} width={OFF_W} height={BH / 2 - 2} fill={colors.offLegal} rx={3} />}
+            <SvgText x={offCX} y={BH / 2 + 14} fill={colors.textMuted} fontSize={8} fontWeight="bold" textAnchor="middle">OFF</SvgText>
             {Array.from({ length: Math.min(off.p1, 15) }).map((_, i) => (
               <Circle key={`o1${i}`} cx={offCX} cy={BH / 2 + 22 + i * O_STEP} r={OCR} fill={colors.p1Fill} stroke={colors.p1Stroke} strokeWidth={1.5} />
             ))}
             {off.p1 > 0 && (
-              <SvgText x={offCX} y={BH - 10} fill="#8A9A88" fontSize={10} textAnchor="middle">{off.p1}</SvgText>
+              <SvgText x={offCX} y={BH - 10} fill={colors.textMuted} fontSize={10} textAnchor="middle">{off.p1}</SvgText>
             )}
           </Svg>
 

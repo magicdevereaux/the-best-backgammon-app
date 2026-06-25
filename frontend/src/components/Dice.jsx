@@ -16,10 +16,9 @@ const PIP_LAYOUT = {
 
 function DieFace({ value, used }) {
   const pips = PIP_LAYOUT[value] || [];
-  const bg      = used ? "#2A2A2A" : "#F5F0E8";
-  const pipFill = used ? "#555"    : "#1A1208";
-  const border  = used ? "#1A1A1A" : "#C8A855";
-  const shadow  = used ? "none"    : "0 2px 6px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.35)";
+  const bg      = used ? "var(--die-face-used)"   : "var(--die-face)";
+  const pipFill = used ? "var(--die-pip-used)"    : "var(--die-pip)";
+  const border  = used ? "var(--die-border-used)" : "var(--die-border)";
 
   return (
     <div
@@ -60,10 +59,9 @@ function DieFace({ value, used }) {
         <rect
           x={1} y={1} width={SIZE - 2} height={SIZE - 2}
           rx={R_DIE} ry={R_DIE}
-          fill={bg}
-          stroke={border}
           strokeWidth={1.5}
           filter={used ? undefined : `url(#ds${value}f)`}
+          style={{ fill: bg, stroke: border }}
         />
         {/* Inner bevel highlight */}
         {!used && (
@@ -80,7 +78,7 @@ function DieFace({ value, used }) {
             cx={fx * SIZE}
             cy={fy * SIZE}
             r={R_PIP}
-            fill={pipFill}
+            style={{ fill: pipFill }}
           />
         ))}
       </svg>
@@ -91,7 +89,7 @@ function DieFace({ value, used }) {
 export default function Dice({ diceValues, usedCount = 0 }) {
   if (!diceValues || diceValues.length === 0) {
     return (
-      <p style={{ color: "#6A8070", margin: "0.5rem 0", fontFamily: "sans-serif", fontSize: "0.9rem" }}>
+      <p style={{ color: "var(--text-secondary)", margin: "0.5rem 0", fontFamily: "sans-serif", fontSize: "0.9rem" }}>
         No dice rolled yet.
       </p>
     );

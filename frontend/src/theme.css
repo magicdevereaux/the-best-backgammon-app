@@ -1,0 +1,125 @@
+/* ===========================================================================
+   The Best Backgammon App — central theme
+   Palette derived from the app icon ("The Crossed Points").
+   These CSS variables are the single source of truth for web colors.
+   Keep in sync with mobile/src/theme.js.
+   =========================================================================== */
+
+:root {
+  /* Core palette */
+  --bg: #181818;             /* app background        */
+  --surface: #242424;        /* cards / panels / inputs */
+  --mahogany: #5C2010;       /* primary (deep brown)  */
+  --ivory: #F5ECD7;          /* primary text / light  */
+  --gold: #C9A227;           /* accent / CTA          */
+  --text-secondary: #A89880; /* muted text            */
+  --error: #8B1A1A;          /* destructive           */
+  --walnut: #2A1A0E;         /* table / board surface */
+
+  /* Derived neutrals & shades */
+  --surface-raised: #2E2E2E; /* card sitting on a surface */
+  --border: #3A2E22;         /* warm hairline border      */
+  --gold-dark: #9A7A1E;      /* gold button border / edges */
+  --mahogany-dark: #431708;  /* mahogany shadow / depth    */
+  --frame: #1C1109;          /* board frame (darker walnut) */
+  --on-gold: #181818;        /* text/icons on a gold fill   */
+
+  /* Board playing field */
+  --board-surface: var(--walnut);
+  --board-home: #241608;         /* home quadrant, a touch lighter */
+  --board-bar: #1F1208;
+  --board-off: #160C05;
+  --point-light: var(--ivory);   /* alternating points */
+  --point-dark: var(--mahogany);
+  --point-edge: rgba(0, 0, 0, 0.28);
+  --point-label: var(--text-secondary);
+
+  /* Checkers */
+  --checker-light: var(--ivory);
+  --checker-light-stroke: var(--gold-dark);
+  --checker-dark: #20130A;            /* near-black walnut */
+  --checker-dark-stroke: var(--gold);
+  --checker-selected: var(--gold);
+
+  /* Move highlighting (gold for safe/selected, error-red for blot hits) */
+  --overlay-selected: rgba(201, 162, 39, 0.26);
+  --overlay-dest: rgba(201, 162, 39, 0.42);
+  --overlay-dest-blot: rgba(139, 26, 26, 0.52);
+
+  /* Dice */
+  --die-face: var(--ivory);
+  --die-face-used: var(--surface);
+  --die-border: var(--gold);
+  --die-border-used: #1A1A1A;
+  --die-pip: var(--bg);
+  --die-pip-used: #6B6B6B;
+}
+
+/* --- Base element styling so plain pages inherit the theme -------------- */
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ivory);
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3, h4 {
+  color: var(--ivory);
+}
+
+a {
+  color: var(--gold);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}
+
+button {
+  background: var(--surface);
+  color: var(--ivory);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.5rem 1rem;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.15s, filter 0.15s, opacity 0.15s;
+}
+button:hover:not(:disabled) {
+  border-color: var(--gold);
+}
+button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+input, select, textarea {
+  background: var(--surface);
+  color: var(--ivory);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 0.45rem 0.6rem;
+  font: inherit;
+}
+input:focus, select:focus, textarea:focus {
+  outline: none;
+  border-color: var(--gold);
+}
+::placeholder {
+  color: var(--text-secondary);
+}
+
+label {
+  color: var(--ivory);
+}
+
+table {
+  color: var(--ivory);
+}

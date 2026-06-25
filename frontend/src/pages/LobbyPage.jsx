@@ -83,7 +83,7 @@ export default function LobbyPage() {
     <div style={{ padding: "1rem" }}>
       <h1>Backgammon Lobby</h1>
 
-      {actionError && <p style={{ color: "#c0392b" }}>{actionError}</p>}
+      {actionError && <p style={{ color: "var(--error)" }}>{actionError}</p>}
 
       <section style={{ marginBottom: "2rem" }}>
         <h2>Start a game</h2>
@@ -116,11 +116,11 @@ export default function LobbyPage() {
         {showMatchForm && (
           <div
             style={{
-              border: "1px solid #ddd",
+              border: "1px solid var(--border)",
               borderRadius: 8,
               padding: "1rem",
               maxWidth: 340,
-              background: "#fafafa",
+              background: "var(--surface)",
             }}
           >
             <h3 style={{ marginTop: 0 }}>New match</h3>
@@ -149,7 +149,7 @@ export default function LobbyPage() {
         )}
 
         {!user && (
-          <p style={{ color: "#555", marginTop: "0.5rem" }}>
+          <p style={{ color: "var(--text-secondary)", marginTop: "0.5rem" }}>
             <a href="/login">Log in</a> to create online games.
           </p>
         )}

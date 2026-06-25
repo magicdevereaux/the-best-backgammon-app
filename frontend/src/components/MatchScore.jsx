@@ -7,7 +7,9 @@ export default function MatchScore({ match }) {
       style={{
         display: "inline-block",
         padding: "0.35rem 0.75rem",
-        background: "#f0f0f0",
+        background: "var(--surface)",
+        color: "var(--ivory)",
+        border: "1px solid var(--border)",
         borderRadius: 6,
         fontSize: "0.9rem",
         marginBottom: "0.5rem",

@@ -17,12 +17,12 @@ function Nav() {
   }
 
   return (
-    <nav style={{ padding: "0.75rem 1rem", borderBottom: "1px solid #ccc", display: "flex", gap: "1rem", alignItems: "center" }}>
+    <nav style={{ padding: "0.75rem 1rem", borderBottom: "1px solid var(--border)", background: "var(--surface)", display: "flex", gap: "1rem", alignItems: "center" }}>
       <Link to="/">Lobby</Link>
       <span style={{ flex: 1 }} />
       {user === undefined ? null : user ? (
         <>
-          <Link to="/profile" style={{ color: "#555", textDecoration: "none" }}>
+          <Link to="/profile" style={{ color: "var(--text-secondary)", textDecoration: "none" }}>
             {user.username} — {user.wins}W / {user.losses}L
           </Link>
           <button onClick={handleLogout}>Logout</button>

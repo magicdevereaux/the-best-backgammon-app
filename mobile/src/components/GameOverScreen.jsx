@@ -103,7 +103,7 @@ const styles = StyleSheet.create({
   },
   matchHeading: { color: colors.textMuted, fontSize: 13 },
   matchScore: { color: colors.text, fontSize: 20, fontWeight: "800", marginTop: 4 },
-  matchWin: { color: "#3FBF6A", fontSize: 14, fontWeight: "700", marginTop: 8, textAlign: "center" },
+  matchWin: { color: colors.gold, fontSize: 14, fontWeight: "700", marginTop: 8, textAlign: "center" },
   buttons: { flexDirection: "row", flexWrap: "wrap", gap: 10, justifyContent: "center", marginTop: 22 },
   btn: { paddingVertical: 11, paddingHorizontal: 18, borderRadius: 7, borderWidth: 1 },
   primary: { backgroundColor: colors.gold, borderColor: colors.goldDark },

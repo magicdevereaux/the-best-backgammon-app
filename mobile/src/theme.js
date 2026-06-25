@@ -1,46 +1,56 @@
-// Shared visual language ported from the web app's premium dark board.
-// Keep these in sync with frontend/src/components/Board.jsx where practical.
+// Shared visual language derived from the app icon ("The Crossed Points").
+// Single source of truth for mobile colors — keep in sync with the web theme
+// variables in frontend/src/theme.css.
 
 export const colors = {
-  // App chrome
-  bg:        "#0F1A12",
-  bgRaised:  "#1A2A1E",
-  border:    "#2A4030",
-  text:      "#D0E8D4",
-  textMuted: "#6A8870",
-  danger:    "#E07060",
+  // ── Core palette ──────────────────────────────────────────────────────────
+  bg:        "#181818",  // app background
+  bgRaised:  "#242424",  // surface / cards / panels / inputs
+  surface:   "#242424",  // alias of bgRaised
+  border:    "#3A2E22",  // warm hairline border
+  text:      "#F5ECD7",  // primary text (ivory)
+  textMuted: "#A89880",  // secondary text
+  danger:    "#8B1A1A",  // error / destructive
 
-  // Accent (gold)
-  gold:      "#C8952A",
-  goldDark:  "#A07020",
-  goldText:  "#1A0A02",
+  // Named palette aliases (for clarity at call sites)
+  mahogany:  "#5C2010",
+  ivory:     "#F5ECD7",
+  walnut:    "#2A1A0E",
 
-  // Board frame + felt
-  frame:     "#2E1506",
-  felt:      "#1C4828",
-  feltHome:  "#1A3D22",
-  barFill:   "#24100A",
-  offBg:     "#1A0C06",
+  // ── Accent (gold) ─────────────────────────────────────────────────────────
+  gold:      "#C9A227",
+  goldDark:  "#9A7A1E",
+  goldText:  "#181818",  // text/icons on a gold fill
 
-  // Triangles (alternating)
-  triA:      "#7B2222",
-  triB:      "#C8952A",
+  // ── Board frame + surface ─────────────────────────────────────────────────
+  frame:     "#1C1109",  // board frame (darker walnut)
+  felt:      "#2A1A0E",  // playing surface (dark walnut)
+  feltHome:  "#241608",  // home quadrant, a touch lighter
+  barFill:   "#1F1208",
+  offBg:     "#160C05",
 
-  // Checkers
-  p1Fill:    "#F0E0B0",
-  p1Stroke:  "#A06820",
-  p2Fill:    "#160903",
-  p2Stroke:  "#7A4020",
+  // ── Triangles (alternating points) ────────────────────────────────────────
+  triA:      "#5C2010",  // mahogany
+  triB:      "#F5ECD7",  // ivory
 
-  // Move highlighting
-  selOverlay: "rgba(255,255,200,0.20)",
-  destSafe:   "rgba(55,210,85,0.45)",
-  destBlot:   "rgba(220,165,30,0.55)",
+  // ── Checkers ──────────────────────────────────────────────────────────────
+  p1Fill:    "#F5ECD7",  // light checker (ivory)
+  p1Stroke:  "#9A7A1E",  // gold-dark rim
+  p2Fill:    "#20130A",  // dark checker (near-black walnut)
+  p2Stroke:  "#C9A227",  // gold rim
+  checkerSelected: "#C9A227", // gold selection ring
 
-  // Dice
-  dieFace:   "#F5F0E8",
-  dieFaceUsed: "#2A2A2A",
-  diePip:    "#1A1208",
-  diePipUsed: "#555555",
-  dieBorder: "#C8A855",
+  // ── Move highlighting ─────────────────────────────────────────────────────
+  selOverlay: "rgba(201,162,39,0.26)",  // gold tint
+  destSafe:   "rgba(201,162,39,0.42)",  // gold tint
+  destBlot:   "rgba(139,26,26,0.52)",   // error-red tint
+  offLegal:   "rgba(201,162,39,0.16)",  // faint gold wash on bear-off zone
+
+  // ── Dice ──────────────────────────────────────────────────────────────────
+  dieFace:     "#F5ECD7",
+  dieFaceUsed: "#242424",
+  diePip:      "#181818",
+  diePipUsed:  "#6B6B6B",
+  dieBorder:   "#C9A227",
+  dieBorderUsed: "#1A1A1A",
 };

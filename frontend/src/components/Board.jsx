@@ -28,20 +28,28 @@ const OCR = 7;                       // off-tray checker radius
 const O_STEP = 14;
 
 // ── Palette ─────────────────────────────────────────────────────────────────
-const FELT       = "#1C4828";
-const FELT_HOME  = "#1A3D22";
-const FRAME_COL  = "#2E1506";
-const BAR_FILL   = "#24100A";
-const TRI_A      = "#7B2222";
-const TRI_B      = "#C8952A";
-const SEL_OVL    = "rgba(255,255,200,0.20)";
-const DEST_SAFE  = "rgba(55,210,85,0.38)";
-const DEST_BLOT  = "rgba(220,165,30,0.46)";
-const OFF_BG     = "#1A0C06";
-const P1_FILL    = "#F0E0B0";
-const P1_STR     = "#A06820";
-const P2_FILL    = "#160903";
-const P2_STR     = "#7A4020";
+// All colors come from the central theme (frontend/src/theme.css). These are
+// CSS custom properties; because SVG presentation attributes don't resolve
+// var(), they are applied through the `style` prop below.
+const FELT       = "var(--board-surface)";   // walnut playing field
+const FELT_HOME  = "var(--board-home)";
+const FRAME_COL  = "var(--frame)";
+const BAR_FILL   = "var(--board-bar)";
+const TRI_A      = "var(--point-dark)";      // mahogany
+const TRI_B      = "var(--point-light)";     // ivory
+const SEL_OVL    = "var(--overlay-selected)";
+const DEST_SAFE  = "var(--overlay-dest)";
+const DEST_BLOT  = "var(--overlay-dest-blot)";
+const OFF_BG     = "var(--board-off)";
+const OFF_LEGAL  = "rgba(201, 162, 39, 0.16)";   // faint gold wash
+const P1_FILL    = "var(--checker-light)";
+const P1_STR     = "var(--checker-light-stroke)";
+const P2_FILL    = "var(--checker-dark)";
+const P2_STR     = "var(--checker-dark-stroke)";
+const SELECT_RING = "var(--checker-selected)";
+const EDGE       = "var(--point-edge)";
+const LABEL      = "var(--point-label)";
+const DIVIDER    = "var(--border)";
 
 // ── Static point layout ─────────────────────────────────────────────────────
 const POINT_DEFS = [
@@ -81,15 +89,16 @@ function Pip({ player, cx, cy, r, isTopmost, isSelected }) {
       <circle
         data-testid={`${player}-checker`}
         cx={cx} cy={cy} r={r}
-        fill={fill} stroke={stroke} strokeWidth={2.5}
+        strokeWidth={2.5}
+        style={{ fill, stroke }}
       />
-      <circle cx={cx} cy={cy} r={r - 5} fill="none" stroke={stroke} strokeWidth={1} opacity={0.45} />
+      <circle cx={cx} cy={cy} r={r - 5} fill="none" strokeWidth={1} opacity={0.45} style={{ stroke }} />
       {/* Highlight arc on light checker */}
       {player === "p1" && (
         <circle cx={cx} cy={cy - r * 0.28} r={r * 0.45} fill="rgba(255,255,255,0.18)" style={{ pointerEvents: "none" }} />
       )}
       {isTopmost && isSelected && (
-        <circle cx={cx} cy={cy} r={r + 4} fill="none" stroke="#FFE44A" strokeWidth={2.5} />
+        <circle cx={cx} cy={cy} r={r + 4} fill="none" strokeWidth={2.5} style={{ stroke: SELECT_RING }} />
       )}
     </>
   );
@@ -101,7 +110,7 @@ export default function Board({ boardState, currentPlayer, legalMoves = [], onMo
 
   if (!boardState) {
     return (
-      <div style={{ padding: "1rem", color: "#888", fontFamily: "sans-serif" }}>
+      <div style={{ padding: "1rem", color: "var(--text-secondary)", fontFamily: "sans-serif" }}>
         No board state available.
       </div>
     );
@@ -170,11 +179,11 @@ export default function Board({ boardState, currentPlayer, legalMoves = [], onMo
         onClick={() => handlePointClick(num)}
         style={{ cursor: interactive ? "pointer" : "default" }}
       >
-        <polygon points={triPts(lx, isTop)} fill={triColor} />
+        <polygon points={triPts(lx, isTop)} style={{ fill: triColor }} />
         {/* Subtle triangle edge */}
-        <polygon points={triPts(lx, isTop)} fill="none" stroke="rgba(0,0,0,0.25)" strokeWidth={0.5} />
+        <polygon points={triPts(lx, isTop)} fill="none" strokeWidth={0.5} style={{ stroke: EDGE }} />
         {overlayFill && (
-          <polygon points={triPts(lx, isTop)} fill={overlayFill} />
+          <polygon points={triPts(lx, isTop)} style={{ fill: overlayFill }} />
         )}
         {/* Checkers */}
         {player && Array.from({ length: shown }).map((_, i) => (
@@ -195,10 +204,9 @@ export default function Board({ boardState, currentPlayer, legalMoves = [], onMo
             y={checkerCY(isTop, shown - 1)}
             textAnchor="middle"
             dominantBaseline="central"
-            fill="#fff"
             fontSize={10}
             fontWeight="bold"
-            style={{ pointerEvents: "none" }}
+            style={{ pointerEvents: "none", fill: "var(--ivory)" }}
           >
             {count}
           </text>
@@ -209,9 +217,8 @@ export default function Board({ boardState, currentPlayer, legalMoves = [], onMo
           y={isTop ? BH - 5 : 5}
           textAnchor="middle"
           dominantBaseline={isTop ? "auto" : "hanging"}
-          fill="#5A8060"
           fontSize={8}
-          style={{ pointerEvents: "none" }}
+          style={{ pointerEvents: "none", fill: LABEL }}
         >
           {num}
         </text>
@@ -242,9 +249,8 @@ export default function Board({ boardState, currentPlayer, legalMoves = [], onMo
         cx={offCX}
         cy={startY + i * O_STEP}
         r={OCR}
-        fill={fill}
-        stroke={stroke}
         strokeWidth={1.5}
+        style={{ fill, stroke }}
       />
     ));
   }
@@ -264,12 +270,12 @@ export default function Board({ boardState, currentPlayer, legalMoves = [], onMo
         style={{ display: "block", width: "100%", maxWidth: SVG_W, height: "auto" }}
       >
         {/* ── Felt ──────────────────────────────────────────────────────── */}
-        <rect x={0} y={0} width={BAR_START} height={BH} fill={FELT} />
-        <rect x={BAR_END} y={0} width={HALF_W} height={BH} fill={FELT_HOME} />
+        <rect x={0} y={0} width={BAR_START} height={BH} style={{ fill: FELT }} />
+        <rect x={BAR_END} y={0} width={HALF_W} height={BH} style={{ fill: FELT_HOME }} />
 
         {/* ── Off tray ──────────────────────────────────────────────────── */}
-        <rect x={offX - 2} y={0} width={OFF_W + 4} height={BH} fill={OFF_BG} rx={4} />
-        <line x1={offX - 2} y1={BH / 2} x2={offX + OFF_W + 2} y2={BH / 2} stroke="#3A2010" strokeWidth={1} />
+        <rect x={offX - 2} y={0} width={OFF_W + 4} height={BH} rx={4} style={{ fill: OFF_BG }} />
+        <line x1={offX - 2} y1={BH / 2} x2={offX + OFF_W + 2} y2={BH / 2} strokeWidth={1} style={{ stroke: DIVIDER }} />
 
         {/* ── 24 points ─────────────────────────────────────────────────── */}
         {POINT_DEFS.map(renderPoint)}
@@ -285,22 +291,22 @@ export default function Board({ boardState, currentPlayer, legalMoves = [], onMo
           onClick={handleBarClick}
           style={{ cursor: interactive ? "pointer" : "default" }}
         >
-          <rect x={BAR_START} y={0} width={BAR_W} height={BH} fill={BAR_FILL} />
+          <rect x={BAR_START} y={0} width={BAR_W} height={BH} style={{ fill: BAR_FILL }} />
           {/* Centre spine */}
-          <line x1={barCX} y1={16} x2={barCX} y2={BH - 16} stroke="#4A2A14" strokeWidth={1} />
+          <line x1={barCX} y1={16} x2={barCX} y2={BH - 16} strokeWidth={1} style={{ stroke: DIVIDER }} />
           {barIsLegalSrc && (
-            <rect x={BAR_START} y={0} width={BAR_W} height={BH} fill={DEST_SAFE} />
+            <rect x={BAR_START} y={0} width={BAR_W} height={BH} style={{ fill: DEST_SAFE }} />
           )}
           {barSelected && (
-            <rect x={BAR_START} y={0} width={BAR_W} height={BH} fill={SEL_OVL} />
+            <rect x={BAR_START} y={0} width={BAR_W} height={BH} style={{ fill: SEL_OVL }} />
           )}
           {/* P2 checkers — top half */}
           {Array.from({ length: Math.min(bar.p2, 6) }).map((_, i) => {
             const cy = BH / 2 - 28 - i * C_STEP;
             return (
               <g key={`p2b${i}`}>
-                <circle data-testid="p2-checker" cx={barCX} cy={cy} r={CR - 1} fill={P2_FILL} stroke={P2_STR} strokeWidth={2} />
-                <circle cx={barCX} cy={cy} r={CR - 6} fill="none" stroke={P2_STR} strokeWidth={1} opacity={0.4} />
+                <circle data-testid="p2-checker" cx={barCX} cy={cy} r={CR - 1} strokeWidth={2} style={{ fill: P2_FILL, stroke: P2_STR }} />
+                <circle cx={barCX} cy={cy} r={CR - 6} fill="none" strokeWidth={1} opacity={0.4} style={{ stroke: P2_STR }} />
               </g>
             );
           })}
@@ -309,8 +315,8 @@ export default function Board({ boardState, currentPlayer, legalMoves = [], onMo
             const cy = BH / 2 + 28 + i * C_STEP;
             return (
               <g key={`p1b${i}`}>
-                <circle data-testid="p1-checker" cx={barCX} cy={cy} r={CR - 1} fill={P1_FILL} stroke={P1_STR} strokeWidth={2} />
-                <circle cx={barCX} cy={cy} r={CR - 6} fill="none" stroke={P1_STR} strokeWidth={1} opacity={0.4} />
+                <circle data-testid="p1-checker" cx={barCX} cy={cy} r={CR - 1} strokeWidth={2} style={{ fill: P1_FILL, stroke: P1_STR }} />
+                <circle cx={barCX} cy={cy} r={CR - 6} fill="none" strokeWidth={1} opacity={0.4} style={{ stroke: P1_STR }} />
               </g>
             );
           })}
@@ -318,8 +324,8 @@ export default function Board({ boardState, currentPlayer, legalMoves = [], onMo
             <text
               x={barCX} y={BH / 2}
               textAnchor="middle" dominantBaseline="central"
-              fill="#4A2A14" fontSize={7} fontWeight="bold" letterSpacing={2}
-              style={{ pointerEvents: "none" }}
+              fontSize={7} fontWeight="bold" letterSpacing={2}
+              style={{ pointerEvents: "none", fill: LABEL }}
             >
               BAR
             </text>
@@ -333,13 +339,13 @@ export default function Board({ boardState, currentPlayer, legalMoves = [], onMo
           onClick={() => handleOffClick("p2")}
           style={{ cursor: interactive ? "pointer" : "default" }}
         >
-          <rect x={offX} y={0} width={OFF_W} height={BH / 2 - 2} fill={p2OffLegal ? "rgba(55,210,85,0.18)" : "transparent"} rx={3} />
-          <text x={offCX} y={8} textAnchor="middle" dominantBaseline="hanging" fill="#4A6050" fontSize={7} fontWeight="bold" style={{ pointerEvents: "none" }}>
+          <rect x={offX} y={0} width={OFF_W} height={BH / 2 - 2} rx={3} style={{ fill: p2OffLegal ? OFF_LEGAL : "transparent" }} />
+          <text x={offCX} y={8} textAnchor="middle" dominantBaseline="hanging" fontSize={7} fontWeight="bold" style={{ pointerEvents: "none", fill: LABEL }}>
             OFF
           </text>
           {offCheckers("p2", off.p2, p2StartY)}
           {off.p2 > 0 && (
-            <text x={offCX} y={BH / 2 - 10} textAnchor="middle" fill="#8A9A88" fontSize={9} style={{ pointerEvents: "none" }}>
+            <text x={offCX} y={BH / 2 - 10} textAnchor="middle" fontSize={9} style={{ pointerEvents: "none", fill: "var(--text-secondary)" }}>
               {off.p2}
             </text>
           )}
@@ -352,13 +358,13 @@ export default function Board({ boardState, currentPlayer, legalMoves = [], onMo
           onClick={() => handleOffClick("p1")}
           style={{ cursor: interactive ? "pointer" : "default" }}
         >
-          <rect x={offX} y={BH / 2 + 2} width={OFF_W} height={BH / 2 - 2} fill={p1OffLegal ? "rgba(55,210,85,0.18)" : "transparent"} rx={3} />
-          <text x={offCX} y={BH / 2 + 8} textAnchor="middle" dominantBaseline="hanging" fill="#4A6050" fontSize={7} fontWeight="bold" style={{ pointerEvents: "none" }}>
+          <rect x={offX} y={BH / 2 + 2} width={OFF_W} height={BH / 2 - 2} rx={3} style={{ fill: p1OffLegal ? OFF_LEGAL : "transparent" }} />
+          <text x={offCX} y={BH / 2 + 8} textAnchor="middle" dominantBaseline="hanging" fontSize={7} fontWeight="bold" style={{ pointerEvents: "none", fill: LABEL }}>
             OFF
           </text>
           {offCheckers("p1", off.p1, p1StartY)}
           {off.p1 > 0 && (
-            <text x={offCX} y={BH - 10} textAnchor="middle" fill="#8A9A88" fontSize={9} style={{ pointerEvents: "none" }}>
+            <text x={offCX} y={BH - 10} textAnchor="middle" fontSize={9} style={{ pointerEvents: "none", fill: "var(--text-secondary)" }}>
               {off.p1}
             </text>
           )}

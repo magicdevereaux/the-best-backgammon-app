@@ -6,7 +6,7 @@ import { useAuth } from "../context/AuthContext";
 function StatRow({ label, value }) {
   return (
     <tr>
-      <td style={{ padding: "0.4rem 1rem 0.4rem 0", color: "#555" }}>{label}</td>
+      <td style={{ padding: "0.4rem 1rem 0.4rem 0", color: "var(--text-secondary)" }}>{label}</td>
       <td style={{ padding: "0.4rem 0", fontWeight: "bold" }}>{value}</td>
     </tr>
   );
@@ -36,7 +36,7 @@ export default function ProfilePage() {
   return (
     <div style={{ padding: "1.5rem", maxWidth: 480 }}>
       <h1 style={{ marginBottom: "0.25rem" }}>{stats.username}</h1>
-      <p style={{ color: "#888", marginTop: 0 }}>Player profile</p>
+      <p style={{ color: "var(--text-secondary)", marginTop: 0 }}>Player profile</p>
 
       <h2>Lifetime stats</h2>
       <table style={{ borderCollapse: "collapse" }}>

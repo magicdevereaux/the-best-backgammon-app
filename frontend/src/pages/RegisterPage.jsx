@@ -54,7 +54,7 @@ export default function RegisterPage() {
             />
           </label>
         </div>
-        {error && <p style={{ color: "#c0392b" }}>{error}</p>}
+        {error && <p style={{ color: "var(--error)" }}>{error}</p>}
         <button type="submit" disabled={loading}>
           {loading ? "Creating account…" : "Register"}
         </button>

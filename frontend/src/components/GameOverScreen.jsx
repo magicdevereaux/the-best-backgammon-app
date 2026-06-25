@@ -16,7 +16,7 @@ export default function GameOverScreen({ game, match, onNextGame, onNewMatch, on
       style={{
         position: "fixed",
         inset: 0,
-        background: "rgba(0,0,0,0.6)",
+        background: "rgba(0,0,0,0.7)",
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
@@ -25,19 +25,21 @@ export default function GameOverScreen({ game, match, onNextGame, onNewMatch, on
     >
       <div
         style={{
-          background: "#fff",
+          background: "var(--surface)",
+          color: "var(--ivory)",
+          border: "1px solid var(--border)",
           borderRadius: 12,
           padding: "2rem 2.5rem",
           maxWidth: 420,
           width: "90%",
           textAlign: "center",
-          boxShadow: "0 8px 32px rgba(0,0,0,0.25)",
+          boxShadow: "0 8px 32px rgba(0,0,0,0.55)",
         }}
       >
-        <h2 style={{ marginTop: 0 }}>
+        <h2 style={{ marginTop: 0, color: "var(--gold)" }}>
           {winnerName} {label}
         </h2>
-        <p style={{ fontSize: "1.1rem", color: "#555" }}>
+        <p style={{ fontSize: "1.1rem", color: "var(--text-secondary)" }}>
           {pts === 1
             ? "1 point awarded"
             : `${pts} points awarded`}
@@ -51,7 +53,8 @@ export default function GameOverScreen({ game, match, onNextGame, onNewMatch, on
             style={{
               margin: "1rem 0",
               padding: "0.75rem 1rem",
-              background: "#f5f5f5",
+              background: "var(--surface-raised)",
+              border: "1px solid var(--border)",
               borderRadius: 8,
             }}
           >
@@ -60,7 +63,7 @@ export default function GameOverScreen({ game, match, onNextGame, onNewMatch, on
               {match.player1_name} {match.player1_score} – {match.player2_score} {match.player2_name}
             </span>
             {match.status === "finished" && (
-              <p style={{ color: "#27ae60", fontWeight: "bold", marginBottom: 0 }}>
+              <p style={{ color: "var(--gold)", fontWeight: "bold", marginBottom: 0 }}>
                 {match.winner === "p1" ? match.player1_name : match.player2_name} wins the match!
               </p>
             )}
@@ -69,14 +72,14 @@ export default function GameOverScreen({ game, match, onNextGame, onNewMatch, on
 
         <div style={{ display: "flex", gap: "0.75rem", justifyContent: "center", flexWrap: "wrap", marginTop: "1.25rem" }}>
           {match && match.status === "active" && (
-            <button onClick={onNextGame} style={{ fontWeight: "bold" }}>
+            <button onClick={onNextGame} style={{ fontWeight: "bold", background: "var(--gold)", color: "var(--on-gold)", borderColor: "var(--gold-dark)" }}>
               Next Game
             </button>
           )}
           {(!match || match.status === "finished") && (
             <button onClick={onNewMatch}>New Match</button>
           )}
-          <button onClick={onLobby} style={{ background: "#eee", color: "#333" }}>
+          <button onClick={onLobby} style={{ background: "var(--surface-raised)", color: "var(--text-secondary)" }}>
             Back to Lobby
           </button>
         </div>
