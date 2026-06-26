@@ -6,7 +6,9 @@ SECRET_KEY = "django-insecure-dev-key-change-in-production"
 
 DEBUG = True
 
-ALLOWED_HOSTS = ["localhost", "127.0.0.1"]
+# Add your dev machine's LAN IP here to test from a physical device (Expo Go).
+# IP is DHCP-assigned and may change; for local dev only you can use ["*"].
+ALLOWED_HOSTS = ["localhost", "127.0.0.1", "192.168.1.156"]
 
 INSTALLED_APPS = [
     "django.contrib.admin",

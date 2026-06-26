@@ -16,10 +16,14 @@ expo-env.d.ts
 .kotlin/
 *.orig.*
 *.jks
+*.keystore
 *.p8
 *.p12
 *.key
 *.mobileprovision
+
+# EAS local credentials (may contain keystore passwords)
+credentials.json
 
 # Metro
 .metro-health-check*

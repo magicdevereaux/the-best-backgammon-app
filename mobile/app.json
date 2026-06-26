@@ -42,6 +42,13 @@
     ],
     "experiments": {
       "typedRoutes": true
-    }
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "ad1de8b5-2517-4198-9de9-a1abbb3aa5a7"
+      }
+    },
+    "owner": "magicdevereaux"
   }
 }
