@@ -4,7 +4,7 @@ import {
   rollDice as apiRollDice,
   confirmTurn as apiConfirmTurn,
 } from "../api/gameApi";
-import { getLegalMoves, applyMove } from "../utils/gameLogic";
+import { getLegalMoves, getCombinedMoves, applyMove } from "../utils/gameLogic";
 
 function cloneBoard(boardState) {
   return {
@@ -64,9 +64,16 @@ export function useGame(gameId) {
     }
   }, [gameId]);
 
+  // Single-die moves plus combined (multi-die) moves through legal
+  // intermediates. Combined entries carry an array `path` as their third
+  // element; single moves carry a numeric die.
   const legalMoves = useMemo(() => {
     if (!game || !stagedBoard) return [];
-    return getLegalMoves(stagedBoard, game.current_turn, stagedDice);
+    const player = game.current_turn;
+    return [
+      ...getLegalMoves(stagedBoard, player, stagedDice),
+      ...getCombinedMoves(stagedBoard, player, stagedDice),
+    ];
   }, [game, stagedBoard, stagedDice]);
 
   const stageMove = useCallback(
@@ -77,11 +84,33 @@ export function useGame(gameId) {
       );
       if (!match) return;
 
+      const player = game.current_turn;
+
+      // Combined move: play each sub-move in order, consuming each die. The
+      // backend re-validates these as ordinary sequential single moves.
+      if (Array.isArray(match[2])) {
+        let board = stagedBoard;
+        const newDice = [...stagedDice];
+        const newMoves = [];
+        let cur = fromPoint;
+        for (const step of match[2]) {
+          board = applyMove(board, player, cur, step.to);
+          newDice.splice(newDice.indexOf(step.die), 1);
+          newMoves.push({ from_point: cur, to_point: step.to });
+          cur = step.to;
+        }
+        setStagedBoard(board);
+        setStagedDice(newDice);
+        setPendingMoves((prev) => [...prev, ...newMoves]);
+        return;
+      }
+
+      // Single-die move.
       const die = match[2];
       const newDice = [...stagedDice];
       newDice.splice(newDice.indexOf(die), 1);
 
-      setStagedBoard(applyMove(stagedBoard, game.current_turn, fromPoint, toPoint));
+      setStagedBoard(applyMove(stagedBoard, player, fromPoint, toPoint));
       setStagedDice(newDice);
       setPendingMoves((prev) => [...prev, { from_point: fromPoint, to_point: toPoint }]);
     },

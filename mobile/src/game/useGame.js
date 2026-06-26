@@ -6,7 +6,7 @@ import {
   rollDice as apiRollDice,
   confirmTurn as apiConfirmTurn,
 } from "../api/games";
-import { getLegalMoves, applyMove } from "./logic";
+import { getLegalMoves, getCombinedMoves, applyMove } from "./logic";
 
 // How often to poll the backend for the opponent's moves while a game is active.
 const POLL_MS = 3500;
@@ -55,6 +55,10 @@ export function useGame(gameId) {
   const [stagedBoard, setStagedBoard] = useState(null);
   const [stagedDice, setStagedDice] = useState([]);
   const [pendingMoves, setPendingMoves] = useState([]);
+  // Sub-move counts per user action (1 for a single move, 2+ for a combined
+  // move) so Undo can revert a combined move as one action. pendingMoves itself
+  // stays a flat list of single moves for the backend and for replay().
+  const [moveGroups, setMoveGroups] = useState([]);
   const [refreshing, setRefreshing] = useState(false);
 
   const [reloadToken, setReloadToken] = useState(0);
@@ -139,6 +143,7 @@ export function useGame(gameId) {
     setStagedBoard(cloneBoard(game.board_state));
     setStagedDice([...game.dice_values]);
     setPendingMoves([]);
+    setMoveGroups([]);
   }, [game]);
 
   const rollDice = useCallback(async () => {
@@ -151,9 +156,16 @@ export function useGame(gameId) {
     }
   }, [gameId]);
 
+  // Single-die moves plus combined (multi-die) moves through legal
+  // intermediates. Combined entries carry an array `path` as their third
+  // element; single moves carry a numeric die.
   const legalMoves = useMemo(() => {
     if (!game || !stagedBoard) return [];
-    return getLegalMoves(stagedBoard, game.current_turn, stagedDice);
+    const player = game.current_turn;
+    return [
+      ...getLegalMoves(stagedBoard, player, stagedDice),
+      ...getCombinedMoves(stagedBoard, player, stagedDice),
+    ];
   }, [game, stagedBoard, stagedDice]);
 
   const stageMove = useCallback(
@@ -164,13 +176,38 @@ export function useGame(gameId) {
       );
       if (!match) return;
 
+      const player = game.current_turn;
+
+      // Combined move: play each sub-move in order, consuming each die, and
+      // record the group size so Undo reverts the whole move at once. The
+      // backend re-validates these as ordinary sequential single moves.
+      if (Array.isArray(match[2])) {
+        let board = stagedBoard;
+        const newDice = [...stagedDice];
+        const newMoves = [];
+        let cur = fromPoint;
+        for (const step of match[2]) {
+          board = applyMove(board, player, cur, step.to);
+          newDice.splice(newDice.indexOf(step.die), 1);
+          newMoves.push({ from_point: cur, to_point: step.to });
+          cur = step.to;
+        }
+        setStagedBoard(board);
+        setStagedDice(newDice);
+        setPendingMoves((prev) => [...prev, ...newMoves]);
+        setMoveGroups((prev) => [...prev, newMoves.length]);
+        return;
+      }
+
+      // Single-die move.
       const die = match[2];
       const newDice = [...stagedDice];
       newDice.splice(newDice.indexOf(die), 1);
 
-      setStagedBoard(applyMove(stagedBoard, game.current_turn, fromPoint, toPoint));
+      setStagedBoard(applyMove(stagedBoard, player, fromPoint, toPoint));
       setStagedDice(newDice);
       setPendingMoves((prev) => [...prev, { from_point: fromPoint, to_point: toPoint }]);
+      setMoveGroups((prev) => [...prev, 1]);
     },
     [game, stagedBoard, stagedDice, legalMoves]
   );
@@ -180,12 +217,15 @@ export function useGame(gameId) {
     setStagedBoard(cloneBoard(game.board_state));
     setStagedDice([...game.dice_values]);
     setPendingMoves([]);
+    setMoveGroups([]);
   }, [game]);
 
-  // Revert only the most recently staged move by replaying the rest.
+  // Revert the most recently staged action by replaying the rest. A combined
+  // move counts as one action, so its sub-moves are dropped together.
   const undoMove = useCallback(() => {
-    if (!game || pendingMoves.length === 0) return;
-    const keep = pendingMoves.slice(0, -1);
+    if (!game || moveGroups.length === 0) return;
+    const lastCount = moveGroups[moveGroups.length - 1];
+    const keep = pendingMoves.slice(0, pendingMoves.length - lastCount);
     const { board, dice } = replay(
       game.board_state,
       game.current_turn,
@@ -195,7 +235,8 @@ export function useGame(gameId) {
     setStagedBoard(board);
     setStagedDice(dice);
     setPendingMoves(keep);
-  }, [game, pendingMoves]);
+    setMoveGroups(moveGroups.slice(0, -1));
+  }, [game, pendingMoves, moveGroups]);
 
   const confirmTurn = useCallback(async () => {
     try {

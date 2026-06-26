@@ -2,6 +2,7 @@ import {
   opponent,
   canBearOff,
   getLegalMoves,
+  getCombinedMoves,
   applyMove,
   checkWinner,
 } from '../gameLogic';
@@ -114,6 +115,59 @@ describe('getLegalMoves', () => {
     const moves = getLegalMoves(board, 'p2', [3]);
     // Die 3 enters p2 on point 25 - 3 = 22.
     expect(moves).toContainEqual([0, 22, 3]);
+  });
+});
+
+describe('getCombinedMoves', () => {
+  test('non-doubles: highlights the summed destination via a legal intermediate', () => {
+    const board = emptyBoard();
+    board.points[0] = 1; // p1 at point 1
+    const combos = getCombinedMoves(board, 'p1', [2, 3]);
+    const combo = combos.find((m) => m[0] === 1 && m[1] === 6);
+    expect(combo).toBeDefined();      // 1 -> 6 using 2 + 3
+    expect(combo[2]).toHaveLength(2); // two sub-moves in the path
+    // single-die destinations are NOT included here (use getLegalMoves)
+    expect(combos.find((m) => m[1] === 3)).toBeUndefined();
+    expect(combos.find((m) => m[1] === 4)).toBeUndefined();
+  });
+
+  test('non-doubles: uses the open ordering when one intermediate is blocked', () => {
+    const board = emptyBoard();
+    board.points[0] = 1;  // p1 at point 1
+    board.points[2] = -2; // point 3 blocked → the 2-first ordering is dead
+    const combos = getCombinedMoves(board, 'p1', [2, 3]);
+    // 1 -> 4 (die 3) -> 6 (die 2) is still legal
+    expect(combos.find((m) => m[0] === 1 && m[1] === 6)).toBeDefined();
+  });
+
+  test('non-doubles: no combined move when both intermediates are blocked', () => {
+    const board = emptyBoard();
+    board.points[0] = 1;
+    board.points[2] = -2; // point 3 blocked
+    board.points[3] = -2; // point 4 blocked
+    const combos = getCombinedMoves(board, 'p1', [2, 3]);
+    expect(combos.find((m) => m[1] === 6)).toBeUndefined();
+  });
+
+  test('doubles: chains +2x, +3x and +4x as far as the dice allow', () => {
+    const board = emptyBoard();
+    board.points[0] = 1; // p1 at point 1
+    const combos = getCombinedMoves(board, 'p1', [2, 2, 2, 2]);
+    const tos = combos.filter((m) => m[0] === 1).map((m) => m[1]).sort((a, b) => a - b);
+    expect(tos).toEqual([5, 7, 9]); // 1->5 (2 dice), ->7 (3), ->9 (4)
+  });
+
+  test('returns nothing with fewer than two dice', () => {
+    const board = emptyBoard();
+    board.points[0] = 1;
+    expect(getCombinedMoves(board, 'p1', [4])).toEqual([]);
+  });
+
+  test('returns nothing while a checker is on the bar', () => {
+    const board = emptyBoard();
+    board.points[0] = 1;
+    board.bar.p1 = 1;
+    expect(getCombinedMoves(board, 'p1', [2, 3])).toEqual([]);
   });
 });
 

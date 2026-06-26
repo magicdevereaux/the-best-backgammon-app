@@ -73,6 +73,30 @@ describe("useGame", () => {
     expect(result.current.stagedBoard.points[16]).toBe(3); // point 17 back to original
   });
 
+  test("stageMove plays a combined move and consumes both dice", async () => {
+    const { result } = await mountLoaded();
+    act(() => result.current.stageMove(1, 9)); // 1->4 (the 3) then 4->9 (the 5)
+
+    expect(result.current.stagedDice).toEqual([]);
+    expect(result.current.pendingMoves).toEqual([
+      { from_point: 1, to_point: 4 },
+      { from_point: 4, to_point: 9 },
+    ]);
+    expect(result.current.stagedBoard.points[0]).toBe(1); // one checker left point 1
+    expect(result.current.stagedBoard.points[8]).toBe(1); // arrived at point 9
+  });
+
+  test("undoMove reverts a combined move as a single action", async () => {
+    const { result } = await mountLoaded();
+    act(() => result.current.stageMove(1, 9));
+    expect(result.current.pendingMoves).toHaveLength(2);
+
+    act(() => result.current.undoMove());
+    expect(result.current.pendingMoves).toEqual([]);
+    expect(result.current.stagedDice).toEqual([3, 5]);
+    expect(result.current.stagedBoard).toEqual(INITIAL);
+  });
+
   test("resetTurn clears all staged moves", async () => {
     const { result } = await mountLoaded();
     act(() => result.current.stageMove(1, 4));

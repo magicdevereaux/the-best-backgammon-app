@@ -1,6 +1,7 @@
 import {
   opponent,
   getLegalMoves,
+  getCombinedMoves,
   applyMove,
   canBearOff,
   checkWinner,
@@ -55,6 +56,58 @@ describe("getLegalMoves (move staging source of truth)", () => {
     board.points[23] = 2; // two p1 checkers on point 24 (home)
     const moves = getLegalMoves(board, "p1", [1]);
     expect(moves).toContainEqual([24, 25, 1]); // bear off with a 1
+  });
+});
+
+describe("getCombinedMoves (combined-move highlighting)", () => {
+  test("non-doubles: offers the summed destination via a legal intermediate", () => {
+    const board = emptyBoard();
+    board.points[0] = 1; // p1 at point 1
+    const combos = getCombinedMoves(board, "p1", [2, 3]);
+    const combo = combos.find((m) => m[0] === 1 && m[1] === 6);
+    expect(combo).toBeDefined();      // 1 -> 6 using 2 + 3
+    expect(combo[2]).toHaveLength(2); // two sub-moves
+    // single-die destinations are not part of the combined set
+    expect(combos.find((m) => m[1] === 3)).toBeUndefined();
+    expect(combos.find((m) => m[1] === 4)).toBeUndefined();
+  });
+
+  test("non-doubles: falls back to the open ordering when one intermediate is blocked", () => {
+    const board = emptyBoard();
+    board.points[0] = 1;  // p1 at point 1
+    board.points[2] = -2; // point 3 blocked
+    const combos = getCombinedMoves(board, "p1", [2, 3]);
+    expect(combos.find((m) => m[0] === 1 && m[1] === 6)).toBeDefined();
+  });
+
+  test("non-doubles: nothing when both intermediates are blocked", () => {
+    const board = emptyBoard();
+    board.points[0] = 1;
+    board.points[2] = -2; // point 3 blocked
+    board.points[3] = -2; // point 4 blocked
+    const combos = getCombinedMoves(board, "p1", [2, 3]);
+    expect(combos.find((m) => m[1] === 6)).toBeUndefined();
+  });
+
+  test("doubles: chains +2x, +3x and +4x as far as the dice allow", () => {
+    const board = emptyBoard();
+    board.points[0] = 1; // p1 at point 1
+    const combos = getCombinedMoves(board, "p1", [2, 2, 2, 2]);
+    const tos = combos.filter((m) => m[0] === 1).map((m) => m[1]).sort((a, b) => a - b);
+    expect(tos).toEqual([5, 7, 9]);
+  });
+
+  test("nothing with fewer than two dice", () => {
+    const board = emptyBoard();
+    board.points[0] = 1;
+    expect(getCombinedMoves(board, "p1", [4])).toEqual([]);
+  });
+
+  test("nothing while a checker is on the bar", () => {
+    const board = emptyBoard();
+    board.points[0] = 1;
+    board.bar.p1 = 1;
+    expect(getCombinedMoves(board, "p1", [2, 3])).toEqual([]);
   });
 });
 

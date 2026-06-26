@@ -104,6 +104,64 @@ export function getLegalMoves(boardState, player, diceValues) {
 }
 
 /**
+ * Enumerate *combined* moves: advancing a single checker with two or more dice
+ * in one action, through legal intermediate points. Returns an array of
+ * [from, to, path] tuples where `path` is the ordered list of single sub-moves
+ * ({ to, die }) to play — so the caller can stage each sub-move and consume
+ * each die, exactly as the backend re-validates them one at a time.
+ *
+ * Scope: regular point-to-point chains only. Bar entry and bearing off are NOT
+ * combined here (they remain single-die actions). Single-die moves are not
+ * included either — use getLegalMoves for those. For a non-double roll [a,b]
+ * this yields the +(a+b) destination; for doubles it yields +2x / +3x / +4x as
+ * far as the remaining dice and open points allow.
+ *
+ * Combined entries are distinguished from single moves by an array third
+ * element (the path) rather than a numeric die.
+ */
+export function getCombinedMoves(boardState, player, diceValues) {
+  const combined = [];
+  if (!diceValues || diceValues.length < 2) return combined;
+  // Combined moves never apply while a checker must enter from the bar.
+  if (boardState.bar[player] > 0) return combined;
+
+  const sign = checkerSign(player);
+  const seen = new Set(); // `${from}->${to}` — dedupe a-then-b vs b-then-a
+
+  function explore(board, from, origin, remaining, path) {
+    // Legal single steps from `from` that stay on the board (1-24). Bear-off
+    // (to 25) is excluded from combined moves by scope.
+    const steps = getLegalMoves(board, player, remaining).filter(
+      (m) => m[0] === from && m[1] >= 1 && m[1] <= 24
+    );
+    for (const [, to, die] of steps) {
+      const nextRemaining = [...remaining];
+      nextRemaining.splice(nextRemaining.indexOf(die), 1);
+      const nextPath = [...path, { to, die }];
+      const nextBoard = applyMove(board, player, from, to);
+      if (nextPath.length >= 2) {
+        const key = `${origin}->${to}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          combined.push([origin, to, nextPath]);
+        }
+      }
+      if (nextRemaining.length > 0) {
+        explore(nextBoard, to, origin, nextRemaining, nextPath);
+      }
+    }
+  }
+
+  boardState.points.forEach((value, idx) => {
+    if (value * sign <= 0) return;
+    const from = idx + 1;
+    explore(boardState, from, from, [...diceValues], []);
+  });
+
+  return combined;
+}
+
+/**
  * Return a new board state with the given move applied. Handles entering
  * from the bar, hitting a lone opponent checker (sending it to the bar), and
  * bearing off. Does not mutate the input boardState.
