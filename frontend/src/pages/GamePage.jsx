@@ -26,7 +26,7 @@ export default function GamePage() {
   const {
     game, loading, error, actionError,
     rollDice, stagedBoard, stagedDice,
-    pendingMoves, legalMoves,
+    pendingMoves, legalMoves, mustUseMoreDice,
     stageMove, resetTurn, confirmTurn, reload,
   } = useGame(id);
 
@@ -126,6 +126,7 @@ export default function GamePage() {
         onResetTurn={resetTurn}
         onConfirmTurn={confirmTurn}
         hasPendingMoves={pendingMoves.length > 0}
+        mustUseMoreDice={mustUseMoreDice}
       />
 
       {actionError && <p style={T.err}>{actionError}</p>}

@@ -4,7 +4,7 @@ import {
   rollDice as apiRollDice,
   confirmTurn as apiConfirmTurn,
 } from "../api/gameApi";
-import { getLegalMoves, getCombinedMoves, applyMove } from "../utils/gameLogic";
+import { getLegalMoves, getCombinedMoves, applyMove, maxMovesUsable } from "../utils/gameLogic";
 
 function cloneBoard(boardState) {
   return {
@@ -76,6 +76,20 @@ export function useGame(gameId) {
     ];
   }, [game, stagedBoard, stagedDice]);
 
+  // Maximum dice that can be legally consumed this turn, computed once from the
+  // pre-turn (authoritative) board and the original roll — independent of how
+  // the player has staged moves. Mirrors the server's must-use-maximum-dice
+  // rule; unlike a staged-position check it catches move orders that strand a
+  // die (where the staged board shows no moves left but another order used both).
+  const maxDiceUsable = useMemo(() => {
+    if (!game) return 0;
+    return maxMovesUsable(game.board_state, game.current_turn, game.dice_values);
+  }, [game]);
+
+  // Each pending move consumes exactly one die, so the staged-move count is the
+  // number of dice used so far. More dice must be played while it falls short.
+  const mustUseMoreDice = pendingMoves.length < maxDiceUsable;
+
   const stageMove = useCallback(
     (fromPoint, toPoint) => {
       if (!game || !stagedBoard) return;
@@ -144,6 +158,7 @@ export function useGame(gameId) {
     stagedDice,
     pendingMoves,
     legalMoves,
+    mustUseMoreDice,
     stageMove,
     resetTurn,
     confirmTurn,

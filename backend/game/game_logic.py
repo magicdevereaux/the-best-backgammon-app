@@ -1,3 +1,4 @@
+import copy
 import random
 
 
@@ -166,6 +167,35 @@ def get_legal_moves(board_state, player, dice_values):
                     moves.add((from_point, 25, die))
 
     return moves
+
+
+def max_moves_usable(board_state, player, dice_values):
+    """
+    Return the maximum number of dice `player` can legally consume from this
+    position, considering every order of play (and therefore every combined-move
+    sequence, since combined moves are just chained single moves).
+
+    Used to enforce the must-use-maximum-dice rule at turn-confirm time: a turn
+    that consumes fewer dice than this is illegal whenever a longer sequence
+    exists. For doubles this can be up to four; for a normal roll up to two.
+    """
+    if not dice_values:
+        return 0
+
+    legal_moves = get_legal_moves(board_state, player, dice_values)
+    if not legal_moves:
+        return 0
+
+    best = 0
+    for from_point, to_point, die in legal_moves:
+        next_board = apply_move(copy.deepcopy(board_state), player, from_point, to_point)
+        next_dice = list(dice_values)
+        next_dice.remove(die)
+        best = max(best, 1 + max_moves_usable(next_board, player, next_dice))
+        if best == len(dice_values):
+            # Can't do better than using every die — stop searching.
+            break
+    return best
 
 
 def apply_move(board_state, player, from_point, to_point):

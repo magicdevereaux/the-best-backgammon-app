@@ -12,6 +12,7 @@ from .game_logic import (
     roll_dice,
     get_initial_board_state,
     get_legal_moves,
+    max_moves_usable,
     apply_move,
     check_winner,
     detect_win_type,
@@ -378,8 +379,11 @@ class GameViewSet(viewsets.ModelViewSet):
         Expected body: { "moves": [{ "from_point": int, "to_point": int }, ...] }
 
         If any move is illegal the whole request is rejected and nothing is
-        saved. On success the turn always passes to the opponent regardless of
-        unused dice (or the game finishes if the last checker is borne off).
+        saved. The player must also use the maximum number of dice legally
+        possible: if a longer legal sequence exists than the one staged, the
+        confirmation is rejected (e.g. only one die played when both could be).
+        On success the turn passes to the opponent (or the game finishes if the
+        last checker is borne off).
         """
         game = self.get_object()
 
@@ -416,6 +420,23 @@ class GameViewSet(viewsets.ModelViewSet):
                 dice = _apply_single_move(board, player, dice, from_point, to_point)
             except ValueError as exc:
                 return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Enforce maximal dice usage: the player must consume as many dice as is
+        # legally possible. If a longer sequence exists than the one they staged,
+        # reject the turn so they can't pass up a forced move. (game.board_state
+        # is still the pre-turn position here — the loop mutated only `board`.)
+        dice_used = len(game.dice_values) - len(dice)
+        max_usable = max_moves_usable(game.board_state, player, list(game.dice_values))
+        if dice_used < max_usable:
+            return Response(
+                {
+                    "error": (
+                        "You must use as many dice as possible. "
+                        "A legal move remains for an unused die."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         game.board_state = board
 

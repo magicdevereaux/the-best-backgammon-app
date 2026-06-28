@@ -28,11 +28,12 @@ const btn = {
   },
 };
 
-function Btn({ label, onClick, disabled, variant = "secondary" }) {
+function Btn({ label, onClick, disabled, variant = "secondary", title }) {
   return (
     <button
       onClick={onClick}
       disabled={disabled}
+      title={title}
       style={{
         ...btn.base,
         ...(variant === "primary" ? btn.primary : btn.secondary),
@@ -50,9 +51,14 @@ export default function GameControls({
   onResetTurn,
   onConfirmTurn,
   hasPendingMoves = false,
+  mustUseMoreDice = false,
 }) {
   const canRoll       = game.status === "active" && (!game.dice_values || game.dice_values.length === 0);
   const turnActive    = game.status === "active" && game.dice_values && game.dice_values.length > 0;
+  // Backgammon requires using as many dice as legally possible. While more dice
+  // could still be played (even via a different move order), block confirmation.
+  // The server enforces the same rule — this is the matching UX affordance.
+  const blockConfirm = turnActive && mustUseMoreDice;
 
   return (
     <div style={{ marginTop: "1rem", display: "flex", gap: "0.6rem", flexWrap: "wrap", alignItems: "center" }}>
@@ -70,8 +76,14 @@ export default function GameControls({
       <Btn
         label="Confirm Turn"
         onClick={onConfirmTurn}
-        disabled={!turnActive}
+        disabled={!turnActive || blockConfirm}
+        title={blockConfirm ? "You must use as many dice as possible before confirming." : undefined}
       />
+      {blockConfirm && (
+        <p style={{ margin: 0, color: "var(--text-secondary)", fontSize: "0.8rem" }}>
+          You must use as many dice as possible.
+        </p>
+      )}
       {game.status === "finished" && (
         <p style={{ margin: 0, color: "var(--text-secondary)", fontSize: "0.85rem" }}>
           Game over!{" "}

@@ -3,6 +3,7 @@ import {
   getLegalMoves,
   getCombinedMoves,
   applyMove,
+  maxMovesUsable,
   canBearOff,
   checkWinner,
   isBlotHit,
@@ -168,6 +169,50 @@ describe("checkWinner (win detection)", () => {
     const board = emptyBoard();
     board.off.p2 = 15;
     expect(checkWinner(board)).toBe("p2");
+  });
+});
+
+describe("maxMovesUsable", () => {
+  test("returns 0 when no dice", () => {
+    expect(maxMovesUsable(INITIAL, "p1", [])).toBe(0);
+  });
+
+  test("returns 0 when no legal move exists (all bar entries blocked)", () => {
+    const board = {
+      points: [-2, -2, -2, -2, -2, -2, ...Array(18).fill(0)],
+      bar: { p1: 1, p2: 0 },
+      off: { p1: 0, p2: 0 },
+    };
+    expect(maxMovesUsable(board, "p1", [1, 2])).toBe(0);
+  });
+
+  test("both dice usable from the opening position", () => {
+    expect(maxMovesUsable(INITIAL, "p1", [1, 2])).toBe(2);
+  });
+
+  test("counts all four on doubles down an open lane", () => {
+    const board = emptyBoard();
+    board.points[0] = 1; // 1->3->5->7->9
+    expect(maxMovesUsable(board, "p1", [2, 2, 2, 2])).toBe(4);
+  });
+
+  test("only one die usable when the other can never be played", () => {
+    const board = emptyBoard();
+    board.points[0] = 1;
+    board.points[4] = -2; // point 5 blocked
+    board.points[6] = -2; // point 7 blocked
+    expect(maxMovesUsable(board, "p1", [2, 4])).toBe(1);
+  });
+
+  test("finds the move order that avoids stranding a die", () => {
+    // Playing the 2 first (1->3) strands the 6; playing the 6 first (1->7) lets
+    // the point-4 checker play the 2 for two dice. Must find the 2-die order.
+    const board = emptyBoard();
+    board.points[0] = 1;   // checker A on point 1
+    board.points[3] = 1;   // checker B on point 4
+    board.points[8] = -2;  // point 9 blocked
+    board.points[9] = -2;  // point 10 blocked
+    expect(maxMovesUsable(board, "p1", [2, 6])).toBe(2);
   });
 });
 

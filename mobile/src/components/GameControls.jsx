@@ -28,16 +28,22 @@ function Btn({ label, onPress, disabled, variant = "secondary" }) {
  * When the roll produced no legal moves at all, the primary button becomes
  * "Pass Turn" — committing zero moves, which the backend treats as an explicit
  * turn pass.
+ *
+ * Backgammon requires using as many dice as legally possible, so while a legal
+ * move still exists for an unused die the Confirm button is disabled (the server
+ * enforces the same rule — this is the matching UX affordance).
  */
 export default function GameControls({
   turnActive,
   hasPendingMoves = false,
   hasLegalMoves = true,
+  mustUseMoreDice = false,
   onUndo,
   onResetTurn,
   onConfirmTurn,
 }) {
   const mustPass = turnActive && !hasPendingMoves && !hasLegalMoves;
+  const blockConfirm = turnActive && mustUseMoreDice;
   const confirmLabel = mustPass ? "Pass Turn" : "Confirm Turn";
 
   return (
@@ -47,7 +53,7 @@ export default function GameControls({
       <Btn
         label={confirmLabel}
         onPress={onConfirmTurn}
-        disabled={!turnActive}
+        disabled={!turnActive || blockConfirm}
         variant="primary"
       />
     </View>

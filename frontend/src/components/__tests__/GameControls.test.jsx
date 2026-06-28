@@ -144,3 +144,40 @@ describe('GameControls — Reset Turn / Confirm Turn', () => {
     expect(screen.getByRole('button', { name: /confirm turn/i })).toBeDisabled();
   });
 });
+
+describe('GameControls — maximal dice usage affordance', () => {
+  test('Confirm Turn is disabled while legal moves remain for unused dice', () => {
+    render(
+      <GameControls game={activeGameWithDice} onRollDice={() => {}} mustUseMoreDice={true} />
+    );
+    expect(screen.getByRole('button', { name: /confirm turn/i })).toBeDisabled();
+  });
+
+  test('shows a hint explaining why Confirm is blocked', () => {
+    render(
+      <GameControls game={activeGameWithDice} onRollDice={() => {}} mustUseMoreDice={true} />
+    );
+    expect(screen.getByText(/use as many dice as possible/i)).toBeInTheDocument();
+  });
+
+  test('Confirm Turn is enabled when no more dice need to be used', () => {
+    render(
+      <GameControls game={activeGameWithDice} onRollDice={() => {}} mustUseMoreDice={false} />
+    );
+    expect(screen.getByRole('button', { name: /confirm turn/i })).not.toBeDisabled();
+  });
+
+  test('does not call onConfirmTurn while moves remain', () => {
+    const onConfirmTurn = jest.fn();
+    render(
+      <GameControls
+        game={activeGameWithDice}
+        onRollDice={() => {}}
+        onConfirmTurn={onConfirmTurn}
+        mustUseMoreDice={true}
+      />
+    );
+    fireEvent.click(screen.getByRole('button', { name: /confirm turn/i }));
+    expect(onConfirmTurn).not.toHaveBeenCalled();
+  });
+});

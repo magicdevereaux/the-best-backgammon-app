@@ -27,7 +27,7 @@ export default function GameScreen() {
   const {
     game, loading, error, actionError,
     rollDice, stagedBoard, stagedDice,
-    pendingMoves, legalMoves, stageMove,
+    pendingMoves, legalMoves, mustUseMoreDice, stageMove,
     resetTurn, undoMove, confirmTurn,
     reload, refresh, refreshing,
   } = useGame(id);
@@ -202,12 +202,16 @@ export default function GameScreen() {
         {mustPass && (
           <Text style={styles.passHint}>No legal moves for this roll — tap “Pass Turn”.</Text>
         )}
+        {turnActive && mustUseMoreDice && (
+          <Text style={styles.passHint}>You must use as many dice as possible before confirming.</Text>
+        )}
 
         {canInteract && (
           <GameControls
             turnActive={turnActive}
             hasPendingMoves={hasPendingMoves}
             hasLegalMoves={hasLegalMoves}
+            mustUseMoreDice={mustUseMoreDice}
             onUndo={undoMove}
             onResetTurn={resetTurn}
             onConfirmTurn={confirmTurn}

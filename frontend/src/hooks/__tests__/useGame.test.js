@@ -141,6 +141,50 @@ describe('useGame', () => {
     expect(result.current.game).toEqual(baseGame);
   });
 
+  test('mustUseMoreDice stays true after a staged move strands the other die', async () => {
+    // Pre-turn board: checker A on point 1, checker B on point 4; points 9 and
+    // 10 blocked. With [2, 6], playing the 2 first (1->3) strands the 6, but
+    // playing the 6 first lets B play the 2 — so two dice are usable. After
+    // staging the stranding 2, the staged board has no legal move, yet the
+    // ported max-dice check must still require the second die.
+    const strandBoard = {
+      points: [1, 0, 0, 1, 0, 0, 0, 0, -2, -2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+      bar: { p1: 0, p2: 0 },
+      off: { p1: 0, p2: 0 },
+    };
+    gameApi.fetchGame.mockResolvedValue({ ...baseGame, board_state: strandBoard, dice_values: [2, 6] });
+
+    const { result } = renderHook(() => useGame(1));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.mustUseMoreDice).toBe(true); // 0 of 2 used
+
+    act(() => {
+      result.current.stageMove(1, 3); // play the 2 first — strands the 6
+    });
+
+    expect(result.current.legalMoves).toEqual([]); // staged position looks done
+    expect(result.current.mustUseMoreDice).toBe(true); // but 1 of 2 used — still blocked
+  });
+
+  test('mustUseMoreDice clears once the maximum dice are staged', async () => {
+    gameApi.fetchGame.mockResolvedValue({ ...baseGame, dice_values: [3, 5] });
+
+    const { result } = renderHook(() => useGame(1));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.mustUseMoreDice).toBe(true);
+
+    act(() => {
+      result.current.stageMove(1, 4); // use the 3
+    });
+    act(() => {
+      result.current.stageMove(12, 17); // use the 5
+    });
+
+    expect(result.current.mustUseMoreDice).toBe(false);
+  });
+
   test('rollDice replaces the game and resets staged dice', async () => {
     gameApi.fetchGame.mockResolvedValue({ ...baseGame, dice_values: [] });
     gameApi.rollDice.mockResolvedValue({ ...baseGame, dice_values: [2, 6] });

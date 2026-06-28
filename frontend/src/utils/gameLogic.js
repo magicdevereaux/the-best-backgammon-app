@@ -193,6 +193,33 @@ export function applyMove(boardState, player, fromPoint, toPoint) {
   return { points, bar, off };
 }
 
+/**
+ * Maximum number of dice `player` can legally consume from this position,
+ * trying every order of play. Because it recurses over single moves, combined
+ * sequences and order-dependent "stranding" (where one move order leaves a die
+ * unplayable that another order could have used) are both accounted for.
+ *
+ * Direct port of backend max_moves_usable() in game_logic.py — the client uses
+ * it to gate the Confirm button so it matches the server's must-use-maximum-
+ * dice rule exactly. applyMove is non-mutating, so no board copy is needed.
+ */
+export function maxMovesUsable(boardState, player, diceValues) {
+  if (!diceValues || diceValues.length === 0) return 0;
+
+  const legal = getLegalMoves(boardState, player, diceValues);
+  if (legal.length === 0) return 0;
+
+  let best = 0;
+  for (const [fromPoint, toPoint, die] of legal) {
+    const nextBoard = applyMove(boardState, player, fromPoint, toPoint);
+    const nextDice = [...diceValues];
+    nextDice.splice(nextDice.indexOf(die), 1);
+    best = Math.max(best, 1 + maxMovesUsable(nextBoard, player, nextDice));
+    if (best === diceValues.length) break; // can't beat using every die
+  }
+  return best;
+}
+
 /** Return 'p1' or 'p2' if that player has borne off all 15 checkers, else null. */
 export function checkWinner(boardState) {
   if (boardState.off[P1] === 15) return P1;

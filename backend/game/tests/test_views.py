@@ -520,8 +520,15 @@ class ConfirmTurnTest(TestCase):
         self.assertEqual(game.current_turn, "p2")
         self.assertEqual(game.dice_values, [])
 
-    def test_confirm_turn_with_no_moves_passes_the_turn(self):
-        game = make_game(dice_values=[1, 2], current_turn="p1")
+    def test_confirm_turn_with_no_moves_passes_the_turn_when_no_legal_move(self):
+        # Player is on the bar and every entry point is blocked, so no die can
+        # be played. Confirming with no moves passes the turn.
+        board = {
+            "points": [-2, -2, -2, -2, -2, -2] + [0] * 18,
+            "bar": {"p1": 1, "p2": 0},
+            "off": {"p1": 0, "p2": 0},
+        }
+        game = make_game(dice_values=[1, 2], current_turn="p1", board_state=board)
 
         response = self.client.post(
             f"/api/games/{game.pk}/confirm_turn/",
@@ -531,24 +538,90 @@ class ConfirmTurnTest(TestCase):
         self.assertEqual(response.status_code, 200)
 
         game.refresh_from_db()
-        self.assertEqual(game.board_state, get_initial_board_state())
+        self.assertEqual(game.board_state, board)
         self.assertEqual(game.current_turn, "p2")
         self.assertEqual(game.dice_values, [])
 
-    def test_confirm_turn_ends_turn_even_with_unused_dice(self):
-        # Only one die is used even though two were rolled.
+    def test_confirm_turn_rejects_passing_when_a_legal_move_exists(self):
+        # From the opening position both dice are playable, so confirming with
+        # no moves must be rejected and nothing changes.
         game = make_game(dice_values=[1, 2], current_turn="p1")
+        original_board = copy.deepcopy(game.board_state)
+
+        response = self.client.post(
+            f"/api/games/{game.pk}/confirm_turn/",
+            {"moves": []},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("error", response.json())
+
+        game.refresh_from_db()
+        self.assertEqual(game.board_state, original_board)
+        self.assertEqual(game.current_turn, "p1")
+        self.assertEqual(game.dice_values, [1, 2])
+
+    def test_confirm_turn_rejects_underusing_dice(self):
+        # Both dice can be played from the opening position, so playing only one
+        # and confirming is illegal — the turn is rejected and nothing changes.
+        game = make_game(dice_values=[1, 2], current_turn="p1")
+        original_board = copy.deepcopy(game.board_state)
 
         response = self.client.post(
             f"/api/games/{game.pk}/confirm_turn/",
             {"moves": [{"from_point": 1, "to_point": 2}]},
             format="json",
         )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("error", response.json())
+
+        game.refresh_from_db()
+        self.assertEqual(game.board_state, original_board)
+        self.assertEqual(game.current_turn, "p1")
+        self.assertEqual(game.dice_values, [1, 2])
+
+    def test_confirm_turn_allows_one_die_when_only_one_is_usable(self):
+        # p1 has a single checker on point 1; point 3 (the only +2 destination)
+        # is open but point 5 (+4) is blocked, so only the 2 can ever be played.
+        # Playing just that die is legal even though the 4 goes unused.
+        board = empty_board()
+        board["points"][0] = 1   # p1 checker on point 1
+        board["points"][4] = -2  # point 5 blocked (blocks the 4 from point 1)
+        board["points"][6] = -2  # point 7 blocked (blocks the 4 after the 2)
+        game = make_game(dice_values=[2, 4], current_turn="p1", board_state=board)
+
+        response = self.client.post(
+            f"/api/games/{game.pk}/confirm_turn/",
+            {"moves": [{"from_point": 1, "to_point": 3}]},
+            format="json",
+        )
         self.assertEqual(response.status_code, 200)
 
         game.refresh_from_db()
+        self.assertEqual(game.board_state["points"][0], 0)
+        self.assertEqual(game.board_state["points"][2], 1)
         self.assertEqual(game.current_turn, "p2")
         self.assertEqual(game.dice_values, [])
+
+    def test_confirm_turn_requires_maximum_doubles_played(self):
+        # Doubles [2,2,2,2]: p1 has one checker on point 1 with a clear lane, so
+        # all four 2s can be played (1->3->5->7->9). Playing only two is illegal.
+        board = empty_board()
+        board["points"][0] = 1
+        game = make_game(dice_values=[2, 2, 2, 2], current_turn="p1", board_state=board)
+        original_board = copy.deepcopy(game.board_state)
+
+        response = self.client.post(
+            f"/api/games/{game.pk}/confirm_turn/",
+            {"moves": [{"from_point": 1, "to_point": 3}, {"from_point": 3, "to_point": 5}]},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+
+        game.refresh_from_db()
+        self.assertEqual(game.board_state, original_board)
+        self.assertEqual(game.current_turn, "p1")
+        self.assertEqual(game.dice_values, [2, 2, 2, 2])
 
     def test_confirm_turn_rejects_illegal_move_in_sequence(self):
         game = make_game(dice_values=[1, 2], current_turn="p1")
@@ -661,15 +734,19 @@ class BarNoLegalMovesTurnPassingTest(TestCase):
             self.assertEqual(game.current_turn, "p2", f"roll={roll}")
             self.assertEqual(game.dice_values, [], f"roll={roll}")
 
-    def test_every_roll_eventually_passes_turn_when_one_entry_open(self):
+    def test_must_enter_from_bar_when_an_entry_is_open(self):
         """
-        Only point 3 is open for entry. Whether or not the roll includes a
-        3 (giving the player a single legal entry move), confirming with no
-        moves must still pass the turn to the opponent.
+        Only point 3 is open for entry, and points 4-9 are blocked so a checker
+        entered on point 3 can advance no further. For any roll containing a 3 a
+        single legal move (the entry) exists, so the maximum-dice rule forbids
+        passing with no moves — the player must enter, after which the unusable
+        second die is forfeited and the turn passes. For rolls without a 3 there
+        is no legal move at all and confirming with no moves passes the turn.
         """
         for roll in ALL_DICE_ROLLS:
             board = {
-                "points": [-2, -2, 0, -2, -2, -2] + [0] * 18,
+                # point 3 (idx 2) open for entry; points 4-9 (idx 3-8) blocked.
+                "points": [-2, -2, 0, -2, -2, -2, -2, -2, -2] + [0] * 15,
                 "bar": {"p1": 1, "p2": 0},
                 "off": {"p1": 0, "p2": 0},
             }
@@ -683,13 +760,33 @@ class BarNoLegalMovesTurnPassingTest(TestCase):
             self.assertEqual(game.current_turn, "p1", f"roll={roll}")
             self.assertEqual(game.dice_values, roll, f"roll={roll}")
 
-            response = self.client.post(
-                f"/api/games/{game.pk}/confirm_turn/",
-                {"moves": []},
-                format="json",
-            )
-            self.assertEqual(response.status_code, 200, roll)
-            game.refresh_from_db()
+            if 3 in roll:
+                # A legal entry exists, so passing with no moves is rejected.
+                response = self.client.post(
+                    f"/api/games/{game.pk}/confirm_turn/",
+                    {"moves": []},
+                    format="json",
+                )
+                self.assertEqual(response.status_code, 400, roll)
+                game.refresh_from_db()
+                self.assertEqual(game.current_turn, "p1", f"roll={roll}")
 
+                # Entering on point 3 is the most dice playable; the turn passes.
+                response = self.client.post(
+                    f"/api/games/{game.pk}/confirm_turn/",
+                    {"moves": [{"from_point": 0, "to_point": 3}]},
+                    format="json",
+                )
+                self.assertEqual(response.status_code, 200, roll)
+            else:
+                # No legal move at all — confirming with no moves passes the turn.
+                response = self.client.post(
+                    f"/api/games/{game.pk}/confirm_turn/",
+                    {"moves": []},
+                    format="json",
+                )
+                self.assertEqual(response.status_code, 200, roll)
+
+            game.refresh_from_db()
             self.assertEqual(game.current_turn, "p2", f"roll={roll}")
             self.assertEqual(game.dice_values, [], f"roll={roll}")
