@@ -139,17 +139,18 @@ python manage.py test game.tests
 
 The runner uses an in-memory database, so you don't need to reset the dev DB.
 
-### Web frontend (128 tests, Jest + React Testing Library)
+### Web frontend (157 tests, Jest + React Testing Library)
 
 ```bash
 cd frontend
 npm test
 ```
 
-Covers the game-logic port, the `useGame` staged-turn hook, and the board /
-dice / controls components.
+Covers the game-logic port, the `useGame` staged-turn hook, the board / dice /
+controls components, and the auth stack (token storage, `register`/`login`/
+`fetchMe`/refresh, the 401 refresh-retry, and the login/register pages).
 
-### Mobile (55 tests, Jest + React Native Testing Library)
+### Mobile (74 tests, Jest + React Native Testing Library)
 
 ```bash
 cd mobile
@@ -157,7 +158,8 @@ npm test
 ```
 
 Covers game logic, the `useGame` staged-turn hook, turn-ownership gating, the
-device-local seat registry, and the game-over / match-score components.
+device-local seat registry, the game-over / match-score components, and the auth
+stack (SecureStore token store, `register`/`login`/`fetchMe`, the 401 refresh-retry).
 
 ---
 

@@ -66,10 +66,15 @@ Token lifetimes: **access 1 hour, refresh 7 days**
 - **Mobile** — `expo-secure-store` keys `bg_access` / `bg_refresh`.
 
 DRF's default permission is `AllowAny`, so most endpoints work for guests too; auth
-only gates who "owns" a game seat (below) and the `/me/` stats.
+only gates who "owns" a game seat (below) and the `/me/` stats. The full auth flow,
+token lifecycle, and test coverage live in [auth.md](auth.md).
 
 ## Online multiplayer
 
+Online play is **link/code + lobby based**, not automated matchmaking: players
+create a game and invite a specific opponent (share a link/code) or pick one from the
+open-games list. There is no queue that auto-pairs two strangers who both press
+"find a game" (see [Planned / Not Yet Implemented](#planned--not-yet-implemented)).
 Games and matches are created and joined over the same REST endpoints; there is no
 realtime channel. The flow:
 
@@ -127,6 +132,11 @@ turn ownership** — online, its board is interactive for whoever's turn it is.
   intended production database but no driver/config exists yet.
 - **WebSockets / realtime.** No Channels/ASGI layer. Sync today is mobile polling +
   web manual reload. Realtime push (and replacing the poller) is future work.
+- **Automated matchmaking.** Online play today is manual: create + share a
+  link/code, or join from the open-games list. There is no matchmaking queue or
+  `/api/matchmaking/` endpoint that auto-pairs two waiting players, no ranking/ELO,
+  and no "quick play against a random opponent" button. Pairing is always
+  player-initiated against a chosen or listed game.
 - **Chat.** Not implemented anywhere.
 - **httpOnly cookie auth.** Auth is Bearer tokens in `localStorage`/SecureStore, not
   cookies.

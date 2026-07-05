@@ -69,15 +69,20 @@ See [`README.md`](README.md) for the full device matrix and EAS build commands.
 | Suite | Count | Command (cwd) |
 |-------|-------|---------------|
 | Backend | **179** | `python manage.py test game` (`backend/`, in-memory DB) |
-| Web | **128** | `CI=true npm test -- --watchAll=false` (`frontend/`) |
-| Mobile | **55** | `CI=true npx jest` (`mobile/`) |
+| Web | **157** | `CI=true npm test -- --watchAll=false` (`frontend/`) |
+| Mobile | **74** | `CI=true npx jest` (`mobile/`) |
 
 Backend tests live in [`backend/game/tests/`](backend/game/tests/) (models, views,
 auth, lobby, match, serializers, logic). Web tests sit beside sources in
 `__tests__/` dirs; mobile likewise under `src/**/__tests__/`.
 
-> The README currently cites 176 backend / 41 mobile tests — those are stale
-> (pre-dating the maximal-dice-usage work). The numbers above are current.
+Auth has full client + server coverage: backend `test_auth.py`; web
+`api/__tests__/authApi.test.js` + `apiClient.test.js` + `pages/__tests__/LoginPage.test.jsx`;
+mobile `api/__tests__/{tokenStore,auth,client}.test.js`. See [auth.md](docs/architecture/auth.md)
+for the map.
+
+> On Windows, Node isn't on PATH; run JS suites from the Bash tool with node added,
+> e.g. `export PATH="$HOME/.nvm/versions/node/v22.9.0/bin:$PATH"` (nvm-windows layout).
 
 ## Coordinate conventions (critical — get these right)
 
@@ -123,11 +128,18 @@ Board is `points[24]` (index = point − 1), plus `bar` and `off` counts per pla
   (`mobile/eas.json`, bundle id `com.magicdevereaux.backgammon`) but no store
   submission has happened.
 - **No server-authoritative seat/turn security** (see gating note above).
+- **No automated matchmaking.** Online play is manual: create a game and share its
+  link/code, or join one from the open-games list. There is no matchmaking queue /
+  auto-pairing / ranking. Documented in
+  [overview.md](docs/architecture/overview.md#planned--not-yet-implemented) and
+  listed under Planned below.
 
 ## Deeper docs
 
 - [docs/architecture/overview.md](docs/architecture/overview.md) — how web, mobile,
   and backend relate; auth; online multiplayer; sync.
+- [docs/architecture/auth.md](docs/architecture/auth.md) — accounts, JWT endpoints,
+  client token lifecycle + refresh-retry, auth test map, security limitations.
 - [docs/architecture/game-logic.md](docs/architecture/game-logic.md) — the rules
   engine, combined-move DFS, maximal-dice enforcement.
 - [docs/architecture/data-model.md](docs/architecture/data-model.md) — Django
@@ -144,6 +156,9 @@ These are intended but **do not exist in the code today** — don't assume them:
 - **WebSockets / real-time push.** There is no Channels/ASGI setup. Opponent moves
   are synced by **mobile polling** (~3.5s in [`mobile/src/game/useGame.js`](mobile/src/game/useGame.js));
   the **web client has no auto-refresh** (manual reload). A socket layer is future work.
+- **Automated matchmaking.** No auto-pairing queue, ranking/ELO, or "quick play vs
+  a random opponent." Online pairing is always player-initiated via link/code or the
+  open-games list. See [overview.md](docs/architecture/overview.md#online-multiplayer).
 - **Chat.** No chat feature exists anywhere.
 - **httpOnly cookie auth.** Auth is JWT **Bearer** tokens stored in `localStorage`
   (web) and `expo-secure-store` (mobile). Cookie-based sessions are not implemented.
