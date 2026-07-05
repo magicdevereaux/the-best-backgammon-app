@@ -129,7 +129,7 @@ auto-incrementing version).
 
 ## Running tests
 
-### Backend (176 tests)
+### Backend (179 tests)
 
 ```bash
 cd backend
@@ -139,7 +139,17 @@ python manage.py test game.tests
 
 The runner uses an in-memory database, so you don't need to reset the dev DB.
 
-### Mobile (41 tests, Jest + React Native Testing Library)
+### Web frontend (128 tests, Jest + React Testing Library)
+
+```bash
+cd frontend
+npm test
+```
+
+Covers the game-logic port, the `useGame` staged-turn hook, and the board /
+dice / controls components.
+
+### Mobile (55 tests, Jest + React Native Testing Library)
 
 ```bash
 cd mobile
@@ -212,3 +222,7 @@ A **backgammon** is worth 3 points: the loser still has a checker on the bar or 
 A normal win is worth 1 point.
 
 In match mode, games continue until one player accumulates enough points to reach the target. The winner of each game goes first in the next.
+
+---
+
+_Last updated 2026-07-05 during the documentation pass that added [`CLAUDE.md`](CLAUDE.md) and [`docs/`](docs/). See those for architecture, the rules engine, the data model, and decision records._
