@@ -71,6 +71,7 @@ rejected, so a guest is a normal, non-error state.
 | Layer | File | Focus |
 |-------|------|-------|
 | Backend | [`tests/test_auth.py`](../../backend/game/tests/test_auth.py) | register (dupe/short-password), login (wrong password → 401), `/me/` gating + stat counts, refresh |
+| Backend | [`tests/test_seat_security.py`](../../backend/game/tests/test_seat_security.py) | seat/turn enforcement: wrong user → 403, out-of-turn → 403, owner accepted, guest-seat rules (hotseat / anonymous / other accounts) |
 | Web API | `frontend/src/api/__tests__/authApi.test.js` | token storage, register/login/fetchMe/refresh/logout, error surfacing, "store nothing on failure" |
 | Web client | `frontend/src/api/__tests__/apiClient.test.js` | bearer injection, 401→refresh→retry, no-refresh-token path, refresh-fails-clears-tokens |
 | Web UI | `frontend/src/pages/__tests__/LoginPage.test.jsx` | login/register submit → navigate home; server error rendered, no navigation |
@@ -84,12 +85,18 @@ Client tests mock `fetch`; mobile uses the in-memory SecureStore mock in
 
 ## Security note (current limitations)
 
-`AllowAny` is the default DRF permission, and `confirm_turn` / `roll_dice` only read
-`game.current_turn` — they do **not** verify the caller owns that seat. So auth today
-establishes *identity* (for stats and the `viewer_seat` ownership hint) but is **not**
-a turn-security boundary: a crafted request can act on either seat. Seat/turn gating
-is a client-side UX affordance only (and the web client does none). Moving enforcement
-server-side is tracked below and in [overview.md](overview.md).
+`AllowAny` remains the default DRF permission (guest play requires it), but the
+gameplay actions (`roll_dice` / `move_checker` / `confirm_turn`) **do enforce
+seat/turn ownership** server-side: `_seat_permission_error` in
+[`views.py`](../../backend/game/views.py) rejects with **403** any request where the
+current-turn seat is owned by a registered user and the requester isn't that user
+(including the opponent acting out of turn), and rejects other logged-in accounts
+acting on a guest seat. See [overview.md](overview.md#whose-turn-is-it-seat-ownership)
+for the full policy table.
+
+The remaining limitation is **guest seats**: a null user FK has no server identity,
+so anonymous requests on a guest seat are accepted — an attacker can log out and act
+on a guest seat anonymously. Enforcement is exactly as strong as the seat FKs.
 
 ## Planned / Not Yet Implemented
 
@@ -101,5 +108,6 @@ server-side is tracked below and in [overview.md](overview.md).
   expires (≤ 1 hour). Refresh-token rotation/blacklisting is not configured.
 - **No password reset / change, no email.** Accounts are username + password only;
   there is no email field, verification, or reset flow.
-- **Server-enforced seat/turn ownership** (see security note) — future work.
+- **Guest seat identity** (see security note): anonymous requests on guest seats
+  are unverifiable; a guest token/session concept would close this.
 - **Rate limiting / lockout** on login and register is not configured.

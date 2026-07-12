@@ -97,13 +97,35 @@ realtime channel. The flow:
 
 ### Whose turn is it? (seat ownership)
 
-Two mechanisms exist, both **advisory / client-side** — the backend does *not*
-enforce that the requesting user owns the current seat:
+The backend **enforces** seat/turn ownership on the gameplay actions (`roll_dice`,
+`move_checker`, `confirm_turn`) via `_seat_permission_error` in
+[`views.py`](../../backend/game/views.py). Enforcement is only as strong as the
+`player1_user` / `player2_user` FKs — a **guest seat (null FK) has no server
+identity to verify**. The policy:
+
+| Current-turn seat | Requester | Result |
+|---|---|---|
+| Owned by a user | that user | allowed |
+| Owned by a user | the other participant | **403** "It's not your turn." |
+| Owned by a user | any other account / anonymous | **403** not a participant / log in |
+| Guest (no FK) | anonymous, or a participant of this game | allowed (guest devices + hotseat) |
+| Guest (no FK) | any other logged-in account | **403** not a participant |
+
+Fully-guest games (no FKs at all) are unrestricted — there is nothing to verify.
+Violations return **403** with the message in `{ "error": ... }`; both clients
+surface it via their normal action-error path.
+
+> **Residual gap:** a logged-in attacker can log *out* and act on a guest seat
+> anonymously — a guest seat is inherently unverifiable without a guest-token
+> concept (see Planned).
+
+On top of that server rule, two client-side signals drive the *UX* (hiding
+controls rather than eating 403s):
 
 - **`viewer_seat`** — a `GameSerializer` field (`"p1"` / `"p2"` / `"p1p2"` / `null`)
   telling the *requesting authenticated user* which seat(s) they own, derived from
-  the `player1_user` / `player2_user` FKs. Lets a fresh device (e.g. a deep link
-  opened for the first time) gate correctly.
+  the user FKs. Lets a fresh device (e.g. a deep link opened for the first time)
+  gate correctly.
 - **Device-local seat registry (mobile only)** —
   [`mobile/src/game/seatRegistry.js`](../../mobile/src/game/seatRegistry.js) records
   in SecureStore which seat this device took when it created/joined a game. This
@@ -112,11 +134,8 @@ enforce that the requesting user owns the current seat:
 
 [`mobile/src/game/gating.js`](../../mobile/src/game/gating.js) combines these into
 `canInteract` / `spectating` / `waitingForOpponent`. **The web client does not gate
-turn ownership** — online, its board is interactive for whoever's turn it is.
-
-> **Security note:** because `confirm_turn`/`roll_dice` run with `AllowAny` and only
-> read `game.current_turn`, a crafted request can act on either seat. Turn ownership
-> is a UX affordance today, not a server-enforced rule.
+turn ownership in its UI** — its board is interactive for whoever's turn it is, and
+an unauthorized click is caught by the server's 403.
 
 ## Move sync
 
@@ -140,6 +159,9 @@ turn ownership** — online, its board is interactive for whoever's turn it is.
 - **Chat.** Not implemented anywhere.
 - **httpOnly cookie auth.** Auth is Bearer tokens in `localStorage`/SecureStore, not
   cookies.
-- **Server-enforced seat/turn ownership.** Gating is client-side only today (and
-  web has none); moving it server-side is future work.
-- **Web turn-ownership gating and polling** to match the mobile experience.
+- **Guest seat identity.** Guest seats are enforced only against *other logged-in
+  accounts*; anonymous requests on a guest seat can't be verified. A guest
+  token/session concept would close this.
+- **Web turn-ownership gating and polling** to match the mobile experience (the
+  server already rejects unauthorized web actions with 403; the web UI just
+  doesn't hide the controls).

@@ -73,6 +73,47 @@ def _apply_single_move(board, player, dice, from_point, to_point):
     return dice
 
 
+def _seat_permission_error(game, user):
+    """
+    Server-side seat/turn enforcement for gameplay actions (roll_dice,
+    move_checker, confirm_turn). Returns an error message if the requester may
+    not act for game.current_turn, or None if the action is allowed.
+
+    Seat identity is only as strong as the player user FKs: a seat with a null
+    FK belongs to a guest, who has no server identity to verify. Policy:
+
+      - Seat owned by a registered user → only that user may act. The other
+        participant gets "not your turn"; anyone else isn't a participant.
+      - Guest (unowned) seat → anonymous requests and this game's registered
+        participants may act (participants cover hotseat games, where one
+        account plays both seats on one device). Other logged-in accounts are
+        rejected: they are identifiable and provably not this game's guest.
+      - Fully-guest games (no FKs at all) are therefore unrestricted — there is
+        nothing to verify against.
+    """
+    seat_user_id = (
+        game.player1_user_id if game.current_turn == "p1" else game.player2_user_id
+    )
+    user_id = user.id if user is not None and user.is_authenticated else None
+    is_participant = user_id is not None and user_id in (
+        game.player1_user_id,
+        game.player2_user_id,
+    )
+
+    if seat_user_id is not None:
+        if user_id == seat_user_id:
+            return None
+        if is_participant:
+            return "It's not your turn."
+        if user_id is not None:
+            return "You are not a participant in this game."
+        return "This seat belongs to a registered player. Log in as them to play it."
+
+    if user_id is None or is_participant:
+        return None
+    return "You are not a participant in this game."
+
+
 def _finish_game(game, board, winner):
     """
     Set finished-game fields and update the linked match's score.
@@ -306,6 +347,10 @@ class GameViewSet(viewsets.ModelViewSet):
         """
         game = self.get_object()
 
+        perm_error = _seat_permission_error(game, request.user)
+        if perm_error:
+            return Response({"error": perm_error}, status=status.HTTP_403_FORBIDDEN)
+
         if game.status != "active":
             return Response(
                 {"error": "Game is not active."}, status=status.HTTP_400_BAD_REQUEST
@@ -332,6 +377,11 @@ class GameViewSet(viewsets.ModelViewSet):
         Points are 1-indexed (1-24); use 0 for bar entry, 25 for bear-off.
         """
         game = self.get_object()
+
+        perm_error = _seat_permission_error(game, request.user)
+        if perm_error:
+            return Response({"error": perm_error}, status=status.HTTP_403_FORBIDDEN)
+
         from_point = request.data.get("from_point")
         to_point = request.data.get("to_point")
 
@@ -386,6 +436,10 @@ class GameViewSet(viewsets.ModelViewSet):
         last checker is borne off).
         """
         game = self.get_object()
+
+        perm_error = _seat_permission_error(game, request.user)
+        if perm_error:
+            return Response({"error": perm_error}, status=status.HTTP_403_FORBIDDEN)
 
         if game.status != "active":
             return Response(

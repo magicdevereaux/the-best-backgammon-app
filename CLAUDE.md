@@ -68,7 +68,7 @@ See [`README.md`](README.md) for the full device matrix and EAS build commands.
 
 | Suite | Count | Command (cwd) |
 |-------|-------|---------------|
-| Backend | **179** | `python manage.py test game` (`backend/`, in-memory DB) |
+| Backend | **193** | `python manage.py test game` (`backend/`, in-memory DB) |
 | Web | **157** | `CI=true npm test -- --watchAll=false` (`frontend/`) |
 | Mobile | **74** | `CI=true npx jest` (`mobile/`) |
 
@@ -110,11 +110,15 @@ Board is `points[24]` (index = point − 1), plus `bar` and `off` counts per pla
 - **`move_checker` endpoint exists but no client uses it.** Both clients drive the
   staging → `confirm_turn` flow. It still has API wrappers and tests; treat it as
   legacy, not the live path.
-- **Turn-ownership gating is mobile-only.** [`mobile/src/game/gating.js`](mobile/src/game/gating.js)
-  + a device-local seat registry decide whether this device may act. The **backend
-  does not enforce seat ownership** (permissions are `AllowAny`; `confirm_turn`
-  trusts `current_turn`), and the **web client does not gate** either. Don't assume
-  server-side seat security.
+- **Seat/turn ownership is enforced server-side** on the gameplay actions
+  (`roll_dice` / `move_checker` / `confirm_turn`): `_seat_permission_error` in
+  [`views.py`](backend/game/views.py) returns **403** when the current-turn seat is
+  owned by a registered user and the requester isn't that user, and when another
+  logged-in account touches a guest seat. **Guest seats (null user FK) are
+  unverifiable** — anonymous requests on them are allowed by design (hotseat/guest
+  play). Client gating on top of that is UX: mobile hides controls via
+  [`gating.js`](mobile/src/game/gating.js) + a device-local seat registry; the
+  **web UI does not gate** (unauthorized clicks surface the server's 403).
 - **Stats are computed on read**, not stored — see `UserSerializer` in
   [`serializers.py`](backend/game/serializers.py).
 
@@ -127,7 +131,9 @@ Board is `points[24]` (index = point − 1), plus `bar` and `off` counts per pla
 - **App store submission pending.** EAS build/submit profiles are configured
   (`mobile/eas.json`, bundle id `com.magicdevereaux.backgammon`) but no store
   submission has happened.
-- **No server-authoritative seat/turn security** (see gating note above).
+- **Guest seats are unverifiable.** Server-side seat enforcement (see above) can't
+  authenticate a guest seat — a logged-out attacker can act on one anonymously.
+  Closing this needs a guest token/session concept.
 - **No automated matchmaking.** Online play is manual: create a game and share its
   link/code, or join one from the open-games list. There is no matchmaking queue /
   auto-pairing / ranking. Documented in

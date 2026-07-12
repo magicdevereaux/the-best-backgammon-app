@@ -18,7 +18,7 @@ There are exactly **two app models — `Match` and `Game`** — plus Django's bu
 | Board position | `Game.board_state` — a single **JSONField** (`points`/`bar`/`off`), not per-checker rows. |
 | Dice for the turn | `Game.dice_values` — a JSONField list. |
 | Pending / staged moves | **Not persisted.** Built client-side and sent in one `confirm_turn` call; the backend replays them against a copy and saves only the resulting board. |
-| Seats / turn ownership | Derived, not stored: the `viewer_seat` serializer field (from the user FKs) + a **device-local** SecureStore registry on mobile. No `Seat` table. |
+| Seats / turn ownership | Derived from the `player1_user`/`player2_user` FKs at request time, not stored: server-side enforcement (`_seat_permission_error`) and the `viewer_seat` serializer field both read the FKs; mobile adds a **device-local** SecureStore registry. No `Seat` table. |
 | Player stats | **Computed on read** in `UserSerializer` by aggregating finished `Game` rows; nothing is denormalized. |
 | "Game code" | The game's integer primary key, surfaced as a shareable code in the UI. No separate column. |
 
@@ -95,8 +95,9 @@ edit, not a migration.
 
 - **PostgreSQL in production.** Only SQLite is configured today; no Postgres
   engine, driver, or connection settings exist.
-- **Persisted seats / turn ownership.** Seats are derived + device-local; a real
-  `Seat`/participant model (and server-side turn enforcement) does not exist.
+- **A persisted `Seat`/participant model.** Seat ownership is derived from the user
+  FKs at request time (which is also how server-side turn enforcement works); there
+  is no dedicated table, and guest seats therefore carry no identity at all.
 - **Move history / persisted pending moves.** Only the current board is stored; there
   is no per-move audit trail.
 - **Denormalized stats.** Stats are recomputed on every read; there is no stored

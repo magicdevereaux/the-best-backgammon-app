@@ -16,7 +16,7 @@ gammon/backgammon detection. Both clients talk to the same backend.
 - **User accounts** — register/login, JWT auth, win/loss and stats tracking
 - **Profile page** — lifetime stats: games, wins, losses, gammons, backgammons, points won/lost, win %, gammon rate
 - **Online play** — create an online game, share a deep link, join by code, open-games list
-- **Turn-ownership gating** — online, a device may only act on the seat it owns and only on its turn (read-only "waiting"/"spectating" views otherwise)
+- **Turn-ownership security** — the server rejects gameplay actions (403) from anyone who doesn't own the current seat; online, the mobile app also gates its UI so a device only acts on the seat it owns and only on its turn (read-only "waiting"/"spectating" views otherwise)
 - **Mobile app** — native SVG board, tap-to-roll, per-move undo, pull-to-refresh, opponent move sync
 
 ## Project structure
@@ -129,7 +129,7 @@ auto-incrementing version).
 
 ## Running tests
 
-### Backend (179 tests)
+### Backend (193 tests)
 
 ```bash
 cd backend
