@@ -68,7 +68,7 @@ See [`README.md`](README.md) for the full device matrix and EAS build commands.
 
 | Suite | Count | Command (cwd) |
 |-------|-------|---------------|
-| Backend | **193** | `python manage.py test game` (`backend/`, in-memory DB) |
+| Backend | **205** | `python manage.py test game` (`backend/`, in-memory DB) |
 | Web | **157** | `CI=true npm test -- --watchAll=false` (`frontend/`) |
 | Mobile | **74** | `CI=true npx jest` (`mobile/`) |
 
@@ -124,9 +124,10 @@ Board is `points[24]` (index = point − 1), plus `bar` and `off` counts per pla
 
 ## Known gaps
 
-- **Higher-die rule not enforced.** When only one die is playable, backgammon
-  requires playing the *higher* one if possible. We enforce the *count* of dice
-  used (maximal usage), not *which* die. Documented in
+- **Higher-die rule enforced only during bear-off.** `higher_die_required_moves`
+  (server-only, no JS port) forces the higher die at `confirm_turn` when exactly
+  one die is playable while bearing off. The official rule is *general* — in
+  blocked non-bear-off positions the lower single die is still accepted. See
   [game-logic.md](docs/architecture/game-logic.md).
 - **App store submission pending.** EAS build/submit profiles are configured
   (`mobile/eas.json`, bundle id `com.magicdevereaux.backgammon`) but no store

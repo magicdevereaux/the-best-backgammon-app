@@ -129,7 +129,7 @@ auto-incrementing version).
 
 ## Running tests
 
-### Backend (193 tests)
+### Backend (205 tests)
 
 ```bash
 cd backend

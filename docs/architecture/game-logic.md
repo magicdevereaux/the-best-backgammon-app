@@ -46,7 +46,9 @@ and remaining dice. Rules encoded:
   checkers are home and none on the bar). A die bears a checker off when it exactly
   matches the bear-off distance, **or** when the die is larger than the distance and
   that checker is on the highest occupied home point (the "overage" rule). The
-  higher-die-must-be-used refinement is **not** enforced — see [Known gaps](#known-gaps).
+  higher-die-must-be-used refinement is enforced at confirm time during bear-off —
+  see [the higher-die rule](#higher-die-rule-bear-off--higher_die_required_moves)
+  and [Known gaps](#known-gaps) for its non-bear-off scope limit.
 
 `apply_move` mutates the board for one hop: it removes the source checker (or
 decrements the bar), and either increments `off`, hits a blot (sending the opponent
@@ -134,6 +136,32 @@ compute it from the pre-turn board (not the current staged position) so they cat
 the "wrong move order stranded a die" case exactly as the server does — but the
 client check is convenience only; the server decides.
 
+## Higher-die rule (bear-off) — `higher_die_required_moves`
+
+With a non-double roll during **bear-off**, when exactly one die can legally be
+played (`max_moves_usable == 1`) but *either* die individually has a legal move, the
+player must play the **higher** die. `higher_die_required_moves(board, player, dice)`
+returns the permitted move set when the rule applies (else `None`), preferring the
+higher die's **exact bear-off** if one exists, then its **oversized bear-off** (which
+`get_legal_moves` only ever emits from the furthest-back checker), then any
+higher-die move. `confirm_turn` rejects a turn whose single move isn't in that set,
+with a message naming the required die.
+
+Two properties of the move generator, verified by exhaustive search over small
+bear-off positions, shape this:
+
+- The rule only bites when **opponent anchors** block within-board moves — in open
+  bear-off races, both dice are always sequentially playable and maximal usage
+  already governs.
+- When the higher die's required move is an *oversized* bear-off, the lower die
+  necessarily targets the same `(from, to)` (the last checker) — so that branch pins
+  which **die** is consumed rather than changing the board outcome.
+
+This is **server-only** (not ported to the JS clients): a client staging the lower
+die's move passes the local Confirm gate and gets the server's 400. Related detail:
+a bear-off `(from, 25)` can match both dice (exact + oversized), so
+`_apply_single_move` consumes the **smallest matching die** deterministically.
+
 ## Win detection & scoring
 
 - `check_winner` — a player who has borne off all 15 checkers wins.
@@ -145,15 +173,17 @@ client check is convenience only; the server decides.
 
 ## Known gaps
 
-- **Higher-die rule.** When only one die can be played and either die is individually
-  playable, the rules require playing the **higher** one. We enforce the *count* of
-  dice used (via `max_moves_usable`) but not *which* die — a player may legally play
-  the lower single die today. Closing this needs a "which specific die" check
-  alongside the count check.
+- **Higher-die rule outside bear-off.** The official rule is general: in *any*
+  position where only one die can be played, the higher must be played if possible.
+  We enforce it **only during bear-off** (see above); in blocked non-bear-off
+  positions a player may still legally play the lower single die.
 
 ## Planned / Not Yet Implemented
 
-- Server-enforced **higher-die** selection (see above).
+- **General (non-bear-off) higher-die enforcement** (see Known gaps).
+- **Client mirror of the higher-die rule** — `higher_die_required_moves` has no JS
+  port, so the clients' Confirm gate doesn't pre-block a lower-die move; the player
+  sees the server's 400 instead.
 - A shared engine artifact instead of three hand-synced copies (e.g. generating the
   JS ports from the Python source, or a shared spec) — today they are maintained in
   parallel by hand.

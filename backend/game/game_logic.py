@@ -198,6 +198,53 @@ def max_moves_usable(board_state, player, dice_values):
     return best
 
 
+def higher_die_required_moves(board_state, player, dice_values):
+    """
+    Higher-die rule during bear-off: with a non-double two-die roll, when
+    exactly one die can legally be played but *either* die individually has a
+    legal move, the player must play the HIGHER die. Returns the set of
+    permitted (from_point, to_point, die) moves when the rule applies, or
+    None when it doesn't (not bearing off, doubles, both dice playable in
+    sequence, or no real choice of die).
+
+    Which higher-die move is required:
+      1. An exact bear-off (die == distance), if one exists.
+      2. Otherwise an oversized bear-off — the generator only emits these from
+         the furthest-back checker, so that clause is inherited from
+         get_legal_moves.
+      3. Otherwise any legal higher-die move (the rule pins the die, not the
+         destination).
+
+    Scope note: this deliberately covers bear-off only. The official rule is
+    general (any position where only one die can be played), and remains
+    unenforced outside bear-off.
+    """
+    if len(dice_values) != 2 or dice_values[0] == dice_values[1]:
+        return None
+    if not can_bear_off(board_state, player):
+        return None
+    if max_moves_usable(board_state, player, dice_values) != 1:
+        return None
+
+    high, low = max(dice_values), min(dice_values)
+    high_moves = get_legal_moves(board_state, player, [high])
+    if not high_moves:
+        return None  # only the lower die is playable — nothing to force
+    if not get_legal_moves(board_state, player, [low]):
+        return None  # only the higher die is playable — no choice to restrict
+
+    exact = {
+        m for m in high_moves
+        if m[1] == 25 and _bear_off_distance(player, m[0]) == high
+    }
+    if exact:
+        return exact
+    oversized = {m for m in high_moves if m[1] == 25}
+    if oversized:
+        return oversized
+    return set(high_moves)
+
+
 def apply_move(board_state, player, from_point, to_point):
     """
     Apply a legal move to board_state, mutating and returning it.

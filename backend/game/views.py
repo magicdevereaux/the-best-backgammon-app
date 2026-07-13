@@ -13,6 +13,7 @@ from .game_logic import (
     get_initial_board_state,
     get_legal_moves,
     max_moves_usable,
+    higher_die_required_moves,
     apply_move,
     check_winner,
     detect_win_type,
@@ -65,7 +66,11 @@ def _apply_single_move(board, player, dice, from_point, to_point):
     if not matches:
         raise ValueError("Illegal move.")
 
-    die_used = matches[0][2]
+    # A bear-off (to_point 25) can match more than one die (exact + oversized).
+    # get_legal_moves returns a set, so pick deterministically: consume the
+    # smallest matching die, keeping larger dice available for later oversized
+    # bear-offs.
+    die_used = min(m[2] for m in matches)
     dice = list(dice)
     dice.remove(die_used)
 
@@ -491,6 +496,28 @@ class GameViewSet(viewsets.ModelViewSet):
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
+
+        # Higher-die rule (bear-off): when only one die can be played but either
+        # die individually has a legal move, the higher die must be the one
+        # played. The maximal-usage check above guarantees exactly one staged
+        # move whenever this rule is active (max_usable == 1).
+        required = higher_die_required_moves(
+            game.board_state, player, list(game.dice_values)
+        )
+        if required is not None:
+            allowed = {(m[0], m[1]) for m in required}
+            staged = (moves[0].get("from_point"), moves[0].get("to_point"))
+            if staged not in allowed:
+                high = next(iter(required))[2]
+                return Response(
+                    {
+                        "error": (
+                            f"When only one die can be played, you must play "
+                            f"the higher die ({high})."
+                        )
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
         game.board_state = board
 
