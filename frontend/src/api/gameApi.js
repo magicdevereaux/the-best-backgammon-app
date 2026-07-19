@@ -42,3 +42,14 @@ export async function confirmTurn(id, moves) {
     body: JSON.stringify({ moves }),
   });
 }
+
+export async function offerDouble(id) {
+  return request(`${BASE}${id}/offer_double/`, { method: "POST" });
+}
+
+export async function respondToDouble(id, accept) {
+  return request(`${BASE}${id}/respond_to_double/`, {
+    method: "POST",
+    body: JSON.stringify({ accept }),
+  });
+}

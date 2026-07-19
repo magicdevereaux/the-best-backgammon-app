@@ -185,6 +185,69 @@ describe('useGame', () => {
     expect(result.current.mustUseMoreDice).toBe(false);
   });
 
+  test('canOfferDouble is true before rolling with a centered cube', async () => {
+    gameApi.fetchGame.mockResolvedValue({
+      ...baseGame, dice_values: [], cube_value: 1, cube_owner: null,
+      double_offered_by: null, crawford_game: false,
+    });
+    const { result } = renderHook(() => useGame(1));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.canOfferDouble).toBe(true);
+  });
+
+  test('canOfferDouble is false after rolling, in Crawford games, and when the opponent owns the cube', async () => {
+    const scenarios = [
+      { ...baseGame, dice_values: [3, 5], cube_value: 1, cube_owner: null },
+      { ...baseGame, dice_values: [], cube_value: 1, cube_owner: null, crawford_game: true },
+      { ...baseGame, dice_values: [], cube_value: 2, cube_owner: 'p2', current_turn: 'p1' },
+    ];
+    for (const scenario of scenarios) {
+      gameApi.fetchGame.mockResolvedValue(scenario);
+      const { result, unmount } = renderHook(() => useGame(1));
+      await waitFor(() => expect(result.current.loading).toBe(false));
+      expect(result.current.canOfferDouble).toBe(false);
+      unmount();
+    }
+  });
+
+  test('offerDouble calls the API and swaps in the updated game', async () => {
+    gameApi.fetchGame.mockResolvedValue({ ...baseGame, dice_values: [] });
+    const offered = { ...baseGame, dice_values: [], double_offered_by: 'p1' };
+    gameApi.offerDouble.mockResolvedValue(offered);
+
+    const { result } = renderHook(() => useGame(1));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    await act(async () => {
+      await result.current.offerDouble();
+    });
+
+    expect(gameApi.offerDouble).toHaveBeenCalledWith(1);
+    expect(result.current.game).toEqual(offered);
+    expect(result.current.canOfferDouble).toBe(false); // offer now pending
+  });
+
+  test('respondToDouble passes the accept flag and surfaces errors', async () => {
+    gameApi.fetchGame.mockResolvedValue({ ...baseGame, dice_values: [], double_offered_by: 'p1' });
+    const accepted = { ...baseGame, dice_values: [], cube_value: 2, cube_owner: 'p2', double_offered_by: null };
+    gameApi.respondToDouble.mockResolvedValue(accepted);
+
+    const { result } = renderHook(() => useGame(1));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    await act(async () => {
+      await result.current.respondToDouble(true);
+    });
+    expect(gameApi.respondToDouble).toHaveBeenCalledWith(1, true);
+    expect(result.current.game).toEqual(accepted);
+
+    gameApi.respondToDouble.mockRejectedValue(new Error('No double has been offered.'));
+    await act(async () => {
+      await result.current.respondToDouble(false);
+    });
+    expect(result.current.actionError).toBe('No double has been offered.');
+  });
+
   test('rollDice replaces the game and resets staged dice', async () => {
     gameApi.fetchGame.mockResolvedValue({ ...baseGame, dice_values: [] });
     gameApi.rollDice.mockResolvedValue({ ...baseGame, dice_values: [2, 6] });

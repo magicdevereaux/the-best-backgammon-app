@@ -21,6 +21,7 @@ class GameSerializer(serializers.ModelSerializer):
         read_only_fields = [
             "match", "player1_user", "player2_user", "board_state", "current_turn",
             "dice_values", "status", "winner", "win_type", "points_value",
+            "cube_value", "cube_owner", "double_offered_by", "crawford_game",
             "created_at", "updated_at",
         ]
         extra_kwargs = {

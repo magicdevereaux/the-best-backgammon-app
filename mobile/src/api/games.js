@@ -33,3 +33,14 @@ export function confirmTurn(id, moves) {
     body: JSON.stringify({ moves }),
   });
 }
+
+export function offerDouble(id) {
+  return request(`/api/games/${id}/offer_double/`, { method: "POST" });
+}
+
+export function respondToDouble(id, accept) {
+  return request(`/api/games/${id}/respond_to_double/`, {
+    method: "POST",
+    body: JSON.stringify({ accept }),
+  });
+}

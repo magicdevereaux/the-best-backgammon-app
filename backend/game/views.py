@@ -78,11 +78,12 @@ def _apply_single_move(board, player, dice, from_point, to_point):
     return dice
 
 
-def _seat_permission_error(game, user):
+def _seat_permission_error(game, user, seat=None):
     """
     Server-side seat/turn enforcement for gameplay actions (roll_dice,
-    move_checker, confirm_turn). Returns an error message if the requester may
-    not act for game.current_turn, or None if the action is allowed.
+    move_checker, confirm_turn, cube actions). Returns an error message if the
+    requester may not act for `seat` (default: game.current_turn — the seat a
+    double responder acts for is passed explicitly), or None if allowed.
 
     Seat identity is only as strong as the player user FKs: a seat with a null
     FK belongs to a guest, who has no server identity to verify. Policy:
@@ -96,9 +97,9 @@ def _seat_permission_error(game, user):
       - Fully-guest games (no FKs at all) are therefore unrestricted — there is
         nothing to verify against.
     """
-    seat_user_id = (
-        game.player1_user_id if game.current_turn == "p1" else game.player2_user_id
-    )
+    if seat is None:
+        seat = game.current_turn
+    seat_user_id = game.player1_user_id if seat == "p1" else game.player2_user_id
     user_id = user.id if user is not None and user.is_authenticated else None
     is_participant = user_id is not None and user_id in (
         game.player1_user_id,
@@ -121,17 +122,29 @@ def _seat_permission_error(game, user):
 
 def _finish_game(game, board, winner):
     """
-    Set finished-game fields and update the linked match's score.
+    Finish a game won on the board: classify the win from the final position
+    and award win_points × the doubling-cube value.
     Does NOT call game.save() — the caller is responsible.
     """
     wtype = detect_win_type(board, winner)
-    pts = win_points(wtype)
+    _apply_game_result(game, winner, wtype, win_points(wtype) * game.cube_value)
+
+
+def _apply_game_result(game, winner, win_type, points):
+    """
+    Set finished-game fields and update the linked match's score. Shared by
+    board wins (_finish_game) and doubling-cube drops, where the game ends by
+    concession with no board-derived win type.
+    Does NOT call game.save() — the caller is responsible.
+    """
+    pts = points
 
     game.status = "finished"
     game.winner = winner
-    game.win_type = wtype
+    game.win_type = win_type
     game.points_value = pts
     game.dice_values = []
+    game.double_offered_by = None
 
     if game.match_id:
         match = game.match
@@ -216,6 +229,14 @@ class MatchViewSet(viewsets.ModelViewSet):
         last_game = match.games.filter(status="finished").first()
         next_turn = last_game.winner if last_game else "p1"
 
+        # Crawford rule: the first game after either player reaches match point
+        # (target − 1) is played with the doubling cube disabled. Exactly one
+        # such game per match — afterwards doubling resumes.
+        at_match_point = (match.target_points - 1) in (
+            match.player1_score, match.player2_score
+        )
+        crawford_played = match.games.filter(crawford_game=True).exists()
+
         game = Game.objects.create(
             match=match,
             player1_user=match.player1_user,
@@ -226,6 +247,7 @@ class MatchViewSet(viewsets.ModelViewSet):
             current_turn=next_turn,
             dice_values=[],
             status="active",
+            crawford_game=at_match_point and not crawford_played,
         )
 
         return Response(GameSerializer(game).data, status=status.HTTP_201_CREATED)
@@ -361,6 +383,12 @@ class GameViewSet(viewsets.ModelViewSet):
                 {"error": "Game is not active."}, status=status.HTTP_400_BAD_REQUEST
             )
 
+        if game.double_offered_by:
+            return Response(
+                {"error": "A double has been offered. The opponent must accept or drop first."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         if game.dice_values:
             return Response(
                 {"error": "Dice have already been rolled for this turn."},
@@ -386,6 +414,12 @@ class GameViewSet(viewsets.ModelViewSet):
         perm_error = _seat_permission_error(game, request.user)
         if perm_error:
             return Response({"error": perm_error}, status=status.HTTP_403_FORBIDDEN)
+
+        if game.double_offered_by:
+            return Response(
+                {"error": "A double has been offered. The opponent must accept or drop first."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         from_point = request.data.get("from_point")
         to_point = request.data.get("to_point")
@@ -449,6 +483,12 @@ class GameViewSet(viewsets.ModelViewSet):
         if game.status != "active":
             return Response(
                 {"error": "Game is not active."}, status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if game.double_offered_by:
+            return Response(
+                {"error": "A double has been offered. The opponent must accept or drop first."},
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
         if not game.dice_values:
@@ -527,6 +567,112 @@ class GameViewSet(viewsets.ModelViewSet):
         else:
             game.current_turn = opponent(player)
             game.dice_values = []
+
+        game.save()
+
+        serializer = self.get_serializer(game)
+        return Response(serializer.data)
+
+    @action(detail=True, methods=["post"], url_path="offer_double")
+    def offer_double(self, request, pk=None):
+        """
+        Offer to double the stakes. Legal only on your turn, before rolling,
+        when you own the cube or it's centered, outside the Crawford game, and
+        below the cube's 64 cap. Sets a pending offer the opponent must answer
+        (via respond_to_double) before play can continue.
+        """
+        game = self.get_object()
+
+        perm_error = _seat_permission_error(game, request.user)
+        if perm_error:
+            return Response({"error": perm_error}, status=status.HTTP_403_FORBIDDEN)
+
+        if game.status != "active":
+            return Response(
+                {"error": "Game is not active."}, status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if game.crawford_game:
+            return Response(
+                {"error": "The doubling cube is disabled during the Crawford game."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if game.double_offered_by:
+            return Response(
+                {"error": "A double has already been offered."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if game.dice_values:
+            return Response(
+                {"error": "You can only double before rolling."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        player = game.current_turn
+        if game.cube_owner is not None and game.cube_owner != player:
+            return Response(
+                {"error": "Your opponent owns the cube — only they may double."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if game.cube_value >= 64:
+            return Response(
+                {"error": "The cube is already at its maximum value (64)."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        game.double_offered_by = player
+        game.save()
+
+        serializer = self.get_serializer(game)
+        return Response(serializer.data)
+
+    @action(detail=True, methods=["post"], url_path="respond_to_double")
+    def respond_to_double(self, request, pk=None):
+        """
+        Answer a pending double as the offerer's opponent.
+
+        Expected body: { "accept": true | false }
+        Accept: the cube doubles and passes to the acceptor; the offerer then
+        rolls as normal. Drop: the responder concedes immediately and the
+        offerer scores the *current* (pre-double) cube value.
+        """
+        game = self.get_object()
+
+        if game.status != "active":
+            return Response(
+                {"error": "Game is not active."}, status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if not game.double_offered_by:
+            return Response(
+                {"error": "No double has been offered."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        responder = opponent(game.double_offered_by)
+        perm_error = _seat_permission_error(game, request.user, seat=responder)
+        if perm_error:
+            return Response({"error": perm_error}, status=status.HTTP_403_FORBIDDEN)
+
+        accept = request.data.get("accept")
+        if not isinstance(accept, bool):
+            return Response(
+                {"error": "accept must be true or false."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if accept:
+            game.cube_value *= 2
+            game.cube_owner = responder
+            game.double_offered_by = None
+        else:
+            # Dropping concedes the game at the pre-double stakes.
+            _apply_game_result(
+                game, game.double_offered_by, "drop", game.cube_value
+            )
 
         game.save()
 

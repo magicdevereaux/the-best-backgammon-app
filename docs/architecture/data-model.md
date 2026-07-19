@@ -53,8 +53,12 @@ A single game to bearing off all 15 checkers. Can be standalone or part of a `Ma
 | `dice_values` | **JSONField** (list) | remaining dice this turn; `[]` between turns |
 | `status` | Char | `waiting` / `active` / `finished` |
 | `winner` | Char, nullable | `"p1"` / `"p2"` |
-| `win_type` | Char, nullable | `normal` / `gammon` / `backgammon` |
-| `points_value` | PositiveInt, nullable | points the win was worth (1/2/3) |
+| `win_type` | Char, nullable | `normal` / `gammon` / `backgammon` / `drop` (conceded double) |
+| `points_value` | PositiveInt, nullable | points the win was worth — `win_points × cube_value` for board wins, the pre-double cube value for drops |
+| `cube_value` | PositiveInt | doubling cube: 1 (default) → 64 |
+| `cube_owner` | Char, nullable | seat `"p1"`/`"p2"`; null = centered. A seat, **not** a user FK — guests have no User row |
+| `double_offered_by` | Char, nullable | seat of a pending, unanswered double offer; blocks gameplay while set |
+| `crawford_game` | Bool | cube disabled for this game (first game after a player reaches match point) |
 | `created_at`, `updated_at` | DateTime | `updated_at` drives mobile's poll-diffing |
 
 Both models order by `["-created_at", "-id"]`.

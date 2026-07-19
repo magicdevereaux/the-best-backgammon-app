@@ -117,4 +117,62 @@ describe("useGame", () => {
     expect(result.current.stagedDice).toEqual([]);
     expect(result.current.pendingMoves).toEqual([]);
   });
+
+  test("canOfferDouble is true before rolling with a centered cube", async () => {
+    games.fetchGame.mockResolvedValue({
+      ...baseGame, dice_values: [], cube_value: 1, cube_owner: null,
+      double_offered_by: null, crawford_game: false,
+    });
+    const { result } = await mountLoaded();
+    expect(result.current.canOfferDouble).toBe(true);
+  });
+
+  test("canOfferDouble is false after rolling, in Crawford games, and when the opponent owns the cube", async () => {
+    const scenarios = [
+      { ...baseGame, dice_values: [3, 5], cube_value: 1, cube_owner: null },
+      { ...baseGame, dice_values: [], cube_value: 1, cube_owner: null, crawford_game: true },
+      { ...baseGame, dice_values: [], cube_value: 2, cube_owner: "p2", current_turn: "p1" },
+    ];
+    for (const scenario of scenarios) {
+      games.fetchGame.mockResolvedValue(scenario);
+      const view = await mountLoaded();
+      expect(view.result.current.canOfferDouble).toBe(false);
+      view.unmount();
+    }
+  });
+
+  test("offerDouble calls the API and adopts the updated game", async () => {
+    games.fetchGame.mockResolvedValue({ ...baseGame, dice_values: [] });
+    const offered = {
+      ...baseGame, dice_values: [], double_offered_by: "p1", updated_at: "t2",
+    };
+    games.offerDouble.mockResolvedValue(offered);
+
+    const { result } = await mountLoaded();
+    await act(async () => { await result.current.offerDouble(); });
+
+    expect(games.offerDouble).toHaveBeenCalledWith(1);
+    expect(result.current.game).toEqual(offered);
+    expect(result.current.canOfferDouble).toBe(false);
+  });
+
+  test("respondToDouble passes the accept flag and surfaces errors", async () => {
+    games.fetchGame.mockResolvedValue({
+      ...baseGame, dice_values: [], double_offered_by: "p1",
+    });
+    const accepted = {
+      ...baseGame, dice_values: [], cube_value: 2, cube_owner: "p2",
+      double_offered_by: null, updated_at: "t3",
+    };
+    games.respondToDouble.mockResolvedValue(accepted);
+
+    const { result } = await mountLoaded();
+    await act(async () => { await result.current.respondToDouble(true); });
+    expect(games.respondToDouble).toHaveBeenCalledWith(1, true);
+    expect(result.current.game).toEqual(accepted);
+
+    games.respondToDouble.mockRejectedValue(new Error("No double has been offered."));
+    await act(async () => { await result.current.respondToDouble(false); });
+    expect(result.current.actionError).toBe("No double has been offered.");
+  });
 });

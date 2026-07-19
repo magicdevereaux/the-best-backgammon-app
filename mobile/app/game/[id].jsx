@@ -8,6 +8,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import * as Linking from "expo-linking";
 import Board from "../../src/components/Board";
 import Dice from "../../src/components/Dice";
+import DoublingCube from "../../src/components/DoublingCube";
 import GameControls from "../../src/components/GameControls";
 import GameOverScreen from "../../src/components/GameOverScreen";
 import MatchScore from "../../src/components/MatchScore";
@@ -29,6 +30,7 @@ export default function GameScreen() {
     rollDice, stagedBoard, stagedDice,
     pendingMoves, legalMoves, mustUseMoreDice, stageMove,
     resetTurn, undoMove, confirmTurn,
+    offerDouble, respondToDouble, canOfferDouble,
     reload, refresh, refreshing,
   } = useGame(id);
 
@@ -135,14 +137,22 @@ export default function GameScreen() {
 
   // Turn-ownership gating (see src/game/gating.js). Combines the seat user FKs
   // with the device-local seat registry so online-vs-guest games gate correctly.
-  const { gated, canInteract, spectating, waitingForOpponent } = computeGating({
+  const { gated, mySeats, canInteract, spectating, waitingForOpponent } = computeGating({
     game,
     userId: user?.id,
     seatInfo,
   });
 
+  // Doubling: the offer button follows normal turn gating; the Accept/Drop
+  // prompt belongs to the *responder* seat (the offerer's opponent), which is
+  // not the current turn — gate it to that seat explicitly.
+  const doublePending = Boolean(game.double_offered_by);
+  const responderSeat = game.double_offered_by === "p1" ? "p2" : "p1";
+  const canRespondToDouble =
+    doublePending && (!gated || mySeats.includes(responderSeat));
+
   const turnActive = canInteract && rolledDice.length > 0;
-  const canRoll = canInteract && rolledDice.length === 0;
+  const canRoll = canInteract && rolledDice.length === 0 && !doublePending;
   const hasPendingMoves = pendingMoves.length > 0;
   const hasLegalMoves = legalMoves.length > 0;
   const mustPass = turnActive && !hasPendingMoves && !hasLegalMoves;
@@ -198,6 +208,14 @@ export default function GameScreen() {
         />
 
         <Dice rolled={rolledDice} remaining={stagedDice} canRoll={canRoll} onRoll={rollDice} />
+
+        <DoublingCube
+          game={game}
+          canOfferDouble={canInteract && canOfferDouble}
+          canRespond={canRespondToDouble}
+          onOfferDouble={offerDouble}
+          onRespondToDouble={respondToDouble}
+        />
 
         {mustPass && (
           <Text style={styles.passHint}>No legal moves for this roll — tap “Pass Turn”.</Text>

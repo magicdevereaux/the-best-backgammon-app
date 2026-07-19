@@ -4,6 +4,7 @@ const WIN_TYPE_LABEL = {
   normal: "wins!",
   gammon: "wins with a gammon!",
   backgammon: "wins with a backgammon!",
+  drop: "wins — double declined!",
 };
 
 export default function GameOverScreen({ game, match, onNextGame, onNewMatch, onLobby }) {

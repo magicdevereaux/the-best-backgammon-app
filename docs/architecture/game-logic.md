@@ -168,8 +168,40 @@ a bear-off `(from, 25)` can match both dice (exact + oversized), so
 - `detect_win_type` — `normal` (1 pt), `gammon` (loser bore off none; 2 pts), or
   `backgammon` (loser bore off none **and** still has a checker on the bar or in the
   winner's home board; 3 pts).
+- Board-win points are **multiplied by the doubling-cube value** (below), and a
+  fourth `win_type`, `drop`, marks a game conceded by declining a double.
 - In match mode, points accumulate on the `Match` until a player reaches
   `target_points`; the game winner goes first in the next game.
+
+## Doubling cube
+
+Cube state lives on `Game` (see [data-model.md](data-model.md)): `cube_value`
+(1 → 64), `cube_owner` (**seat** `"p1"`/`"p2"`/null — null = centered; not a user
+FK, since guests have no server identity), `double_offered_by` (seat of a pending,
+unanswered offer), and `crawford_game`. The flow is endpoint-driven in
+[`views.py`](../../backend/game/views.py), not in `game_logic.py`:
+
+- **`offer_double`** — legal on your turn *before rolling*, when the cube is
+  centered or yours, outside the Crawford game, below 64, and with no offer already
+  pending. Sets `double_offered_by`; while set, `roll_dice` / `move_checker` /
+  `confirm_turn` are all blocked (400) until the opponent answers.
+- **`respond_to_double`** (`{"accept": bool}`) — answered by the *offerer's
+  opponent* (seat-enforced with the same 403 pattern as gameplay actions; the
+  responder is not the current-turn player, so the permission check takes an
+  explicit seat). **Accept:** cube doubles, ownership transfers to the acceptor,
+  play continues with the offerer still to roll. **Drop:** the responder concedes —
+  the game finishes with `win_type="drop"` and the offerer scores the
+  **pre-double** cube value.
+- **Scoring:** board wins award `win_points(win_type) × cube_value` (gammon at
+  cube 4 = 8, backgammon at cube 4 = 12). This multiplied value is what lands in
+  `points_value`, the match score, and (by aggregation) user stats.
+- **Crawford rule:** `next_game` marks the first game after either player reaches
+  `target_points − 1` as `crawford_game=True` (cube disabled for that one game);
+  `match.games.filter(crawford_game=True).exists()` prevents a second one, so
+  doubling resumes in later games.
+
+Clients mirror only the *visibility* logic (`canOfferDouble` in each `useGame`) and
+render the cube + accept/drop prompt; the server enforces every rule.
 
 ## Known gaps
 

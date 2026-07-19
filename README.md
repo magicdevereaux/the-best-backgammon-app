@@ -12,6 +12,7 @@ gammon/backgammon detection. Both clients talk to the same backend.
 - **Single game mode** — play until one player bears off all 15 checkers
 - **Match mode** — first to reach 3, 5, 7, or 9 points wins the match
 - **Gammon / backgammon detection** — worth 2 and 3 points respectively
+- **Doubling cube** — offer/accept/drop before rolling, cube ownership, redoubles to 64, points multiplied by cube value, Crawford rule in match play
 - **Game over screen** — shows win type, points awarded, and running match score
 - **User accounts** — register/login, JWT auth, win/loss and stats tracking
 - **Profile page** — lifetime stats: games, wins, losses, gammons, backgammons, points won/lost, win %, gammon rate
@@ -129,7 +130,7 @@ auto-incrementing version).
 
 ## Running tests
 
-### Backend (205 tests)
+### Backend (232 tests)
 
 ```bash
 cd backend
@@ -139,7 +140,7 @@ python manage.py test game.tests
 
 The runner uses an in-memory database, so you don't need to reset the dev DB.
 
-### Web frontend (157 tests, Jest + React Testing Library)
+### Web frontend (172 tests, Jest + React Testing Library)
 
 ```bash
 cd frontend
@@ -150,7 +151,7 @@ Covers the game-logic port, the `useGame` staged-turn hook, the board / dice /
 controls components, and the auth stack (token storage, `register`/`login`/
 `fetchMe`/refresh, the 401 refresh-retry, and the login/register pages).
 
-### Mobile (74 tests, Jest + React Native Testing Library)
+### Mobile (83 tests, Jest + React Native Testing Library)
 
 ```bash
 cd mobile
@@ -204,6 +205,8 @@ mobile/
 | POST | `/api/games/{id}/join/` | Join a waiting game |
 | POST | `/api/games/{id}/roll_dice/` | Roll dice for current turn |
 | POST | `/api/games/{id}/confirm_turn/` | Commit staged moves (empty list = pass) |
+| POST | `/api/games/{id}/offer_double/` | Offer to double the stakes (before rolling) |
+| POST | `/api/games/{id}/respond_to_double/` | Accept (`{"accept": true}`) or drop a pending double |
 | GET/POST | `/api/matches/` | List matches / create match |
 | GET | `/api/matches/{id}/` | Match detail + current score |
 | POST | `/api/matches/{id}/next_game/` | Start the next game in a match |
@@ -224,6 +227,8 @@ A **backgammon** is worth 3 points: the loser still has a checker on the bar or 
 A normal win is worth 1 point.
 
 In match mode, games continue until one player accumulates enough points to reach the target. The winner of each game goes first in the next.
+
+All win values are multiplied by the **doubling cube**: a gammon at cube value 4 is worth 8 points, a backgammon 12. Dropping a double concedes the game at the pre-double cube value. Under the **Crawford rule**, the first game after a player reaches match point is played without the cube; doubling resumes afterwards.
 
 ---
 

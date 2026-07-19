@@ -5,6 +5,8 @@ import {
   fetchGame,
   rollDice as apiRollDice,
   confirmTurn as apiConfirmTurn,
+  offerDouble as apiOfferDouble,
+  respondToDouble as apiRespondToDouble,
 } from "../api/games";
 import { getLegalMoves, getCombinedMoves, applyMove, maxMovesUsable } from "./logic";
 
@@ -262,6 +264,42 @@ export function useGame(gameId) {
     }
   }, [gameId, pendingMoves]);
 
+  const offerDouble = useCallback(async () => {
+    try {
+      setActionError(null);
+      const updated = await apiOfferDouble(gameId);
+      setGame(updated);
+    } catch (err) {
+      setActionError(err.message);
+    }
+  }, [gameId]);
+
+  const respondToDouble = useCallback(
+    async (accept) => {
+      try {
+        setActionError(null);
+        const updated = await apiRespondToDouble(gameId, accept);
+        setGame(updated);
+      } catch (err) {
+        setActionError(err.message);
+      }
+    },
+    [gameId]
+  );
+
+  // Doubling is legal on your turn before rolling, with the cube centered or
+  // yours, outside the Crawford game and below the 64 cap. Mirrors the
+  // server-side rules for button visibility; the server re-validates.
+  const canOfferDouble = Boolean(
+    game &&
+      game.status === "active" &&
+      (!game.dice_values || game.dice_values.length === 0) &&
+      !game.double_offered_by &&
+      !game.crawford_game &&
+      (game.cube_value ?? 1) < 64 &&
+      (game.cube_owner == null || game.cube_owner === game.current_turn)
+  );
+
   return {
     game,
     loading,
@@ -277,6 +315,9 @@ export function useGame(gameId) {
     resetTurn,
     undoMove,
     confirmTurn,
+    offerDouble,
+    respondToDouble,
+    canOfferDouble,
     reload,
     refresh,
     refreshing,

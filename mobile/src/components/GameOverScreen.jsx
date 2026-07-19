@@ -6,11 +6,13 @@ const WIN_TYPE_LABEL = {
   normal: "wins!",
   gammon: "wins with a gammon!",
   backgammon: "wins with a backgammon!",
+  drop: "wins — double declined!",
 };
 
 const WIN_TYPE_DETAIL = {
   gammon: "Gammon — opponent has borne off nothing.",
   backgammon: "Backgammon — opponent still has a checker on the bar or in your home board.",
+  drop: "The double was dropped — the game ends at the pre-double stakes.",
 };
 
 // Native port of frontend/src/components/GameOverScreen.jsx as a modal overlay.

@@ -3,6 +3,7 @@ import { useParams, useNavigate } from "react-router-dom";
 import Board from "../components/Board";
 import Dice from "../components/Dice";
 import GameControls from "../components/GameControls";
+import DoublingCube from "../components/DoublingCube";
 import GameOverScreen from "../components/GameOverScreen";
 import MatchScore from "../components/MatchScore";
 import { useGame } from "../hooks/useGame";
@@ -27,7 +28,9 @@ export default function GamePage() {
     game, loading, error, actionError,
     rollDice, stagedBoard, stagedDice,
     pendingMoves, legalMoves, mustUseMoreDice,
-    stageMove, resetTurn, confirmTurn, reload,
+    stageMove, resetTurn, confirmTurn,
+    offerDouble, respondToDouble, canOfferDouble,
+    reload,
   } = useGame(id);
 
   const [guestJoinName, setGuestJoinName] = useState("");
@@ -119,6 +122,13 @@ export default function GamePage() {
       </div>
 
       <Dice diceValues={stagedDice} />
+
+      <DoublingCube
+        game={game}
+        canOfferDouble={canOfferDouble}
+        onOfferDouble={offerDouble}
+        onRespondToDouble={respondToDouble}
+      />
 
       <GameControls
         game={game}

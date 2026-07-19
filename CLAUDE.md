@@ -12,7 +12,8 @@ first, then reach for the deeper docs under [`docs/`](docs/) when you need them.
 A full-stack backgammon app: one Django REST backend shared by **two clients** — a
 React web app and a React Native (Expo) mobile app. It supports hotseat play,
 online games via shareable links, user accounts with JWT auth, single games and
-match play (first to N points), and gammon/backgammon scoring.
+match play (first to N points), gammon/backgammon scoring, and the doubling cube
+(with the Crawford rule in matches).
 
 Both clients re-implement the same pure game logic locally (for legal-move
 highlighting and tentative "staged" turns) and send committed turns to the
@@ -68,9 +69,9 @@ See [`README.md`](README.md) for the full device matrix and EAS build commands.
 
 | Suite | Count | Command (cwd) |
 |-------|-------|---------------|
-| Backend | **205** | `python manage.py test game` (`backend/`, in-memory DB) |
-| Web | **157** | `CI=true npm test -- --watchAll=false` (`frontend/`) |
-| Mobile | **74** | `CI=true npx jest` (`mobile/`) |
+| Backend | **232** | `python manage.py test game` (`backend/`, in-memory DB) |
+| Web | **172** | `CI=true npm test -- --watchAll=false` (`frontend/`) |
+| Mobile | **83** | `CI=true npx jest` (`mobile/`) |
 
 Backend tests live in [`backend/game/tests/`](backend/game/tests/) (models, views,
 auth, lobby, match, serializers, logic). Web tests sit beside sources in
@@ -119,6 +120,14 @@ Board is `points[24]` (index = point − 1), plus `bar` and `off` counts per pla
   play). Client gating on top of that is UX: mobile hides controls via
   [`gating.js`](mobile/src/game/gating.js) + a device-local seat registry; the
   **web UI does not gate** (unauthorized clicks surface the server's 403).
+- **Doubling cube state is seat-based.** `Game.cube_owner` and
+  `double_offered_by` hold `"p1"`/`"p2"`/null (like `current_turn`/`winner`), *not*
+  user FKs — guests have no User row. A pending offer (`double_offered_by` set)
+  blocks all gameplay actions until answered via `respond_to_double`. A dropped
+  double finishes the game with `win_type="drop"` at the pre-double cube value;
+  board wins score `win_points × cube_value`. Crawford games are flagged per-game
+  (`crawford_game`), assigned in `next_game` when a player first reaches
+  match point (`match.games.filter(crawford_game=True)` marks it already played).
 - **Stats are computed on read**, not stored — see `UserSerializer` in
   [`serializers.py`](backend/game/serializers.py).
 

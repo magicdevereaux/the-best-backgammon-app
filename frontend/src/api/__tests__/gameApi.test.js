@@ -1,4 +1,4 @@
-import { fetchGames, fetchGame, createGame, rollDice, moveChecker, confirmTurn } from '../gameApi';
+import { fetchGames, fetchGame, createGame, rollDice, moveChecker, confirmTurn, offerDouble, respondToDouble } from '../gameApi';
 
 /*
  * All tests here FAIL until you implement the functions in gameApi.js.
@@ -233,5 +233,45 @@ describe('confirmTurn(id, moves)', () => {
   test('throws and surfaces the server error message on an illegal move', async () => {
     fetch.mockReturnValueOnce(mockResponse({ error: 'Illegal move.' }, { ok: false, status: 400 }));
     await expect(confirmTurn(1, moves)).rejects.toThrow('Illegal move.');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// offerDouble / respondToDouble
+// ---------------------------------------------------------------------------
+
+describe('offerDouble(id)', () => {
+  test('POSTs to the offer_double endpoint for the given id', async () => {
+    fetch.mockReturnValueOnce(mockResponse({}));
+    await offerDouble(7);
+    const [url, options] = fetch.mock.calls[0];
+    expect(url).toMatch(/7/);
+    expect(url).toMatch(/offer_double/);
+    expect(options.method.toUpperCase()).toBe('POST');
+  });
+
+  test('surfaces the server error on an illegal offer', async () => {
+    fetch.mockReturnValueOnce(
+      mockResponse({ error: 'You can only double before rolling.' }, { ok: false, status: 400 })
+    );
+    await expect(offerDouble(1)).rejects.toThrow('You can only double before rolling.');
+  });
+});
+
+describe('respondToDouble(id, accept)', () => {
+  test('POSTs the accept flag to the respond_to_double endpoint', async () => {
+    fetch.mockReturnValueOnce(mockResponse({}));
+    await respondToDouble(3, true);
+    const [url, options] = fetch.mock.calls[0];
+    expect(url).toMatch(/3/);
+    expect(url).toMatch(/respond_to_double/);
+    expect(JSON.parse(options.body)).toEqual({ accept: true });
+  });
+
+  test('sends accept: false for a drop', async () => {
+    fetch.mockReturnValueOnce(mockResponse({}));
+    await respondToDouble(3, false);
+    const [, options] = fetch.mock.calls[0];
+    expect(JSON.parse(options.body)).toEqual({ accept: false });
   });
 });
