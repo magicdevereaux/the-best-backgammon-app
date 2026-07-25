@@ -26,7 +26,33 @@ gammon/backgammon detection. Both clients talk to the same backend.
 backend/    Django REST API (shared by both clients)
 frontend/   React web client
 mobile/     React Native (Expo) mobile client
+docs/       Architecture, operations, and decision records
 ```
+
+## Documentation
+
+This README is the setup and feature tour. Deeper reference lives in
+[`docs/`](docs/README.md):
+
+| Doc | What it answers |
+|-----|-----------------|
+| [overview.md](docs/architecture/overview.md) | How backend, web, and mobile fit together |
+| [api.md](docs/architecture/api.md) | Every endpoint, payload, and error code |
+| [clients.md](docs/architecture/clients.md) | Map of both client apps and the staged-turn flow |
+| [game-logic.md](docs/architecture/game-logic.md) | The rules engine and move validation |
+| [data-model.md](docs/architecture/data-model.md) | Django models and schema |
+| [auth.md](docs/architecture/auth.md) | Accounts, JWT, token lifecycle |
+| [going-live.md](docs/operations/going-live.md) | What's left before this can ship |
+
+[`CLAUDE.md`](CLAUDE.md) is the working brief for AI coding sessions.
+
+## Project status
+
+Feature-complete for local and link-based online play, with 487 passing tests —
+but **it has never been deployed, and cannot be as configured.** `DEBUG` is on,
+the `SECRET_KEY` is committed, the database is SQLite, and neither client can
+reach a non-local backend in a production build. See
+[going-live.md](docs/operations/going-live.md) for the full checklist.
 
 ---
 
@@ -193,24 +219,38 @@ mobile/
 
 ## API overview
 
+Full reference — request/response shapes, every error code, and the
+seat-permission rules — lives in
+[`docs/architecture/api.md`](docs/architecture/api.md). Summary:
+
 | Method | Path | Description |
 |--------|------|-------------|
+| GET | `/api/` | Browsable API root (DRF `DefaultRouter`) |
 | POST | `/api/auth/register/` | Create account |
 | POST | `/api/auth/login/` | Get JWT tokens |
 | POST | `/api/auth/refresh/` | Refresh access token |
 | GET | `/api/auth/me/` | Current user + stats |
-| GET/POST | `/api/games/` | List games / create game |
+| GET/POST | `/api/games/` | List all games (unpaginated) / create game |
 | GET | `/api/games/?status=waiting` | Open lobby games |
 | GET | `/api/games/{id}/` | Game detail (includes `viewer_seat` / `viewer_is_participant` for the requester) |
+| PUT/PATCH/DELETE | `/api/games/{id}/` | Update / delete a game — **live and unguarded**, see note below |
 | POST | `/api/games/{id}/join/` | Join a waiting game |
 | POST | `/api/games/{id}/roll_dice/` | Roll dice for current turn |
-| POST | `/api/games/{id}/confirm_turn/` | Commit staged moves (empty list = pass) |
+| POST | `/api/games/{id}/move_checker/` | Apply one move (legacy — no client uses it) |
+| POST | `/api/games/{id}/confirm_turn/` | Commit staged moves; an empty list passes the turn, but only when no legal move exists (otherwise 400) |
 | POST | `/api/games/{id}/offer_double/` | Offer to double the stakes (before rolling) |
 | POST | `/api/games/{id}/respond_to_double/` | Accept (`{"accept": true}`) or drop a pending double |
-| GET/POST | `/api/matches/` | List matches / create match |
+| GET/POST | `/api/matches/` | List matches / create match (also creates the match's first game; `target_points` must be 3, 5, 7, or 9) |
 | GET | `/api/matches/{id}/` | Match detail + current score |
+| PUT/PATCH/DELETE | `/api/matches/{id}/` | Update / delete a match — **live and unguarded** |
 | POST | `/api/matches/{id}/next_game/` | Start the next game in a match |
-| POST | `/api/matches/{id}/join/` | Join a waiting match |
+| POST | `/api/matches/{id}/join/` | Join a match that has no second player yet |
+
+> ⚠️ **Not production-ready as it stands.** Games and matches are plain DRF
+> `ModelViewSet`s, so the update/delete verbs are exposed with no permission
+> check, `next_game` has no seat enforcement, and `GET /api/games/` is public and
+> unpaginated. These and the rest of the launch blockers are catalogued in
+> [`docs/operations/going-live.md`](docs/operations/going-live.md).
 
 `viewer_seat` (`"p1"` / `"p2"` / `"p1p2"` / `null`) is a server-side ownership
 signal: it tells the requesting authenticated user which seat they own so a
@@ -232,4 +272,8 @@ All win values are multiplied by the **doubling cube**: a gammon at cube value 4
 
 ---
 
-_Last updated 2026-07-05 during the documentation pass that added [`CLAUDE.md`](CLAUDE.md) and [`docs/`](docs/). See those for architecture, the rules engine, the data model, and decision records._
+_Last updated 2026-07-25. Test counts (232 / 172 / 83) verified green on that date.
+That pass added the [API reference](docs/architecture/api.md), the
+[client map](docs/architecture/clients.md), the
+[go-live audit](docs/operations/going-live.md), and a [docs index](docs/README.md);
+it also corrected the API table above._

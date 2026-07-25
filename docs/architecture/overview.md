@@ -97,8 +97,9 @@ realtime channel. The flow:
 
 ### Whose turn is it? (seat ownership)
 
-The backend **enforces** seat/turn ownership on the gameplay actions (`roll_dice`,
-`move_checker`, `confirm_turn`) via `_seat_permission_error` in
+The backend **enforces** seat/turn ownership on every player action — `roll_dice`,
+`move_checker`, `confirm_turn`, and the cube actions `offer_double` /
+`respond_to_double` — via `_seat_permission_error` in
 [`views.py`](../../backend/game/views.py). Enforcement is only as strong as the
 `player1_user` / `player2_user` FKs — a **guest seat (null FK) has no server
 identity to verify**. The policy:
@@ -115,6 +116,10 @@ Fully-guest games (no FKs at all) are unrestricted — there is nothing to verif
 Violations return **403** with the message in `{ "error": ... }`; both clients
 surface it via their normal action-error path.
 
+The check normally runs against `game.current_turn`, but it takes an explicit
+seat where the actor isn't the current player: `respond_to_double` checks the
+**offerer's opponent**, so the offerer can't answer their own double.
+
 > **Residual gap:** a logged-in attacker can log *out* and act on a guest seat
 > anonymously — a guest seat is inherently unverifiable without a guest-token
 > concept (see Planned).
@@ -125,7 +130,8 @@ controls rather than eating 403s):
 - **`viewer_seat`** — a `GameSerializer` field (`"p1"` / `"p2"` / `"p1p2"` / `null`)
   telling the *requesting authenticated user* which seat(s) they own, derived from
   the user FKs. Lets a fresh device (e.g. a deep link opened for the first time)
-  gate correctly.
+  gate correctly. A companion boolean `viewer_is_participant` is just
+  `viewer_seat is not null`.
 - **Device-local seat registry (mobile only)** —
   [`mobile/src/game/seatRegistry.js`](../../mobile/src/game/seatRegistry.js) records
   in SecureStore which seat this device took when it created/joined a game. This
@@ -144,6 +150,10 @@ an unauthorized click is caught by the server's 403.
   ([`mobile/src/game/useGame.js`](../../mobile/src/game/useGame.js)).
 - **Web** does **not** auto-poll; the game reloads on navigation or an explicit
   action. Opponent moves appear on the next reload.
+
+The same asymmetry applies to a **pending double**: an offer sets
+`double_offered_by` and blocks play until answered, so the opponent sees the
+accept/drop prompt on mobile's next poll, but only after a manual reload on web.
 
 ## Planned / Not Yet Implemented
 

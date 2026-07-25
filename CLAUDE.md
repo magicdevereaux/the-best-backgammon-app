@@ -7,6 +7,39 @@ first, then reach for the deeper docs under [`docs/`](docs/) when you need them.
 > Anything intended-but-unbuilt lives under a **Planned / Not Yet Implemented**
 > section so a session can tell "work with this" from "don't assume it's there."
 
+## Default working mode: delegate wide, keep the main thread thin
+
+**This is how sessions on this repo are expected to run.** The main thread is a
+coordinator, not a reader. Its context should hold the plan, the decisions, and
+the final diff — not the raw material used to get there.
+
+- **Delegate any task whose *inputs* are bigger than its *output*.** Surveying a
+  directory, auditing docs against code, tracing a flow across both clients,
+  running a test suite, checking whether a claim is still true — all of that is
+  subagent work. The main thread receives the conclusion.
+- **Give every agent exclusive file ownership.** Name the exact files it may
+  edit and tell it which files other agents own. Parallel agents are safe only
+  when their write sets are disjoint. Read overlap is fine.
+- **Fan out in one message.** Independent agents launch in parallel; sequence
+  them only on a real data dependency.
+- **Cap the report.** Ask for a word limit (200–400) and specify exactly which
+  facts must come back. An agent that returns file dumps has defeated the point.
+- **Keep the integration work in the main thread.** Cross-cutting files that
+  need a single coherent voice — this file, [`README.md`](README.md) — get
+  edited by the coordinator after the reports land, never by a fan-out agent.
+
+Do the work directly when it is genuinely small (one known file, a targeted
+edit, a question you can answer from this file). Delegation has a fixed cost;
+spending it to avoid reading two files is a loss.
+
+## Who the docs are for
+
+Optimise `docs/` for **agent consumption first**: dense, specific, verifiable,
+heavy on relative source links and exact symbol names, with the ground rule
+above enforced so nothing is trusted that isn't real. Human readability is a
+secondary goal there and a *primary* one in [`README.md`](README.md) — that file
+is the human's front door and should stay welcoming and prose-y.
+
 ## What this is
 
 A full-stack backgammon app: one Django REST backend shared by **two clients** — a
@@ -51,9 +84,20 @@ stay in sync**; change one and mirror the others.
 python manage.py migrate
 python manage.py runserver          # http://localhost:8000/api/
 ```
-The venv lives at `backend/venv/`. On Windows, Node/npm are **not on PATH** in the
-default shell — use the Bash tool with nvm sourced (`. "$NVM_DIR/nvm.sh"`) for the
-JS clients. Django uses `backend/venv/Scripts/python.exe` directly.
+The venv lives at `backend/venv/`; Django is invoked as
+`backend/venv/Scripts/python.exe` directly.
+
+**Node on this Windows machine.** POSIX nvm is cloned at `~/.nvm` (Node v22.9.0
+and v20.3.0, `default` alias → `node`). As of 2026-07-25 it is wired up: `~/.bashrc`
+sources `nvm.sh` and `~/.profile` sources `~/.bashrc`, and Node's bin directory is
+on the Windows user PATH. Practical consequences:
+
+- A **fresh** shell (new terminal, new session) has `node`/`npm` — just run them.
+- A **login** bash shell always works: `bash -lc 'node -v'`.
+- `$NVM_DIR` is only set *after* the profile loads — don't write
+  `. "$NVM_DIR/nvm.sh"` blind; it silently no-ops in a shell that hasn't sourced
+  the profile. Use `. "$HOME/.nvm/nvm.sh"` or the explicit PATH prefix
+  `export PATH="$HOME/.nvm/versions/node/v22.9.0/bin:$PATH"` as the fallback.
 
 **Web** (from `frontend/`): `npm install && npm start` → http://localhost:3000
 (requests to `/api/*` proxy to Django).
@@ -82,8 +126,16 @@ Auth has full client + server coverage: backend `test_auth.py`; web
 mobile `api/__tests__/{tokenStore,auth,client}.test.js`. See [auth.md](docs/architecture/auth.md)
 for the map.
 
-> On Windows, Node isn't on PATH; run JS suites from the Bash tool with node added,
-> e.g. `export PATH="$HOME/.nvm/versions/node/v22.9.0/bin:$PATH"` (nvm-windows layout).
+All three suites were **green as of 2026-07-25** (232 / 172 / 83, 487 total, zero
+failures). If you see a failure, it is yours — the baseline is clean.
+
+> **The two JS suites take different invocations, and swapping them fails
+> confusingly.** `frontend/` is Create React App: the Babel/jest transform only
+> exists inside `react-scripts test`, so bare `npx jest` there fails *all* suites
+> with `SyntaxError: Cannot use import statement outside a module` and runs zero
+> tests. Use `npm test --`. `mobile/` is the opposite — bare `npx jest` is
+> correct. The web run also emits harmless React Router v7 future-flag
+> deprecation warnings; ignore them.
 
 ## Coordinate conventions (critical — get these right)
 
@@ -111,15 +163,26 @@ Board is `points[24]` (index = point − 1), plus `bar` and `off` counts per pla
 - **`move_checker` endpoint exists but no client uses it.** Both clients drive the
   staging → `confirm_turn` flow. It still has API wrappers and tests; treat it as
   legacy, not the live path.
-- **Seat/turn ownership is enforced server-side** on the gameplay actions
-  (`roll_dice` / `move_checker` / `confirm_turn`): `_seat_permission_error` in
+- **Seat/turn ownership is enforced server-side** on **five** actions —
+  `roll_dice` / `move_checker` / `confirm_turn` / `offer_double` /
+  `respond_to_double`. `_seat_permission_error` in
   [`views.py`](backend/game/views.py) returns **403** when the current-turn seat is
   owned by a registered user and the requester isn't that user, and when another
-  logged-in account touches a guest seat. **Guest seats (null user FK) are
+  logged-in account touches a guest seat. It normally checks `current_turn`, but
+  `respond_to_double` passes an explicit seat — the *offerer's opponent* — since
+  answering a double isn't the offerer's turn. **Guest seats (null user FK) are
   unverifiable** — anonymous requests on them are allowed by design (hotseat/guest
   play). Client gating on top of that is UX: mobile hides controls via
   [`gating.js`](mobile/src/game/gating.js) + a device-local seat registry; the
   **web UI does not gate** (unauthorized clicks surface the server's 403).
+  Note `next_game` is **not** covered — see Known gaps.
+- **Web online play is doubly degraded**: no auto-refresh *and* no client-side
+  gating. A web player must reload manually to see an opponent's move or a
+  pending double, and discovers an out-of-turn action only as a 403 error.
+  Mobile has both polling and gating. Treat web online play as the weaker path.
+- **Confirming zero pending moves is the pass mechanism** (`confirm_turn` with an
+  empty list). It is accepted *only* when `max_moves_usable == 0` — otherwise
+  400. Mobile relabels the button "Pass Turn" when appropriate; web does not.
 - **Doubling cube state is seat-based.** `Game.cube_owner` and
   `double_offered_by` hold `"p1"`/`"p2"`/null (like `current_turn`/`winner`), *not*
   user FKs — guests have no User row. A pending offer (`double_offered_by` set)
@@ -133,6 +196,29 @@ Board is `points[24]` (index = point − 1), plus `bar` and `off` counts per pla
 
 ## Known gaps
 
+> Security- and launch-blocking items are catalogued with file/line evidence in
+> [going-live.md](docs/operations/going-live.md). The list below is what a coding
+> session needs to keep in mind day to day.
+
+- **Games and matches are unguarded `ModelViewSet`s.** `PUT` / `PATCH` /
+  `DELETE` on `/api/games/{id}/` and `/api/matches/{id}/` are routed and live
+  with no permission check — anyone can mutate or delete any game. Seat
+  enforcement only covers the custom actions.
+- **`next_game` has no seat enforcement.** Any caller, anonymous included, can
+  advance any match to its next game.
+- **Registration bypasses `AUTH_PASSWORD_VALIDATORS`.** `RegisterSerializer`
+  ([`serializers.py`](backend/game/serializers.py)) calls `create_user` directly,
+  so only its own `min_length=8` applies — `"password"` registers fine.
+- **No pagination anywhere.** `GET /api/games/` returns the entire table,
+  unauthenticated.
+- **`isBlotHit` is duplicated, not shared.** Mobile exports it from
+  [`logic.js`](mobile/src/game/logic.js); the web copy is inlined privately in
+  [`Board.jsx`](frontend/src/components/Board.jsx) with a *different signature*
+  (web takes `points`, mobile takes `boardState`) and no web test. This is the
+  one piece of unintentional drift between the two JS ports — everything else
+  differs only by presence/absence, never by rule.
+- **Clients don't model the higher-die rule**, so a client can happily stage a
+  bear-off turn that the server then rejects with 400.
 - **Higher-die rule enforced only during bear-off.** `higher_die_required_moves`
   (server-only, no JS port) forces the higher die at `confirm_turn` when exactly
   one die is playable while bearing off. The official rule is *general* — in
@@ -152,14 +238,25 @@ Board is `points[24]` (index = point − 1), plus `bar` and `off` counts per pla
 
 ## Deeper docs
 
+Index with contribution rules: [docs/README.md](docs/README.md).
+
 - [docs/architecture/overview.md](docs/architecture/overview.md) — how web, mobile,
   and backend relate; auth; online multiplayer; sync.
+- [docs/architecture/api.md](docs/architecture/api.md) — **full HTTP reference**:
+  every route, request/response shape by serializer, per-endpoint error tables
+  with real codes and messages, the seat-permission matrix. Check here before
+  reading `views.py`.
+- [docs/architecture/clients.md](docs/architecture/clients.md) — map of both
+  clients: counterpart file table, staged-turn flow with real state names,
+  routes, token storage, gating, rendering, engine duplication.
 - [docs/architecture/auth.md](docs/architecture/auth.md) — accounts, JWT endpoints,
   client token lifecycle + refresh-retry, auth test map, security limitations.
 - [docs/architecture/game-logic.md](docs/architecture/game-logic.md) — the rules
   engine, combined-move DFS, maximal-dice enforcement.
 - [docs/architecture/data-model.md](docs/architecture/data-model.md) — Django
   models and schema.
+- [docs/operations/going-live.md](docs/operations/going-live.md) — production
+  readiness: hard blockers, should-fix, post-launch, with file/line evidence.
 - [docs/decisions/adr-001-combined-moves.md](docs/decisions/adr-001-combined-moves.md).
 
 ## Planned / Not Yet Implemented

@@ -72,6 +72,7 @@ rejected, so a guest is a normal, non-error state.
 |-------|------|-------|
 | Backend | [`tests/test_auth.py`](../../backend/game/tests/test_auth.py) | register (dupe/short-password), login (wrong password → 401), `/me/` gating + stat counts, refresh |
 | Backend | [`tests/test_seat_security.py`](../../backend/game/tests/test_seat_security.py) | seat/turn enforcement: wrong user → 403, out-of-turn → 403, owner accepted, guest-seat rules (hotseat / anonymous / other accounts) |
+| Backend | [`tests/test_cube.py`](../../backend/game/tests/test_cube.py) (`CubeSeatSecurityTest`) | same enforcement on the cube actions: only the current player may offer, non-participants 403, the offerer can't answer their own double |
 | Web API | `frontend/src/api/__tests__/authApi.test.js` | token storage, register/login/fetchMe/refresh/logout, error surfacing, "store nothing on failure" |
 | Web client | `frontend/src/api/__tests__/apiClient.test.js` | bearer injection, 401→refresh→retry, no-refresh-token path, refresh-fails-clears-tokens |
 | Web UI | `frontend/src/pages/__tests__/LoginPage.test.jsx` | login/register submit → navigate home; server error rendered, no navigation |
@@ -86,13 +87,17 @@ Client tests mock `fetch`; mobile uses the in-memory SecureStore mock in
 ## Security note (current limitations)
 
 `AllowAny` remains the default DRF permission (guest play requires it), but the
-gameplay actions (`roll_dice` / `move_checker` / `confirm_turn`) **do enforce
-seat/turn ownership** server-side: `_seat_permission_error` in
+player actions (`roll_dice` / `move_checker` / `confirm_turn` and the cube actions
+`offer_double` / `respond_to_double`) **do enforce seat/turn ownership**
+server-side: `_seat_permission_error` in
 [`views.py`](../../backend/game/views.py) rejects with **403** any request where the
-current-turn seat is owned by a registered user and the requester isn't that user
+acting seat is owned by a registered user and the requester isn't that user
 (including the opponent acting out of turn), and rejects other logged-in accounts
-acting on a guest seat. See [overview.md](overview.md#whose-turn-is-it-seat-ownership)
-for the full policy table.
+acting on a guest seat. The acting seat is `current_turn` except for
+`respond_to_double`, which checks the offerer's *opponent* (so a player can't
+answer their own double). See
+[overview.md](overview.md#whose-turn-is-it-seat-ownership) for the full policy
+table.
 
 The remaining limitation is **guest seats**: a null user FK has no server identity,
 so anonymous requests on a guest seat are accepted — an attacker can log out and act

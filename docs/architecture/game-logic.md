@@ -45,7 +45,8 @@ and remaining dice. Rules encoded:
 - **Bearing off** is only offered when `can_bear_off` is true (all of the player's
   checkers are home and none on the bar). A die bears a checker off when it exactly
   matches the bear-off distance, **or** when the die is larger than the distance and
-  that checker is on the highest occupied home point (the "overage" rule). The
+  that checker sits on the **furthest-back** occupied home point — i.e. its
+  distance equals the largest bear-off distance on the board (the "overage" rule). The
   higher-die-must-be-used refinement is enforced at confirm time during bear-off —
   see [the higher-die rule](#higher-die-rule-bear-off--higher_die_required_moves)
   and [Known gaps](#known-gaps) for its non-bear-off scope limit.
@@ -83,8 +84,10 @@ The UI lets a player move one checker several dice in a single gesture (e.g. pla
 5 and a 3 as one 8-point slide through a legal intermediate). This is a **purely
 client-side convenience**: `getCombinedMoves` runs a depth-first search from each of
 the player's checkers, stepping through legal single hops and consuming a die at each
-step, recording every reachable `[from, to, path]` where `path` is the ordered list
-of `{ to, die }` sub-moves.
+step, recording each reachable `[from, to, path]` where `path` is the ordered list
+of `{ to, die }` sub-moves. Destinations are deduped per `from → to`, so a
+destination reachable both a-then-b and b-then-a is offered once, via whichever
+path the search found first.
 
 When the player picks a combined move, the client **expands `path` into individual
 pending moves** — so what reaches the backend is an ordinary sequence of single hops
@@ -145,7 +148,9 @@ returns the permitted move set when the rule applies (else `None`), preferring t
 higher die's **exact bear-off** if one exists, then its **oversized bear-off** (which
 `get_legal_moves` only ever emits from the furthest-back checker), then any
 higher-die move. `confirm_turn` rejects a turn whose single move isn't in that set,
-with a message naming the required die.
+with a message naming the required die. The check runs *after* the maximal-usage
+check, which guarantees exactly one staged move whenever the rule is active
+(`max_usable == 1`) — so it only ever inspects `moves[0]`.
 
 Two properties of the move generator, verified by exhaustive search over small
 bear-off positions, shape this:
@@ -183,8 +188,10 @@ unanswered offer), and `crawford_game`. The flow is endpoint-driven in
 
 - **`offer_double`** — legal on your turn *before rolling*, when the cube is
   centered or yours, outside the Crawford game, below 64, and with no offer already
-  pending. Sets `double_offered_by`; while set, `roll_dice` / `move_checker` /
-  `confirm_turn` are all blocked (400) until the opponent answers.
+  pending. Seat-enforced against `current_turn` like the gameplay actions (403).
+  Sets `double_offered_by`; while set, `roll_dice` / `move_checker` /
+  `confirm_turn` and a second `offer_double` are all blocked (400) until the
+  opponent answers.
 - **`respond_to_double`** (`{"accept": bool}`) — answered by the *offerer's
   opponent* (seat-enforced with the same 403 pattern as gameplay actions; the
   responder is not the current-turn player, so the permission check takes an
@@ -194,7 +201,9 @@ unanswered offer), and `crawford_game`. The flow is endpoint-driven in
   **pre-double** cube value.
 - **Scoring:** board wins award `win_points(win_type) × cube_value` (gammon at
   cube 4 = 8, backgammon at cube 4 = 12). This multiplied value is what lands in
-  `points_value`, the match score, and (by aggregation) user stats.
+  `points_value`, the match score, and (by aggregation) user stats. Both endings
+  go through `_apply_game_result`, which also clears `dice_values` and any
+  pending offer.
 - **Crawford rule:** `next_game` marks the first game after either player reaches
   `target_points − 1` as `crawford_game=True` (cube disabled for that one game);
   `match.games.filter(crawford_game=True).exists()` prevents a second one, so

@@ -72,8 +72,14 @@ it validates exactly as before. It has no `combined move` concept.
   same hops individually — fine today, but if we ever want move-grouping in history or
   animations server-side, the information isn't transmitted.
 - **Scope is limited by design:** bar entry and bearing off are excluded from
-  combined moves; they remain single-die actions. Extending combined moves to those
+  combined moves; they remain single-die actions (the DFS returns nothing at all
+  while the player has a checker on the bar). Extending combined moves to those
   would mean more client DFS cases.
+- **One path per destination.** The DFS dedupes on `from → to`, so when a
+  destination is reachable by more than one order the player is offered whichever
+  path the search found first. If the orders differ in what they hit on the
+  intermediate point, choosing the other one means staging the two hops
+  separately.
 
 ## Alternatives considered
 

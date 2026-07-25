@@ -18,7 +18,8 @@ There are exactly **two app models — `Match` and `Game`** — plus Django's bu
 | Board position | `Game.board_state` — a single **JSONField** (`points`/`bar`/`off`), not per-checker rows. |
 | Dice for the turn | `Game.dice_values` — a JSONField list. |
 | Pending / staged moves | **Not persisted.** Built client-side and sent in one `confirm_turn` call; the backend replays them against a copy and saves only the resulting board. |
-| Seats / turn ownership | Derived from the `player1_user`/`player2_user` FKs at request time, not stored: server-side enforcement (`_seat_permission_error`) and the `viewer_seat` serializer field both read the FKs; mobile adds a **device-local** SecureStore registry. No `Seat` table. |
+| Seats / turn ownership | Derived from the `player1_user`/`player2_user` FKs at request time, not stored: server-side enforcement (`_seat_permission_error`) and the `viewer_seat` / `viewer_is_participant` serializer fields all read the FKs; mobile adds a **device-local** SecureStore registry. No `Seat` table. |
+| Cube ownership | `Game.cube_owner` / `double_offered_by` hold a **seat string** (`"p1"`/`"p2"`), not a user FK — a guest owning the cube has no User row to point at. |
 | Player stats | **Computed on read** in `UserSerializer` by aggregating finished `Game` rows; nothing is denormalized. |
 | "Game code" | The game's integer primary key, surfaced as a shareable code in the UI. No separate column. |
 
@@ -61,16 +62,27 @@ A single game to bearing off all 15 checkers. Can be standalone or part of a `Ma
 | `crawford_game` | Bool | cube disabled for this game (first game after a player reaches match point) |
 | `created_at`, `updated_at` | DateTime | `updated_at` drives mobile's poll-diffing |
 
-Both models order by `["-created_at", "-id"]`.
+Both models order by `["-created_at", "-id"]`. The four cube fields were added by
+migration `0003_game_crawford_game_game_cube_owner_game_cube_value_and_more`;
+existing rows default to a centered cube at value 1 with `crawford_game=False`.
 
 ### Lifecycle
 
 ```
 create ──► waiting ──(opponent joins)──► active ──(15 borne off)──► finished
-   │                                                                   │
-   └── hotseat (both names given at creation) starts active            └── win_type / points_value / winner set;
-                                                                            Match score updated if part of a match
+   │                                            │                      │
+   │                                            └──(double dropped)────┤
+   └── hotseat (both names given at creation)                          │
+       starts active                                                   ▼
+                                          win_type / points_value / winner set;
+                                          dice_values + double_offered_by cleared;
+                                          Match score updated if part of a match
 ```
+
+A game can therefore finish **without** anyone bearing off 15 checkers: declining
+a double ends it immediately with `win_type="drop"` (see
+[game-logic.md](game-logic.md#doubling-cube)). Both paths run through
+`_apply_game_result` in [`views.py`](../../backend/game/views.py).
 
 `board_state` is initialized by `get_initial_board_state()` to the standard opening
 position. Each committed turn overwrites `board_state` and clears/refills
@@ -94,6 +106,11 @@ player): wins, losses, total games, gammons, backgammons, points won/lost, win %
 gammon rate. It caches the aggregate on the object for the duration of one
 serialization. Nothing is stored — changing the stat definitions is a serializer
 edit, not a migration.
+
+Cube interaction: points won/lost sum `points_value`, which is **already
+cube-multiplied**, so stats reflect cube stakes automatically. A `drop` win counts
+as a win (and its points) but never as a gammon/backgammon, since those counts
+filter on `win_type`.
 
 ## Planned / Not Yet Implemented
 
