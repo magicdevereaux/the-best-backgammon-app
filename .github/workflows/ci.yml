@@ -1,0 +1,115 @@
+name: CI
+
+# Runs all three test suites. Each suite is its own job so a red X points at the
+# guilty client (backend / web / mobile) without reading logs.
+#
+# Baselines as of 2026-07-25: backend 232, web 172, mobile 83 (487 total).
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+# A new push to the same branch/PR cancels the previous, still-running run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Backend (Django ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.11 matches the local dev venv (backend/venv, CPython 3.11.9).
+        # Django 4.2 supports 3.8-3.12, so widen this list if you want more.
+        python-version: ["3.11"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install dependencies
+        # requirements.txt is pinned. psycopg2-binary ships manylinux wheels, so
+        # no apt packages (libpq-dev / build-essential) are needed on
+        # ubuntu-latest -- if that ever changes, add an apt-get step here.
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt
+
+      - name: Run tests
+        working-directory: backend
+        # Tests use an in-memory SQLite DB; no service container required.
+        # Django runs its system checks as part of `test`, so a separate
+        # `manage.py check` would be redundant.
+        run: python manage.py test game --verbosity 2
+
+      # Deliberately NOT running `manage.py check --deploy` here. It requires a
+      # production-shaped settings environment (DEBUG=False, a real SECRET_KEY,
+      # ALLOWED_HOSTS, HTTPS/HSTS/secure-cookie settings). Wiring that up means
+      # inventing env var names that don't exist in the repo yet, and a
+      # `--deploy` run against the dev defaults fails on warnings that are
+      # correct for dev. Add this step once the deployment settings and their
+      # env var contract are real -- see docs/operations/going-live.md.
+
+  web:
+    name: Web (frontend)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Run tests
+        working-directory: frontend
+        # Create React App: the Babel/jest transform only exists inside
+        # `react-scripts test`. Bare `npx jest` here fails EVERY suite with
+        # "SyntaxError: Cannot use import statement outside a module" and runs
+        # zero tests. Do not "simplify" this line.
+        # Expect harmless React Router v7 future-flag deprecation warnings.
+        run: npm test -- --watchAll=false
+        env:
+          CI: true
+
+  mobile:
+    name: Mobile (Expo)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+
+      - name: Install dependencies
+        working-directory: mobile
+        run: npm ci
+
+      - name: Run tests
+        working-directory: mobile
+        # Unlike frontend/, this project uses the jest-expo preset directly, so
+        # bare `npx jest` IS the correct invocation.
+        run: npx jest
+        env:
+          CI: true
