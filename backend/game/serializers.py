@@ -1,4 +1,6 @@
+from django.contrib.auth import password_validation
 from django.contrib.auth.models import User
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db.models import Sum
 from rest_framework import serializers
 
@@ -160,6 +162,32 @@ class UserSerializer(serializers.ModelSerializer):
         return self._stats(obj)["gammon_rate"]
 
 
+class AccountDeleteSerializer(serializers.Serializer):
+    """
+    Confirms an irreversible account deletion by re-checking the requester's
+    own password.
+
+    A bearer token proves only that *a session* is open — a borrowed laptop or
+    a leaked access token would otherwise be enough to destroy an account and
+    everything attached to it. Re-entering the password proves the *person*.
+    This is also what the App Store / Play Store reviewers look for: the
+    in-app deletion path must be deliberate, not a single stray tap.
+
+    The requesting user comes from ``context["request"]``, never from the
+    payload, so this serializer can only ever confirm deletion of the caller.
+    """
+
+    password = serializers.CharField(
+        write_only=True, style={"input_type": "password"}
+    )
+
+    def validate_password(self, value):
+        user = self.context["request"].user
+        if not user.check_password(value):
+            raise serializers.ValidationError("Password is incorrect.")
+        return value
+
+
 class RegisterSerializer(serializers.Serializer):
     username = serializers.CharField(max_length=150)
     password = serializers.CharField(write_only=True, min_length=8)
@@ -168,6 +196,29 @@ class RegisterSerializer(serializers.Serializer):
         if User.objects.filter(username=value).exists():
             raise serializers.ValidationError("Username already taken.")
         return value
+
+    def validate(self, attrs):
+        """
+        Run Django's AUTH_PASSWORD_VALIDATORS. `create_user` does not call them,
+        so without this the settings-level validators are dead configuration and
+        the only rule is this serializer's own min_length=8 — "password" and
+        "12345678" both registered fine.
+
+        Validated here rather than in `validate_password` so the username is
+        available: UserAttributeSimilarityValidator needs a user instance to
+        reject passwords that echo the username. Django's error list is
+        re-raised keyed on "password" so it surfaces as a normal DRF field
+        error, matching the shape clients already handle.
+        """
+        password = attrs.get("password")
+        if password:
+            try:
+                password_validation.validate_password(
+                    password, user=User(username=attrs.get("username", ""))
+                )
+            except DjangoValidationError as exc:
+                raise serializers.ValidationError({"password": list(exc.messages)})
+        return attrs
 
     def create(self, validated_data):
         return User.objects.create_user(**validated_data)

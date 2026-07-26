@@ -1,4 +1,27 @@
-Django>=4.2,<5.0
-djangorestframework>=3.14
-django-cors-headers>=4.3
-djangorestframework-simplejwt>=5.0
+# Backend dependencies, pinned to the versions installed in backend/venv/.
+# Install with:  venv/Scripts/python.exe -m pip install -r requirements.txt
+
+# --- Framework -------------------------------------------------------------
+Django==4.2.30
+djangorestframework==3.17.1
+django-cors-headers==4.9.0
+djangorestframework-simplejwt==5.5.1
+PyJWT==2.13.0
+
+# --- Django runtime deps (pinned for reproducible builds) ------------------
+asgiref==3.11.1
+sqlparse==0.5.5
+tzdata==2026.2
+
+# --- Configuration ---------------------------------------------------------
+python-dotenv==1.2.2          # optional backend/.env loading
+dj-database-url==3.1.2        # DATABASE_URL -> DATABASES
+
+# --- Production serving ----------------------------------------------------
+gunicorn==26.0.0              # WSGI server (Dockerfile / Procfile)
+whitenoise==6.12.0            # static file serving from the app process
+
+# --- Database drivers ------------------------------------------------------
+# Unused in dev (default DATABASE_URL is the local SQLite file); required when
+# DATABASE_URL points at PostgreSQL.
+psycopg2-binary==2.9.12

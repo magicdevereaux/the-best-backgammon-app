@@ -1,0 +1,38 @@
+# Build context is the repo root; only backend/ is copied into the image, so
+# everything else is excluded to keep the context small.
+
+.git
+.github
+.vscode
+docs
+frontend
+mobile
+*.md
+LICENSE
+
+# Python
+**/__pycache__/
+**/*.py[cod]
+backend/venv/
+backend/.venv/
+.venv/
+venv/
+
+# Local data & secrets — never bake these into an image
+backend/db.sqlite3
+backend/db.sqlite3-journal
+**/.env
+**/.env.*
+!**/.env.example
+
+# Build artefacts
+backend/staticfiles/
+**/node_modules/
+**/coverage/
+**/build/
+**/dist/
+
+# Editor / OS noise
+.DS_Store
+Thumbs.db
+*.swp

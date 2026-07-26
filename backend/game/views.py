@@ -1,13 +1,24 @@
 import copy
 
-from rest_framework import generics, viewsets, status
+from rest_framework import generics, mixins, viewsets, status
 from rest_framework.decorators import action
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.settings import api_settings
+from rest_framework.throttling import ScopedRateThrottle
+from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken, OutstandingToken
 from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework_simplejwt.views import TokenObtainPairView
 
 from .models import Game, Match
-from .serializers import GameSerializer, MatchSerializer, RegisterSerializer, UserSerializer
+from .serializers import (
+    AccountDeleteSerializer,
+    GameSerializer,
+    MatchSerializer,
+    RegisterSerializer,
+    UserSerializer,
+)
 from .game_logic import (
     roll_dice,
     get_initial_board_state,
@@ -23,11 +34,74 @@ from .game_logic import (
 
 
 # ---------------------------------------------------------------------------
+# Shared infrastructure: pagination + throttling
+# ---------------------------------------------------------------------------
+
+class BareListPagination(PageNumberPagination):
+    """
+    Bounds every list response to a fixed page size while still returning a
+    **bare JSON array**, not DRF's ``{count, next, previous, results}`` envelope.
+
+    The envelope is deliberately avoided: both clients consume these endpoints
+    as arrays. ``frontend/src/pages/LobbyPage.jsx`` does
+    ``fetchLobby().then(setOpenGames)`` and maps over the result (an envelope
+    would throw ``.map is not a function``), and ``mobile/app/index.jsx``
+    discards anything failing ``Array.isArray`` (an envelope would silently
+    render an empty lobby). Paginating without reshaping fixes the unbounded
+    response without requiring a client change.
+
+    Later pages are reachable with ``?page=N``; ``?page_size=`` may lower or
+    raise the size up to ``max_page_size``.
+    """
+
+    page_size = 100
+    page_size_query_param = "page_size"
+    max_page_size = 200
+
+    def get_paginated_response(self, data):
+        return Response(data)
+
+
+class OptionalScopedRateThrottle(ScopedRateThrottle):
+    """
+    ``ScopedRateThrottle`` that reads its rate from ``api_settings`` live and
+    treats a missing scope as "unthrottled" instead of an error.
+
+    Two reasons not to use the stock class:
+
+    1. Stock ``get_rate`` raises ``ImproperlyConfigured`` (a 500) for a scope
+       absent from ``DEFAULT_THROTTLE_RATES``, so a settings typo or a dropped
+       key becomes a total login/registration outage. Missing rate should fail
+       the same way as having no throttle attached: allow the request.
+    2. ``SimpleRateThrottle.THROTTLE_RATES`` is a *class* attribute bound to the
+       rates dict at import time, so ``@override_settings(REST_FRAMEWORK=...)``
+       silently has no effect on it. Reading ``api_settings`` per call makes the
+       rates overridable, which is what lets the throttle tests run at all.
+    """
+
+    def get_rate(self):
+        return api_settings.DEFAULT_THROTTLE_RATES.get(getattr(self, "scope", None))
+
+
+# ---------------------------------------------------------------------------
 # Auth views
 # ---------------------------------------------------------------------------
 
+class LoginView(TokenObtainPairView):
+    """
+    SimpleJWT's token endpoint with a scoped rate limit. Unlimited attempts on
+    an internet-facing login is open credential stuffing; the "login" rate is
+    configured in ``REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"]``.
+    """
+
+    throttle_classes = [OptionalScopedRateThrottle]
+    throttle_scope = "login"
+
+
 class RegisterView(generics.CreateAPIView):
     serializer_class = RegisterSerializer
+    throttle_classes = [OptionalScopedRateThrottle]
+    throttle_scope = "register"
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
@@ -44,12 +118,89 @@ class RegisterView(generics.CreateAPIView):
         )
 
 
-class MeView(generics.RetrieveAPIView):
-    serializer_class = UserSerializer
+def _blacklist_refresh_tokens(user):
+    """
+    Blacklist every outstanding refresh token issued to `user`.
+
+    Access tokens die on their own the moment the row disappears:
+    ``JWTAuthentication`` resolves the token's ``user_id`` against the database
+    and 401s when there is no such user. Refresh tokens do **not** — SimpleJWT's
+    ``TokenRefreshSerializer`` mints a new access token straight from the
+    refresh payload without ever touching the user table, so an un-blacklisted
+    refresh token would keep returning 200s after the account is gone.
+
+    This survives the deletion because ``OutstandingToken.user`` is
+    ``on_delete=SET_NULL`` (see the token_blacklist app's models): the row is
+    orphaned rather than cascaded away, and the ``BlacklistedToken`` pointing at
+    it — which is what ``RefreshToken.verify()`` actually consults — stays put.
+    Call this *before* ``user.delete()``; afterwards the tokens are no longer
+    reachable by user.
+    """
+    for outstanding in OutstandingToken.objects.filter(user=user):
+        BlacklistedToken.objects.get_or_create(token=outstanding)
+
+
+def _purge_unjoined_lobby_entries(user):
+    """
+    Remove the deleted account's *unstarted* public listings.
+
+    A "waiting" game is a lobby advert nobody has joined yet, so deleting it
+    destroys no one's history — and leaving it would keep a deleted account's
+    username on the unauthenticated ``GET /api/games/?status=waiting`` list
+    forever, attached to a seat that can never be played. The same goes for a
+    match whose second seat was never filled.
+
+    Everything else is deliberately left alone: see ``AccountDeleteView``.
+    """
+    Game.objects.filter(player1_user=user, status="waiting").delete()
+    Match.objects.filter(player1_user=user, player2_name="").delete()
+
+
+class MeView(generics.RetrieveDestroyAPIView):
+    """
+    ``GET /api/auth/me/``    — the current user's profile + computed stats.
+    ``DELETE /api/auth/me/`` — permanently delete the current user's account.
+
+    Deletion is hung off the existing "me" resource rather than a new
+    ``/api/auth/delete-account/`` route for three reasons: it is the plain REST
+    spelling of "destroy this resource", it adds no new URL surface, and
+    ``get_object`` already pins the target to ``request.user`` so the endpoint
+    is structurally incapable of naming someone else's account. The confirming
+    password travels in the DELETE body — legal HTTP, and accepted verbatim by
+    ``fetch`` on both clients.
+
+    **What happens to the account's games.** Nothing is cascaded. Every user FK
+    on ``Game`` and ``Match`` is ``on_delete=SET_NULL`` while the seat's display
+    name is a plain ``CharField``, so ``user.delete()`` *anonymises* each seat:
+    the FK goes null, ``player1_name``/``player2_name``, board, winner, score and
+    match history all survive intact. An opponent keeps their full record and
+    their stats are unchanged, and ``GameSerializer.get_viewer_seat`` already
+    handles a null seat FK (it compares ``player*_user_id`` to the viewer's id),
+    so nothing downstream breaks. The only records removed are unjoined lobby
+    adverts — see ``_purge_unjoined_lobby_entries``.
+    """
+
     permission_classes = [IsAuthenticated]
+
+    def get_serializer_class(self):
+        if self.request.method == "DELETE":
+            return AccountDeleteSerializer
+        return UserSerializer
 
     def get_object(self):
         return self.request.user
+
+    def destroy(self, request, *args, **kwargs):
+        user = self.get_object()
+
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        _blacklist_refresh_tokens(user)
+        _purge_unjoined_lobby_entries(user)
+        user.delete()
+
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 # ---------------------------------------------------------------------------
@@ -120,6 +271,38 @@ def _seat_permission_error(game, user, seat=None):
     return "You are not a participant in this game."
 
 
+def _match_permission_error(match, user):
+    """
+    Participant check for match-level actions (next_game). Returns an error
+    message if the requester may not act on this match, or None if allowed.
+
+    A match-level action isn't tied to one seat, so the rule is the natural
+    lift of _seat_permission_error: the requester is allowed if they could act
+    for *either* seat. Concretely, and consistently with the gameplay actions:
+
+      - A registered participant (owns either seat) may act.
+      - Any other logged-in account is identifiable and provably not a player →
+        rejected.
+      - An anonymous requester is allowed only when at least one seat is a
+        guest seat (null user FK). Guest seats carry no server identity to
+        verify, so this is the same unverifiable-but-allowed hole the gameplay
+        actions already accept, and it is what keeps hotseat/guest matches
+        playable without an account. A match whose seats are *both* registered
+        has no guest to impersonate, so anonymous callers are rejected.
+    """
+    user_id = user.id if user is not None and user.is_authenticated else None
+    seat_user_ids = (match.player1_user_id, match.player2_user_id)
+
+    if user_id is not None:
+        if user_id in seat_user_ids:
+            return None
+        return "You are not a participant in this match."
+
+    if any(seat_user_id is None for seat_user_id in seat_user_ids):
+        return None
+    return "This match belongs to registered players. Log in to continue it."
+
+
 def _finish_game(game, board, winner):
     """
     Finish a game won on the board: classify the win from the final position
@@ -165,8 +348,25 @@ def _apply_game_result(game, winner, win_type, points):
 # Match viewset
 # ---------------------------------------------------------------------------
 
-class MatchViewSet(viewsets.ModelViewSet):
+class MatchViewSet(
+    mixins.CreateModelMixin,
+    mixins.ListModelMixin,
+    mixins.RetrieveModelMixin,
+    viewsets.GenericViewSet,
+):
+    """
+    List / retrieve / create only, plus the custom actions:
+      POST /api/matches/{id}/next_game/
+      POST /api/matches/{id}/join/
+
+    Deliberately **not** a ModelViewSet: PUT/PATCH/DELETE were routed with no
+    permission check at all, letting anyone rewrite a score or delete a match.
+    Nothing in either client uses them, so they are off the routed surface
+    entirely (405) rather than guarded.
+    """
+
     serializer_class = MatchSerializer
+    pagination_class = BareListPagination
 
     def get_queryset(self):
         return Match.objects.all()
@@ -215,6 +415,10 @@ class MatchViewSet(viewsets.ModelViewSet):
     def next_game(self, request, pk=None):
         """Start the next game in the match after the previous one has finished."""
         match = self.get_object()
+
+        perm_error = _match_permission_error(match, request.user)
+        if perm_error:
+            return Response({"error": perm_error}, status=status.HTTP_403_FORBIDDEN)
 
         if match.status == "finished":
             return Response(
@@ -289,16 +493,30 @@ class MatchViewSet(viewsets.ModelViewSet):
 # Game viewset
 # ---------------------------------------------------------------------------
 
-class GameViewSet(viewsets.ModelViewSet):
+class GameViewSet(
+    mixins.CreateModelMixin,
+    mixins.ListModelMixin,
+    mixins.RetrieveModelMixin,
+    viewsets.GenericViewSet,
+):
     """
-    Standard CRUD for Game plus custom actions:
+    List / retrieve / create only, plus the custom actions:
       POST /api/games/{id}/roll_dice/
       POST /api/games/{id}/move_checker/
       POST /api/games/{id}/confirm_turn/
       POST /api/games/{id}/join/
+      POST /api/games/{id}/offer_double/
+      POST /api/games/{id}/respond_to_double/
+
+    Deliberately **not** a ModelViewSet: PUT/PATCH/DELETE were routed with no
+    permission check at all, so any caller could overwrite a board mid-game or
+    delete someone else's game. All state changes go through the custom actions,
+    which enforce seat ownership, so the generic write verbs are off the routed
+    surface entirely (405).
     """
 
     serializer_class = GameSerializer
+    pagination_class = BareListPagination
 
     def get_queryset(self):
         qs = Game.objects.all()
