@@ -9,7 +9,7 @@ Covers five fixes, one class group each:
   3. Registration runs Django's AUTH_PASSWORD_VALIDATORS.
   4. List endpoints are paginated — while still returning a bare JSON array,
      because both clients consume them as arrays.
-  5. Login and register carry scoped rate limits.
+  5. Login, register and refresh carry scoped rate limits.
 
 Throttle rates are disabled for the test suite in settings, so the throttling
 tests re-enable them with @override_settings. That only works because
@@ -411,10 +411,28 @@ class AuthThrottleConfigTest(TestCase):
         self.assertEqual(RegisterView.throttle_scope, "register")
         self.assertIn(OptionalScopedRateThrottle, RegisterView.throttle_classes)
 
-    def test_settings_define_both_scopes(self):
+    def test_refresh_view_declares_the_refresh_scope(self):
+        from game.views import RefreshView, OptionalScopedRateThrottle
+
+        self.assertEqual(RefreshView.throttle_scope, "refresh")
+        self.assertIn(OptionalScopedRateThrottle, RefreshView.throttle_classes)
+
+    def test_refresh_url_is_wired_to_the_throttled_view(self):
+        """
+        The route used to point straight at SimpleJWT's TokenRefreshView, which
+        carries no scope at all — an easy thing to regress back to.
+        """
+        from django.urls import resolve
+
+        from game.views import RefreshView
+
+        self.assertIs(resolve("/api/auth/refresh/").func.cls, RefreshView)
+
+    def test_settings_define_all_three_scopes(self):
         rates = settings.REST_FRAMEWORK.get("DEFAULT_THROTTLE_RATES", {})
         self.assertIn("login", rates)
         self.assertIn("register", rates)
+        self.assertIn("refresh", rates)
 
     def test_missing_rate_means_unthrottled_not_a_500(self):
         """A dropped rate key must not turn login into a server error."""
@@ -481,3 +499,73 @@ class RegisterThrottleTest(TestCase):
         )
         self.assertEqual(res.status_code, 429)
         self.assertFalse(User.objects.filter(username="user99").exists())
+
+
+@override_settings(REST_FRAMEWORK=rest_framework_with_rates(refresh="3/min"))
+class RefreshThrottleTest(TestCase):
+    """
+    Refresh rotates (ROTATE_REFRESH_TOKENS + BLACKLIST_AFTER_ROTATION), so a
+    single valid refresh token can be spun into an unbroken chain of new tokens
+    forever. Unthrottled that is an unbounded session for whoever holds it; the
+    `refresh` scope caps the rotation rate.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+        User.objects.create_user(username="alice", password="quiet-harbour-97")
+        res = self.client.post(
+            "/api/auth/login/",
+            {"username": "alice", "password": "quiet-harbour-97"},
+            format="json",
+        )
+        self.refresh = res.json()["refresh"]
+
+    def tearDown(self):
+        cache.clear()
+
+    def _refresh(self, token):
+        return self.client.post(
+            "/api/auth/refresh/", {"refresh": token}, format="json"
+        )
+
+    def test_token_rotation_chain_is_throttled(self):
+        token = self.refresh
+        for _ in range(3):
+            res = self._refresh(token)
+            self.assertEqual(res.status_code, 200)
+            token = res.json()["refresh"]
+
+        self.assertEqual(self._refresh(token).status_code, 429)
+
+    def test_invalid_refresh_attempts_are_throttled_too(self):
+        """Throttling happens before token validation, so guessing is capped."""
+        for _ in range(3):
+            self.assertEqual(self._refresh("not-a-token").status_code, 401)
+        self.assertEqual(self._refresh("not-a-token").status_code, 429)
+
+
+class RefreshUnthrottledByDefaultInTestsTest(TestCase):
+    """The suite-wide rate disable must keep normal refresh usage working."""
+
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+        User.objects.create_user(username="bob", password="quiet-harbour-97")
+
+    def tearDown(self):
+        cache.clear()
+
+    def test_many_refreshes_succeed_when_no_rate_is_configured(self):
+        res = self.client.post(
+            "/api/auth/login/",
+            {"username": "bob", "password": "quiet-harbour-97"},
+            format="json",
+        )
+        token = res.json()["refresh"]
+        for _ in range(6):
+            res = self.client.post(
+                "/api/auth/refresh/", {"refresh": token}, format="json"
+            )
+            self.assertEqual(res.status_code, 200)
+            token = res.json()["refresh"]

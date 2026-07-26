@@ -186,8 +186,12 @@ CSRF_TRUSTED_ORIGINS = env_list("CSRF_TRUSTED_ORIGINS", ["http://localhost:3000"
 # --------------------------------------------------------------------------
 # Django REST Framework
 # --------------------------------------------------------------------------
-# Throttle scopes `login` and `register` are consumed by the auth views via
-# `throttle_scope = "..."`; keep those names stable.
+# Throttle scopes `login`, `register` and `refresh` are consumed by the auth
+# views via `throttle_scope = "..."`; keep those names stable.
+#
+# `refresh` is much looser than the other two on purpose: both clients call
+# /api/auth/refresh/ automatically on any 401, so the rate has to clear normal
+# use while still capping how fast a stolen refresh token can be rotated.
 #
 # Rates are disabled while running the test suite so 200+ fast API calls from
 # one address don't trip the limiter. A test that wants to exercise throttling
@@ -199,6 +203,7 @@ THROTTLE_RATES = {
     "user": os.environ.get("THROTTLE_RATE_USER", "240/min"),
     "login": os.environ.get("THROTTLE_RATE_LOGIN", "10/hour"),
     "register": os.environ.get("THROTTLE_RATE_REGISTER", "5/hour"),
+    "refresh": os.environ.get("THROTTLE_RATE_REFRESH", "60/hour"),
 }
 if TESTING:
     THROTTLE_RATES = {scope: None for scope in THROTTLE_RATES}

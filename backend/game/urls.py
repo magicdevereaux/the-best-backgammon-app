@@ -1,8 +1,7 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-from rest_framework_simplejwt.views import TokenRefreshView
 
-from .views import GameViewSet, MatchViewSet, LoginView, RegisterView, MeView
+from .views import GameViewSet, MatchViewSet, LoginView, RefreshView, RegisterView, MeView
 
 router = DefaultRouter()
 router.register(r"games", GameViewSet, basename="game")
@@ -12,6 +11,6 @@ urlpatterns = [
     path("", include(router.urls)),
     path("auth/register/", RegisterView.as_view()),
     path("auth/login/", LoginView.as_view()),
-    path("auth/refresh/", TokenRefreshView.as_view()),
+    path("auth/refresh/", RefreshView.as_view()),
     path("auth/me/", MeView.as_view()),
 ]

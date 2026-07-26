@@ -226,3 +226,10 @@ export function checkWinner(boardState) {
   if (boardState.off[P2] === 15) return P2;
   return null;
 }
+
+/** True if [from,to] hits a lone opponent blot (used for amber highlighting). */
+export function isBlotHit(boardState, player, toPoint) {
+  if (toPoint >= 25 || toPoint <= 0) return false;
+  const v = boardState.points[toPoint - 1];
+  return player === P1 ? v === -1 : v === 1;
+}

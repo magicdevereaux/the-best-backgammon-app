@@ -1,5 +1,7 @@
 import React, { useState } from "react";
 
+import { isBlotHit } from "../utils/gameLogic";
+
 // ── Layout constants ────────────────────────────────────────────────────────
 const PW = 58;                        // point (triangle) base width
 const BH = 500;                       // board height
@@ -72,12 +74,6 @@ function triPts(lx, isTop) {
 
 function checkerCY(isTop, i) {
   return isTop ? TOP_CY0 + i * C_STEP : BOT_CY0 - i * C_STEP;
-}
-
-function isBlotHit(points, player, toPoint) {
-  if (toPoint >= 25 || toPoint <= 0) return false;
-  const v = points[toPoint - 1];
-  return player === "p1" ? v === -1 : v === 1;
 }
 
 // ── Checker circle (used on points) ─────────────────────────────────────────
@@ -169,7 +165,7 @@ export default function Board({ boardState, currentPlayer, legalMoves = [], onMo
 
     let overlayFill = null;
     if (isSelected)     overlayFill = SEL_OVL;
-    else if (isLegalDest) overlayFill = isBlotHit(points, currentPlayer, num) ? DEST_BLOT : DEST_SAFE;
+    else if (isLegalDest) overlayFill = isBlotHit(boardState, currentPlayer, num) ? DEST_BLOT : DEST_SAFE;
 
     return (
       <g

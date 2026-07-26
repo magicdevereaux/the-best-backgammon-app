@@ -9,7 +9,7 @@ from rest_framework.settings import api_settings
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken, OutstandingToken
 from rest_framework_simplejwt.tokens import RefreshToken
-from rest_framework_simplejwt.views import TokenObtainPairView
+from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
 from .models import Game, Match
 from .serializers import (
@@ -96,6 +96,21 @@ class LoginView(TokenObtainPairView):
 
     throttle_classes = [OptionalScopedRateThrottle]
     throttle_scope = "login"
+
+
+class RefreshView(TokenRefreshView):
+    """
+    SimpleJWT's refresh endpoint with a scoped rate limit.
+
+    Unthrottled, a single stolen refresh token can be spun indefinitely — and
+    with ``ROTATE_REFRESH_TOKENS`` on, each spin mints a brand-new token, so
+    there is no natural stopping point. The ``refresh`` rate is deliberately
+    much looser than ``login``: both clients call this automatically whenever an
+    access token 401s, so the limit has to sit well above legitimate use.
+    """
+
+    throttle_classes = [OptionalScopedRateThrottle]
+    throttle_scope = "refresh"
 
 
 class RegisterView(generics.CreateAPIView):

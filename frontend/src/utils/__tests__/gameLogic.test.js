@@ -6,6 +6,7 @@ import {
   applyMove,
   maxMovesUsable,
   checkWinner,
+  isBlotHit,
 } from '../gameLogic';
 
 // Standard backgammon starting position (mirrors backend get_initial_board_state()).
@@ -293,5 +294,45 @@ describe('checkWinner', () => {
     const board = emptyBoard();
     board.off.p2 = 15;
     expect(checkWinner(board)).toBe('p2');
+  });
+});
+
+// Takes a boardState (not a bare points array) so the signature matches the
+// mobile port in mobile/src/game/logic.js. Board.jsx uses it to pick the amber
+// "this destination hits" overlay.
+describe('isBlotHit (amber highlight)', () => {
+  test('true for a lone opponent checker (p1 moving onto a single p2)', () => {
+    const board = emptyBoard();
+    board.points[3] = -1;
+    expect(isBlotHit(board, 'p1', 4)).toBe(true);
+  });
+
+  test('true for a lone opponent checker (p2 moving onto a single p1)', () => {
+    const board = emptyBoard();
+    board.points[3] = 1;
+    expect(isBlotHit(board, 'p2', 4)).toBe(true);
+  });
+
+  test('false for an anchored point', () => {
+    const board = emptyBoard();
+    board.points[3] = -2;
+    expect(isBlotHit(board, 'p1', 4)).toBe(false);
+  });
+
+  test('false for an empty point', () => {
+    expect(isBlotHit(emptyBoard(), 'p1', 4)).toBe(false);
+  });
+
+  test('false for own lone checker', () => {
+    const board = emptyBoard();
+    board.points[3] = 1;
+    expect(isBlotHit(board, 'p1', 4)).toBe(false);
+  });
+
+  test('false when bearing off (toPoint 25) or entering from the bar (0)', () => {
+    const board = emptyBoard();
+    board.points[3] = -1;
+    expect(isBlotHit(board, 'p1', 25)).toBe(false);
+    expect(isBlotHit(board, 'p1', 0)).toBe(false);
   });
 });
