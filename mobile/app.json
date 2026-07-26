@@ -44,6 +44,8 @@
       "typedRoutes": true
     },
     "extra": {
+      "//apiUrl": "Backend base URL for builds that cannot auto-detect a Metro host (i.e. every release build). Must be an absolute https:// URL, no trailing slash, e.g. https://api.example.com. Leave empty to fall back to EXPO_PUBLIC_API_URL (see mobile/.env.example) or, in development only, Metro LAN auto-detection.",
+      "apiUrl": "",
       "router": {},
       "eas": {
         "projectId": "ad1de8b5-2517-4198-9de9-a1abbb3aa5a7"

@@ -1,4 +1,4 @@
-import { API_BASE_URL } from "./config";
+import { API_BASE_URL, assertApiConfigured } from "./config";
 import {
   getAccessToken,
   getRefreshToken,
@@ -32,6 +32,10 @@ async function refreshAccessToken() {
 }
 
 export async function request(path, options = {}) {
+  // Surfaces a misconfigured/unreachable build as a clear message in the UI's
+  // error path rather than an opaque network failure.
+  assertApiConfigured();
+
   let token = await getAccessToken();
   let res = await rawRequest(path, options, token);
 

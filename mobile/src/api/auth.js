@@ -1,4 +1,4 @@
-import { API_BASE_URL } from "./config";
+import { API_BASE_URL, assertApiConfigured } from "./config";
 import { request } from "./client";
 import { setTokens, clearTokens, getAccessToken } from "./tokenStore";
 
@@ -6,6 +6,7 @@ import { setTokens, clearTokens, getAccessToken } from "./tokenStore";
 // persist the returned JWT pair to SecureStore.
 
 export async function register(username, password) {
+  assertApiConfigured();
   const res = await fetch(`${API_BASE_URL}/api/auth/register/`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -25,6 +26,7 @@ export async function register(username, password) {
 }
 
 export async function login(username, password) {
+  assertApiConfigured();
   const res = await fetch(`${API_BASE_URL}/api/auth/login/`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -44,6 +46,43 @@ export async function fetchMe() {
   } catch {
     return null;
   }
+}
+
+/**
+ * Permanently delete the logged-in account. Mirrors
+ * frontend/src/api/authApi.js `deleteAccount`.
+ *
+ * Deliberately a bare fetch rather than `request()`: that helper retries once
+ * through a token refresh on a 401 (pointless once the account is gone) and
+ * only reads `{ error }` / `{ detail }` bodies, whereas the confirm-password
+ * rejection arrives as a DRF field error, `{ password: [...] }`.
+ *
+ * Success is 204 with no body. SecureStore is cleared here so the app can
+ * never be left holding credentials for an account that no longer exists.
+ */
+export async function deleteAccount(password) {
+  assertApiConfigured();
+  const token = await getAccessToken();
+  const res = await fetch(`${API_BASE_URL}/api/auth/me/`, {
+    method: "DELETE",
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify({ password }),
+  });
+
+  if (res.status === 204) {
+    await clearTokens();
+    return true;
+  }
+
+  const data = await res.json().catch(() => null);
+  const msg =
+    data?.password?.[0] ||
+    data?.detail ||
+    "Could not delete your account. Please try again.";
+  throw new Error(msg);
 }
 
 export async function logout() {

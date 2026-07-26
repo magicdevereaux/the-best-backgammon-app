@@ -1,4 +1,15 @@
 {
+  // eas.json supports comments (EAS CLI parses it leniently).
+  //
+  // EXPO_PUBLIC_API_URL is inlined into the bundle at build time and is what a
+  // release build uses to reach the Django backend — there is no Metro host to
+  // auto-detect once the app is installed from a store. It MUST be an absolute
+  // https:// URL; the app refuses plaintext http:// in release builds because
+  // iOS ATS and Android's usesCleartextTraffic=false would block it anyway.
+  //
+  // OWNER TODO: fill in the real deployed backend URLs below. Left empty on
+  // purpose — an empty value makes the app fail loudly at startup rather than
+  // silently pointing at an unreachable host.
   "cli": {
     "version": ">= 16.0.0",
     "appVersionSource": "remote"
@@ -16,14 +27,27 @@
       "channel": "preview",
       "android": {
         "buildType": "apk"
+      },
+      "env": {
+        // OWNER TODO: staging backend, e.g. "https://staging.example.com"
+        "EXPO_PUBLIC_API_URL": ""
       }
     },
     "production": {
       "channel": "production",
-      "autoIncrement": true
+      "autoIncrement": true,
+      "env": {
+        // OWNER TODO: production backend, e.g. "https://api.example.com"
+        "EXPO_PUBLIC_API_URL": ""
+      }
     }
   },
   "submit": {
+    // OWNER TODO: store submission credentials. Requires the owner's real
+    // data — do not guess.
+    //   ios: appleId, ascAppId (App Store Connect app ID), appleTeamId
+    //   android: serviceAccountKeyPath (Google Play service-account JSON), track
+    // See https://docs.expo.dev/submit/eas-json/
     "production": {}
   }
 }

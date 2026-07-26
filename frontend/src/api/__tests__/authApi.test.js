@@ -8,6 +8,7 @@ import {
   login,
   fetchMe,
   logout,
+  deleteAccount,
 } from "../authApi";
 
 /*
@@ -215,5 +216,49 @@ describe("logout()", () => {
     logout();
     expect(getAccessToken()).toBeNull();
     expect(getRefreshToken()).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// deleteAccount
+// ---------------------------------------------------------------------------
+
+describe("deleteAccount(password)", () => {
+  test("DELETEs /me/ with the bearer token and the confirming password", async () => {
+    setTokens("acc", "ref");
+    fetch.mockReturnValueOnce(mockResponse(null, { status: 204 }));
+
+    await expect(deleteAccount("securepass123")).resolves.toBe(true);
+
+    const [url, options] = fetch.mock.calls[0];
+    expect(url).toMatch(/me\/$/);
+    expect(options.method).toBe("DELETE");
+    expect(options.headers.Authorization).toBe("Bearer acc");
+    expect(JSON.parse(options.body)).toEqual({ password: "securepass123" });
+  });
+
+  test("clears the stored tokens on a 204", async () => {
+    setTokens("acc", "ref");
+    fetch.mockReturnValueOnce(mockResponse(null, { status: 204 }));
+    await deleteAccount("securepass123");
+    expect(getAccessToken()).toBeNull();
+    expect(getRefreshToken()).toBeNull();
+  });
+
+  test("surfaces the server's wrong-password field error and keeps the tokens", async () => {
+    setTokens("acc", "ref");
+    fetch.mockReturnValueOnce(
+      mockResponse({ password: ["Password is incorrect."] }, { ok: false, status: 400 })
+    );
+    await expect(deleteAccount("wrong")).rejects.toThrow("Password is incorrect.");
+    expect(getAccessToken()).toBe("acc");
+  });
+
+  test("falls back to a generic message when the body has no field errors", async () => {
+    setTokens("acc", "ref");
+    fetch.mockReturnValueOnce(mockResponse(null, { ok: false, status: 500 }));
+    await expect(deleteAccount("securepass123")).rejects.toThrow(
+      "Could not delete your account. Please try again."
+    );
   });
 });

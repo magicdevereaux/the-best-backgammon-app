@@ -4,6 +4,7 @@ import { useRouter, Link, useFocusEffect } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useAuth } from "../src/context/AuthContext";
 import { fetchMe } from "../src/api/auth";
+import DeleteAccountSection from "../src/components/DeleteAccountSection";
 import { colors } from "../src/theme";
 
 function StatRow({ label, value, accent }) {
@@ -16,7 +17,7 @@ function StatRow({ label, value, accent }) {
 }
 
 export default function ProfileScreen() {
-  const { user, updateUser } = useAuth();
+  const { user, updateUser, logout } = useAuth();
   const router = useRouter();
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -110,6 +111,15 @@ export default function ProfileScreen() {
           <StatRow label="Total points won" value={stats.total_points_won} />
           <StatRow label="Total points lost" value={stats.total_points_lost} />
         </View>
+
+        <DeleteAccountSection
+          onDeleted={async () => {
+            // SecureStore was already cleared by deleteAccount; this drops the
+            // in-memory user so the app stops rendering a logged-in state.
+            await logout();
+            router.replace("/");
+          }}
+        />
       </ScrollView>
     </SafeAreaView>
   );

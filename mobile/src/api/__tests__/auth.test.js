@@ -1,4 +1,4 @@
-import { register, login, fetchMe, logout } from "../auth";
+import { register, login, fetchMe, logout, deleteAccount } from "../auth";
 import { getAccessToken, getRefreshToken, setTokens, clearTokens } from "../tokenStore";
 
 /*
@@ -104,5 +104,45 @@ describe("logout()", () => {
     await logout();
     expect(await getAccessToken()).toBeNull();
     expect(await getRefreshToken()).toBeNull();
+  });
+});
+
+describe("deleteAccount()", () => {
+  test("DELETEs /me/ with the bearer token and the confirming password", async () => {
+    await setTokens("acc", "ref");
+    fetch.mockReturnValueOnce(mockResponse(null, { status: 204 }));
+
+    await expect(deleteAccount("securepass123")).resolves.toBe(true);
+
+    const [url, options] = fetch.mock.calls[0];
+    expect(url).toMatch(/\/api\/auth\/me\/$/);
+    expect(options.method).toBe("DELETE");
+    expect(options.headers.Authorization).toBe("Bearer acc");
+    expect(JSON.parse(options.body)).toEqual({ password: "securepass123" });
+  });
+
+  test("clears SecureStore on a 204", async () => {
+    await setTokens("acc", "ref");
+    fetch.mockReturnValueOnce(mockResponse(null, { status: 204 }));
+    await deleteAccount("securepass123");
+    expect(await getAccessToken()).toBeNull();
+    expect(await getRefreshToken()).toBeNull();
+  });
+
+  test("surfaces the server's wrong-password field error and keeps the tokens", async () => {
+    await setTokens("acc", "ref");
+    fetch.mockReturnValueOnce(
+      mockResponse({ password: ["Password is incorrect."] }, { ok: false, status: 400 })
+    );
+    await expect(deleteAccount("wrong")).rejects.toThrow("Password is incorrect.");
+    expect(await getAccessToken()).toBe("acc");
+  });
+
+  test("falls back to a generic message when the body has no field errors", async () => {
+    await setTokens("acc", "ref");
+    fetch.mockReturnValueOnce(mockResponse(null, { ok: false, status: 500 }));
+    await expect(deleteAccount("securepass123")).rejects.toThrow(
+      "Could not delete your account. Please try again."
+    );
   });
 });

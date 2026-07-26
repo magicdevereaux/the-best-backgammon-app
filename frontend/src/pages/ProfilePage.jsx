@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { fetchMe } from "../api/authApi";
 import { useAuth } from "../context/AuthContext";
+import DeleteAccountPanel from "../components/DeleteAccountPanel";
 
 function StatRow({ label, value }) {
   return (
@@ -13,7 +14,7 @@ function StatRow({ label, value }) {
 }
 
 export default function ProfilePage() {
-  const { user } = useAuth();
+  const { user, logout } = useAuth();
   const navigate = useNavigate();
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -52,6 +53,15 @@ export default function ProfilePage() {
           <StatRow label="Total points lost" value={stats.total_points_lost} />
         </tbody>
       </table>
+
+      <DeleteAccountPanel
+        onDeleted={() => {
+          // deleteAccount already cleared the tokens; this drops the in-memory
+          // user so the rest of the app stops rendering a logged-in state.
+          logout();
+          navigate("/");
+        }}
+      />
     </div>
   );
 }
