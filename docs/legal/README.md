@@ -45,13 +45,15 @@ the liability, governing-law, and GDPR/CCPA sections.
 
 Two items are called out in the drafts as blockers rather than papered over:
 
-- **Account deletion is not implemented.** There is no API endpoint that deletes
-  a user account or its game records. **Both the Apple App Store and Google Play
-  require an account-deletion path for any app that lets users create an
-  account** — Play additionally requires a web-accessible deletion request URL.
-  Until an endpoint plus a delete button in both clients exists, the drafts point
-  users at a manual email request, and that request has to genuinely be honoured
-  by hand in the Django admin.
+- **Account deletion is implemented** (as of 2026-07-26) — `DELETE /api/auth/me/`
+  requires the account's current password, with a danger-zone control on the web
+  profile page and the mobile profile screen. Deletion **anonymises rather than
+  destroys**: user FKs are `on_delete=SET_NULL`, so display names, boards and
+  results survive for opponents while the account is unlinked; only unjoined
+  lobby adverts are removed. Outstanding refresh tokens are blacklisted.
+  **Still outstanding for Play:** a *web-accessible deletion request URL*, which
+  needs the app to be hosted. Both draft documents still describe deletion as a
+  manual email request — **update that prose once a public URL exists.**
 - **Known API security gaps are disclosed, not hidden** — unauthenticated read
   access to game records, unguarded write/delete on games and matches, and
   unverifiable guest seats. See

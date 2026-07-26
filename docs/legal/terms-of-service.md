@@ -80,15 +80,20 @@ By entering them, you grant us the permission we need to store and display them
 to operate the App — for instance, to show your opponent your name and to record
 the result of a game.
 
-Game records are stored on our servers. You can request deletion of your account
-and its records — but see the notice below.
+Game records are stored on our servers. You can delete your account at any time
+from your profile page in either app; you will be asked for your password to
+confirm.
 
-> **`[TODO — REQUIRED BEFORE STORE SUBMISSION]`** Self-service account deletion
-> is **not implemented** in the API today. The App Store and Play Store both
-> require a deletion path for apps with accounts. Until it is built, these terms
-> must direct users to request deletion by email at `[TODO: contact email]`, and
-> that request must actually be honoured manually. Do not claim an in-app delete
-> button exists before one does.
+Deleting your account **unlinks** it from your past games rather than erasing
+them. Your display name, the boards, and the results stay visible to the people
+you played, so their own match history stays intact. Games you had advertised
+but nobody had joined are removed. Your saved sessions stop working immediately.
+
+> **`[TODO — REQUIRED BEFORE STORE SUBMISSION]`** In-app deletion exists, but
+> Google Play additionally requires a **web-accessible deletion request URL**
+> that works without installing the app. That URL cannot exist until the service
+> is hosted. Publish one, then replace this notice. Also confirm the paragraph
+> above matches the behaviour you actually ship.
 
 ## 6. Availability, and the state of the service
 

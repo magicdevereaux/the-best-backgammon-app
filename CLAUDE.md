@@ -64,11 +64,13 @@ backend, which re-validates everything authoritatively.
 
 ```
 backend/    Django REST API (shared by both clients)
-  backgammon/   project settings + root urls (SQLite, JWT, CORS)
+  backgammon/   settings (env-driven) + root urls + health.py
   game/         models.py, serializers.py, views.py, game_logic.py, urls.py, tests/
 frontend/   React web client  (src/: api/ components/ hooks/ pages/ context/ utils/)
 mobile/     Expo mobile client (app/: router screens; src/: api/ components/ game/ context/)
-docs/       architecture/ + decisions/  (see below)
+docs/       architecture/ + operations/ + legal/ + decisions/  (see below)
+.github/    CI workflow running all three test suites
+Dockerfile  Procfile  .dockerignore   host-agnostic deploy scaffolding
 README.md   user-facing setup & feature overview
 ```
 
@@ -109,13 +111,49 @@ Override the host via `MANUAL_OVERRIDE` in [`mobile/src/api/config.js`](mobile/s
 
 See [`README.md`](README.md) for the full device matrix and EAS build commands.
 
+## Configuration (all env-driven, dev needs none)
+
+**Nothing needs configuring for local dev** — every var has a working default and
+no `.env` file is required. That property is load-bearing; preserve it.
+
+- **Backend** reads env via `os.environ` in [`settings.py`](backend/backgammon/settings.py)
+  (with optional `.env` loading through `python-dotenv`). Vars are documented in
+  [`backend/.env.example`](backend/.env.example): `SECRET_KEY`, `DEBUG`,
+  `ALLOWED_HOSTS`, `DATABASE_URL`, `CORS_ALLOWED_ORIGINS`,
+  `CSRF_TRUSTED_ORIGINS`, `THROTTLE_RATE_*`, `LOG_LEVEL`, and serving vars
+  (`PORT`, `WEB_CONCURRENCY`). `SECRET_KEY` falls back to the old dev key **only**
+  under `DEBUG`; with `DEBUG=False` a missing key raises `ImproperlyConfigured`.
+- **Security settings are gated on `DEBUG`.** SSL redirect, HSTS, secure cookies,
+  nosniff, and `X_FRAME_OPTIONS` apply only when `DEBUG=False`.
+  `manage.py check --deploy` reports **0 issues** in that mode.
+- **Database** resolves through `dj-database-url` from `DATABASE_URL`, defaulting
+  to the same SQLite file as before. Postgres needs only the env var — the driver
+  is already installed.
+- **Web** resolves its API base from `REACT_APP_API_BASE_URL`
+  ([`frontend/src/api/config.js`](frontend/src/api/config.js)), defaulting to `""`
+  so the CRA dev proxy is unchanged.
+- **Mobile** resolves in this order: `MANUAL_OVERRIDE` → `EXPO_PUBLIC_API_URL` →
+  `expoConfig.extra.apiUrl` → Metro `hostUri` (dev only) → loopback (dev only) →
+  hard configuration error ([`mobile/src/api/config.js`](mobile/src/api/config.js)).
+  A release build with no configured host now **throws a readable error at the
+  first API call** instead of silently pointing at localhost, and rejects
+  non-`https` production URLs.
+
+`/healthz/` ([`health.py`](backend/backgammon/health.py)) is unauthenticated and
+does a `SELECT 1`; it returns 503 if the DB is unreachable. Root `Dockerfile` and
+`Procfile` run gunicorn and are host-agnostic — no Railway/Fly/Render-specific
+files exist, by choice.
+
 ## Tests
 
 | Suite | Count | Command (cwd) |
 |-------|-------|---------------|
-| Backend | **232** | `python manage.py test game` (`backend/`, in-memory DB) |
-| Web | **172** | `CI=true npm test -- --watchAll=false` (`frontend/`) |
-| Mobile | **83** | `CI=true npx jest` (`mobile/`) |
+| Backend | **296** | `python manage.py test game` (`backend/`, in-memory DB) |
+| Web | **207** | `CI=true npm test -- --watchAll=false` (`frontend/`) |
+| Mobile | **114** | `CI=true npx jest` (`mobile/`) |
+
+CI runs all three on push and PR — [`.github/workflows/ci.yml`](.github/workflows/ci.yml),
+one job per suite.
 
 Backend tests live in [`backend/game/tests/`](backend/game/tests/) (models, views,
 auth, lobby, match, serializers, logic). Web tests sit beside sources in
@@ -126,8 +164,14 @@ Auth has full client + server coverage: backend `test_auth.py`; web
 mobile `api/__tests__/{tokenStore,auth,client}.test.js`. See [auth.md](docs/architecture/auth.md)
 for the map.
 
-All three suites were **green as of 2026-07-25** (232 / 172 / 83, 487 total, zero
+All three suites were **green as of 2026-07-26** (296 / 207 / 114, 617 total, zero
 failures). If you see a failure, it is yours — the baseline is clean.
+
+> **Throttling is disabled under test** (`"test" in sys.argv` in
+> [`settings.py`](backend/backgammon/settings.py)), so auth tests don't trip the
+> rate limiter. Tests that need it re-enable it with `@override_settings`; see
+> `OptionalScopedRateThrottle` in [`views.py`](backend/game/views.py), which
+> reads rates live because DRF otherwise binds `THROTTLE_RATES` at import time.
 
 > **The two JS suites take different invocations, and swapping them fails
 > confusingly.** `frontend/` is Create React App: the Babel/jest transform only
@@ -200,23 +244,20 @@ Board is `points[24]` (index = point − 1), plus `bar` and `off` counts per pla
 > [going-live.md](docs/operations/going-live.md). The list below is what a coding
 > session needs to keep in mind day to day.
 
-- **Games and matches are unguarded `ModelViewSet`s.** `PUT` / `PATCH` /
-  `DELETE` on `/api/games/{id}/` and `/api/matches/{id}/` are routed and live
-  with no permission check — anyone can mutate or delete any game. Seat
-  enforcement only covers the custom actions.
-- **`next_game` has no seat enforcement.** Any caller, anonymous included, can
-  advance any match to its next game.
-- **Registration bypasses `AUTH_PASSWORD_VALIDATORS`.** `RegisterSerializer`
-  ([`serializers.py`](backend/game/serializers.py)) calls `create_user` directly,
-  so only its own `min_length=8` applies — `"password"` registers fine.
-- **No pagination anywhere.** `GET /api/games/` returns the entire table,
-  unauthenticated.
-- **`isBlotHit` is duplicated, not shared.** Mobile exports it from
-  [`logic.js`](mobile/src/game/logic.js); the web copy is inlined privately in
-  [`Board.jsx`](frontend/src/components/Board.jsx) with a *different signature*
-  (web takes `points`, mobile takes `boardState`) and no web test. This is the
-  one piece of unintentional drift between the two JS ports — everything else
-  differs only by presence/absence, never by rule.
+- **`GET /api/games/` is still unauthenticated and unscoped.** Pagination now
+  bounds each response, but an anonymous caller can page through every game row
+  (board state, player names, user ids). Scoping the list to open games or the
+  requester's own would break guest hotseat resume, so it was left open
+  deliberately — see [going-live.md](docs/operations/going-live.md).
+- **A deleted account's seat is indistinguishable from a guest seat.** Account
+  deletion (`DELETE /api/auth/me/`) anonymises rather than destroys: every user FK
+  on `Game`/`Match` is `on_delete=SET_NULL`, so the display name and history
+  survive but the FK goes null. In an **in-progress** game that makes the seat
+  look like a guest seat, which `_seat_permission_error` lets anonymous callers
+  act on. Closing it needs a `models.py` change — a `player*_deleted` flag or a
+  sentinel user — so seat enforcement can tell "deleted account" from "guest".
+- **Throttle counters are per-process.** No `CACHES` entry, so DRF falls back to
+  `LocMemCache` and limits are per-gunicorn-worker, not global.
 - **Clients don't model the higher-die rule**, so a client can happily stage a
   bear-off turn that the server then rejects with 400.
 - **Higher-die rule enforced only during bear-off.** `higher_die_required_moves`
@@ -257,15 +298,21 @@ Index with contribution rules: [docs/README.md](docs/README.md).
   models and schema.
 - [docs/operations/going-live.md](docs/operations/going-live.md) — production
   readiness: hard blockers, should-fix, post-launch, with file/line evidence.
+- [docs/legal/](docs/legal/README.md) — **draft** privacy policy and terms, written
+  against what the code actually collects. Full of `[TODO]` markers needing the
+  owner's real details; both stores require the policy at a live public URL.
 - [docs/decisions/adr-001-combined-moves.md](docs/decisions/adr-001-combined-moves.md).
 
 ## Planned / Not Yet Implemented
 
 These are intended but **do not exist in the code today** — don't assume them:
 
-- **PostgreSQL in production.** Dev and current config are SQLite only
-  ([`settings.py`](backend/backgammon/settings.py)); no Postgres driver or config
-  is present.
+- **A running deployment.** Nothing is hosted yet. The app is *deployable* —
+  env-driven settings, `Dockerfile`/`Procfile`, gunicorn, whitenoise, health
+  check — but no host, domain, or TLS exists, and no production `.env` has been
+  written. **Postgres is wired but unused**: `psycopg2-binary` and
+  `dj-database-url` are installed and `DATABASE_URL` is honoured, yet every
+  environment today still resolves to the dev SQLite file.
 - **WebSockets / real-time push.** There is no Channels/ASGI setup. Opponent moves
   are synced by **mobile polling** (~3.5s in [`mobile/src/game/useGame.js`](mobile/src/game/useGame.js));
   the **web client has no auto-refresh** (manual reload). A socket layer is future work.

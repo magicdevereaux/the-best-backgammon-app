@@ -1,533 +1,453 @@
 # Going Live — Production-Readiness Audit
 
 An honest audit of what stands between the current tree and a deployed backend +
-a shipped web app + a store-approved mobile app. Every item cites the file and
-line it was found in; nothing here is speculative.
+a shipped web app + a store-approved mobile app.
 
-> **Ground rule:** this doc describes the code **as it is today**. Items are not
-> "planned work" — they are gaps found by reading the tree, running
-> `manage.py check --deploy`, and `git ls-files`.
+> **Ground rule:** this doc describes the code **as it is today**. Every item
+> cites the file and line it was found in. Nothing here is speculative, and
+> nothing is marked done that wasn't read back out of the tree.
 
-Audited at commit `a00d679` (2026-07-25). Re-verify line numbers after edits.
+Re-audited **2026-07-26** against HEAD `ef22c3b` **plus the uncommitted working
+tree** (a hardening pass was still landing while this was written — re-verify
+line numbers after any edit).
 
 ## Current state
 
-The app **works**, and works well, as a local development project. The game
-engine is solid and heavily tested (232 backend + 172 web + 83 mobile tests), the
-data model is sane, and seat/turn ownership is already enforced server-side.
+The original audit found 11 hard blockers. **Most of them are closed.** The
+backend is now env-driven, containerised, throttled, and passes Django's own
+deployment checks cleanly; both clients can be pointed at a real API by
+configuration; CI runs all three suites; legal drafts exist. What remains splits
+almost perfectly in two: **decisions and credentials only the owner can supply**,
+and a short list of **real code gaps**, one of which is a genuine security hole.
 
-The **deployment story does not exist yet**. Concretely:
+Verified this pass, by running it:
 
-- [`settings.py`](../../backend/backgammon/settings.py) is a stock `startproject`
-  file with a dev secret key, `DEBUG = True`, SQLite, and no environment-variable
-  plumbing of any kind. `manage.py check --deploy` reports **6 issues**.
-- [`requirements.txt`](../../backend/requirements.txt) is 4 unpinned lines with
-  **no WSGI server** and no static-file, database, or config libraries.
-- There is **no** Dockerfile, docker-compose, Procfile, `render.yaml`, `fly.toml`,
-  or any other deploy manifest anywhere in the repo, and **no `.github/`** — no
-  CI runs the three test suites.
-- Both clients resolve the API host in a way that **only works in development**:
-  the web app relies on the CRA dev proxy, the mobile app on the Metro LAN IP.
-- **Nothing legal exists** — no privacy policy, no terms, no store metadata.
+```
+$ cd backend && DEBUG=False SECRET_KEY=<50-char random> ALLOWED_HOSTS=example.com \
+    venv/Scripts/python.exe manage.py check --deploy
+System check identified no issues (0 silenced).
+```
 
-The good news, verified rather than assumed: **no secrets are committed.** A
-regex sweep of all 125 tracked files for key/token/password literals returns
-nothing, and `git ls-files` shows neither `db.sqlite3` nor `venv/` is tracked —
-[`.gitignore`](../../.gitignore) covers `db.sqlite3` (line 61), `venv/` (134),
-`.env` (131), `.env.production` (225), `secrets.json` (226), `*.pem` / `*.key`
-(222–223). That is one whole class of launch disaster already avoided.
+Six warnings → zero. All three suites are green: **backend 296**, **web 207**,
+**mobile 114** (617 total), and [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml)
+runs each on every push.
+
+Still true, and still good news: **no secrets are committed.** `git status`
+shows no `.env`, and [`.gitignore`](../../.gitignore) covers `db.sqlite3`,
+`venv/`, `.env`, `.env.production`, `secrets.json`, `*.pem` / `*.key`. The
+`.env.example` files are placeholders with empty values.
+
+**Order of operations from here.** (1) Fix the deleted-account seat hole
+([2.1](#21-a-deleted-accounts-seat-becomes-an-anonymous-playable-guest-seat)) —
+it is a live security bug and needs no infrastructure. (2) Owner picks a host,
+provisions Postgres, sets the env vars ([section 1](#1-blocked-on-the-owner)).
+(3) Deploy, smoke-test, turn on backups. (4) Build web with
+`REACT_APP_API_BASE_URL`, build mobile with `EXPO_PUBLIC_API_URL`, test both off
+the dev LAN. (5) Fill the legal `[TODO]`s, host the policy, submit.
 
 ---
 
-## 1. Hard blockers
-
-Cannot go live without these. Roughly ordered by "what breaks first."
-
-### 1.1 `DEBUG = True` and a hardcoded, published `SECRET_KEY`
-
-**What's wrong.** [`settings.py:5`](../../backend/backgammon/settings.py) is
-`SECRET_KEY = "django-insecure-dev-key-change-in-production"` and
-[`settings.py:7`](../../backend/backgammon/settings.py) is `DEBUG = True`. The key
-is in git history, so it is public: anyone can forge session cookies and password
-reset tokens. `DEBUG = True` serves a full traceback with settings and local
-variables on every 500, and disables `ALLOWED_HOSTS` enforcement. There is **no
-`os.environ` read anywhere in the file** — the settings module has no mechanism to
-be configured differently in production.
-
-`manage.py check --deploy` flags both (`security.W009`, `security.W018`).
-
-**Fix.** Read both from the environment, fail loudly if absent in production:
-
-```python
-import os
-SECRET_KEY = os.environ["DJANGO_SECRET_KEY"]          # no default
-DEBUG = os.environ.get("DJANGO_DEBUG", "0") == "1"
-```
-
-Generate a fresh 50+ char key (`django.core.management.utils.get_random_secret_key`)
-— **do not reuse the committed one**. Add `python-dotenv` (or `django-environ`) so
-local dev keeps working from a gitignored `.env`.
-
-### 1.2 `ALLOWED_HOSTS` cannot serve any real domain
-
-**What's wrong.** [`settings.py:11`](../../backend/backgammon/settings.py):
-
-```python
-ALLOWED_HOSTS = ["localhost", "127.0.0.1", "192.168.1.156"]
-```
-
-That LAN IP is a DHCP lease on the dev machine. Once `DEBUG=False`, **every
-request to the production hostname returns 400 Bad Request** — the app is 100%
-down, and the failure mode reads as a mysterious blank error rather than a config
-problem.
-
-**Fix.** `ALLOWED_HOSTS = os.environ.get("DJANGO_ALLOWED_HOSTS", "").split(",")`.
-Never `["*"]` in production. Add the load balancer / health-check host too if the
-platform probes by IP.
-
-### 1.3 No production dependencies; nothing is pinned
-
-**What's wrong.** [`requirements.txt`](../../backend/requirements.txt) is four
-lines, all open-ended ranges:
-
-```
-Django>=4.2,<5.0
-djangorestframework>=3.14
-django-cors-headers>=4.3
-djangorestframework-simplejwt>=5.0
-```
-
-Two problems. First, **missing everything needed to run in production**: no
-`gunicorn` (or `uvicorn`) — `runserver` is a dev server and must never face the
-internet; no `whitenoise` — nothing serves static assets when `DEBUG=False`; no
-`psycopg[binary]` / `dj-database-url` — no path off SQLite; no `python-dotenv` —
-nothing loads config. Second, **`>=` ranges make builds unreproducible**: a deploy
-six months from now silently pulls different versions than the one you tested.
-
-**Fix.** Pin exact versions (`pip freeze` from a clean install, or move to
-`pip-tools` / `uv` with a lockfile) and add:
-
-```
-gunicorn==<pinned>
-whitenoise==<pinned>
-psycopg[binary]==<pinned>
-dj-database-url==<pinned>
-python-dotenv==<pinned>
-```
-
-### 1.4 SQLite as the production database
-
-**What's wrong.** [`settings.py:56–61`](../../backend/backgammon/settings.py)
-points at `BASE_DIR / "db.sqlite3"`. Three independent failures: (a) on most PaaS
-hosts the container filesystem is **ephemeral**, so every deploy or restart wipes
-all accounts and games; (b) SQLite takes a **database-wide write lock**, and the
-mobile client polls every ~3.5s per active game
-([`useGame.js`](../../mobile/src/game/useGame.js)) — concurrent writers will hit
-`database is locked`; (c) there is no backup story.
-
-**Fix.** Provision managed Postgres and switch via `dj-database-url`:
-
-```python
-import dj_database_url
-DATABASES = {"default": dj_database_url.config(
-    default=f"sqlite:///{BASE_DIR / 'db.sqlite3'}", conn_max_age=600)}
-```
-
-Keep SQLite as the local-dev default so nothing about the dev loop changes.
-Verify the three migrations in
-[`game/migrations/`](../../backend/game/migrations/) apply cleanly on a fresh
-Postgres before cutting over. Note this is listed under **Planned / Not Yet
-Implemented** in [CLAUDE.md](../../CLAUDE.md) — it is now on the critical path.
-
-### 1.5 Static files are not deployable
-
-**What's wrong.** [`settings.py:75`](../../backend/backgammon/settings.py) sets
-`STATIC_URL = "static/"` and **no `STATIC_ROOT`**. `manage.py collectstatic` will
-error out, and with `DEBUG=False` Django serves no static files at all — the
-Django admin at `/admin/` (wired in
-[`urls.py:5`](../../backend/backgammon/urls.py)) renders as unstyled HTML.
-
-**Fix.** Set `STATIC_ROOT = BASE_DIR / "staticfiles"` (already gitignored,
-[`.gitignore`](../../.gitignore) `staticfiles/`), add
-`whitenoise.middleware.WhiteNoiseMiddleware` immediately after `SecurityMiddleware`
-in [`settings.py:25–34`](../../backend/backgammon/settings.py), set
-`STORAGES["staticfiles"]` to WhiteNoise's compressed manifest backend, and run
-`collectstatic` in the release step.
-
-### 1.6 No TLS enforcement, HSTS, or secure cookies
-
-**What's wrong.** [`settings.py`](../../backend/backgammon/settings.py) contains
-**no `SECURE_*` or `*_COOKIE_SECURE` settings at all**. Verbatim from
-`manage.py check --deploy`:
-
-- `security.W004` — `SECURE_HSTS_SECONDS` not set
-- `security.W008` — `SECURE_SSL_REDIRECT` not `True`
-- `security.W012` — `SESSION_COOKIE_SECURE` not `True`
-- `security.W016` — `CSRF_COOKIE_SECURE` not `True`
-
-Admin credentials and JWTs would travel over plaintext HTTP on any non-TLS path.
-
-**Fix.** Add, gated on the production flag:
-
-```python
-SECURE_SSL_REDIRECT = True
-SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")  # behind a proxy
-SECURE_HSTS_SECONDS = 31536000
-SECURE_HSTS_INCLUDE_SUBDOMAINS = True
-SECURE_HSTS_PRELOAD = True
-SESSION_COOKIE_SECURE = True
-CSRF_COOKIE_SECURE = True
-```
-
-Start HSTS at a low `max-age` and ramp up — it is hard to undo. Re-run
-`check --deploy` until it is clean.
-
-### 1.7 CORS is dev-only and `CSRF_TRUSTED_ORIGINS` is missing
-
-**What's wrong.** [`settings.py:79–81`](../../backend/backgammon/settings.py):
-
-```python
-CORS_ALLOWED_ORIGINS = ["http://localhost:3000"]
-```
-
-If the web client is served from any origin other than the API's own, **every
-browser request fails CORS** in production. Separately, Django 4.x requires
-`CSRF_TRUSTED_ORIGINS` to include the scheme+host for cross-origin POSTs over
-HTTPS — without it, **admin login fails with a CSRF 403** even on a correctly
-configured host. Neither is set.
-
-**Fix.** Drive both from the environment:
-
-```python
-CORS_ALLOWED_ORIGINS = os.environ.get("CORS_ORIGINS", "").split(",")
-CSRF_TRUSTED_ORIGINS = os.environ.get("CSRF_ORIGINS", "").split(",")
-```
-
-If you instead serve the built web app from the same origin as the API (see 1.8),
-CORS becomes a non-issue for the web client — but mobile still needs it off, since
-native `fetch` is not origin-bound. Never enable `CORS_ALLOW_ALL_ORIGINS`.
-
-### 1.8 The web build has no way to reach a production API
-
-**What's wrong.** Every web API module uses **root-relative paths**:
-[`authApi.js:1`](../../frontend/src/api/authApi.js) `const BASE_URL = "/api/auth/"`,
-[`gameApi.js:3`](../../frontend/src/api/gameApi.js) `const BASE = "/api/games/"`,
-[`matchApi.js:3`](../../frontend/src/api/matchApi.js) `const BASE = "/api/matches/"`,
-and [`apiClient.js:8`](../../frontend/src/api/apiClient.js) calls
-`fetch(path, …)` with that bare path. These work **only** because of
-[`package.json:16`](../../frontend/package.json), `"proxy": "http://localhost:8000"`
-— and **the CRA proxy is a dev-server feature that does not exist in
-`npm run build` output**. There is no `REACT_APP_*` variable anywhere in
-`frontend/src/` and no `.env*` file in `frontend/`.
-
-So a production bundle sends `/api/...` to **whatever host serves the static
-files**. Deploy the build to Netlify/S3/Vercel with the API elsewhere and every
-request 404s.
-
-**Fix.** Pick one:
-
-- **Same-origin (simplest).** Serve the built `frontend/build/` from the Django
-  host via WhiteNoise + a catch-all template route, so `/api/*` and `/` share an
-  origin. Relative paths then work unchanged and CORS/CSRF get much simpler.
-- **Split origin.** Introduce a base URL constant read at build time —
-  `const API_ROOT = process.env.REACT_APP_API_URL || ""` — prefix it in
-  [`apiClient.js`](../../frontend/src/api/apiClient.js) and in the raw `fetch`
-  in [`authApi.js`](../../frontend/src/api/authApi.js) (the refresh call bypasses
-  `apiClient`), and set `REACT_APP_API_URL` in the host's build env.
-
-Whichever you choose, **test the actual `npm run build` artifact** against a
-remote API before launch. This is not caught by any existing test — the web suite
-mocks `fetch`.
-
-### 1.9 The mobile app cannot find the API in a store build
-
-**What's wrong.** [`config.js:15–27`](../../mobile/src/api/config.js):
-
-```js
-const hostUri = Constants.expoConfig?.hostUri || Constants.expoGoConfig?.debuggerHost
-  || Constants.manifest2?.extra?.expoGo?.debuggerHost || null;
-if (hostUri) return hostUri.split(":")[0];
-return Platform.OS === "android" ? "10.0.2.2" : "localhost";
-export const API_BASE_URL = MANUAL_OVERRIDE || `http://${devHost()}:${DJANGO_PORT}`;
-```
-
-`hostUri` is injected by **Metro**. In a released standalone build there is no
-Metro, so it is `null` and the app falls through to `10.0.2.2` / `localhost` —
-**pointing at the phone itself**. Every request fails; the app is inert. And
-`MANUAL_OVERRIDE` is `null` at [line 10](../../mobile/src/api/config.js).
-
-Compounding it, the URL is built with **`http://`**, hardcoded at line 27. iOS App
-Transport Security blocks cleartext HTTP by default, and Android blocks it for
-`targetSdk >= 28`. Even with the right host, an `http://` URL is dead on arrival
-in a store build — and would be an App Review rejection regardless.
-
-**Fix.** Branch on `__DEV__` and require HTTPS in production:
-
-```js
-export const API_BASE_URL = __DEV__
-  ? (MANUAL_OVERRIDE || `http://${devHost()}:${DJANGO_PORT}`)
-  : "https://api.your-domain.example";
-```
-
-Better: source the production URL from `expo.extra` in
-[`app.json`](../../mobile/app.json) via `Constants.expoConfig.extra`, so it is
-config rather than code. Verify with `eas build --profile preview` on a real
-device off the dev LAN — the emulator will mask this bug.
-
-### 1.10 Auth endpoints have no rate limiting whatsoever
-
-**What's wrong.** `REST_FRAMEWORK` at
-[`settings.py:83–90`](../../backend/backgammon/settings.py) sets only permission
-and authentication classes — **no `DEFAULT_THROTTLE_CLASSES`, no
-`DEFAULT_THROTTLE_RATES`**. A grep for `throttl|ratelimit|axes` across
-`backend/**/*.py` returns nothing. `POST /api/auth/login/` and
-`/api/auth/register/` ([`urls.py:13–14`](../../backend/game/urls.py)) are stock
-SimpleJWT/DRF views with unlimited attempts. On a public host that is open
-credential stuffing and unlimited account creation, with no lockout and no alert.
-
-**Fix.** At minimum add DRF throttles:
-
-```python
-"DEFAULT_THROTTLE_CLASSES": ["rest_framework.throttling.AnonRateThrottle",
-                             "rest_framework.throttling.UserRateThrottle"],
-"DEFAULT_THROTTLE_RATES": {"anon": "60/min", "user": "240/min"},
-```
-
-plus a tighter scoped throttle (e.g. `5/min`) on register/login specifically.
-Consider `django-axes` for lockout after N failures. Note DRF's default throttle
-backend uses the cache — configure a real `CACHES` entry (Redis or at least
-`LocMemCache`), otherwise throttling is per-process and useless behind multiple
-gunicorn workers.
-
-### 1.11 No privacy policy, terms, or store metadata
-
-**What's wrong.** `git ls-files | grep -i "privacy|terms|legal|policy|metadata"`
-returns **nothing**. Both stores make this mandatory:
-
-- **Apple** requires a reachable privacy policy URL and an App Privacy
-  ("nutrition label") questionnaire before review; an account-creating app also
-  needs an in-app **account deletion** path — which does not exist (no delete
-  endpoint in [`views.py`](../../backend/game/views.py)).
-- **Google Play** requires a privacy policy URL plus a Data Safety declaration,
-  and enforces the same account-deletion requirement.
-- Neither store listing exists: no screenshots, description, keywords, age rating
-  (IARC), or support URL anywhere in the repo. The submit block at
-  [`eas.json:26–28`](../../mobile/eas.json) is empty `{}` — no `ascAppId`, no
-  `serviceAccountKeyPath`.
-
-The app collects a username, a password, and gameplay history — that is personal
-data, and it must be disclosed.
-
-**Fix.** Write the policy and terms (the app is simple: username, hashed password,
-game records; no analytics, no ads, no third-party sharing — say exactly that),
-host them at stable URLs, and link them from both clients and the store listings.
-Build an account-deletion endpoint + UI. Then produce screenshots per required
-device size and fill in the submit config.
+## 1. Blocked on the owner
+
+No coding session can close these. They need a decision, a credential, a
+purchase, or a human signature. Everything here is *config-shaped* — the code
+side is already built and waiting for the value.
+
+### 1.1 Pick a host and provision PostgreSQL
+
+The app is host-agnostic and ready to deploy: the root
+[`Dockerfile`](../../Dockerfile) builds from the repo root, runs `collectstatic`
+at build time, runs as a non-root user, has a `HEALTHCHECK` against `/healthz/`,
+and starts `migrate && gunicorn`. [`Procfile`](../../Procfile) covers
+Heroku-style hosts. Nothing host-specific is committed, on purpose.
+
+`DATABASES` ([`settings.py:126–133`](../../backend/backgammon/settings.py)) reads
+`DATABASE_URL` through `dj-database-url` and falls back to local SQLite;
+`psycopg2-binary` is pinned in [`requirements.txt`](../../backend/requirements.txt).
+The owner must provision a managed Postgres, set `DATABASE_URL`, and **verify the
+migrations apply cleanly on an empty Postgres before cutting over** — they have
+only ever been run against SQLite.
+
+### 1.2 Domain, TLS, and the production environment
+
+Buy/point a domain and let the platform terminate TLS. The app already trusts
+`X-Forwarded-Proto` and redirects to HTTPS when `DEBUG=False`
+([`settings.py:239–250`](../../backend/backgammon/settings.py)).
+
+Then set these on the host — **never in a committed file**. Full annotated list
+in [`backend/.env.example`](../../backend/.env.example):
+
+| Variable | Notes |
+|---|---|
+| `SECRET_KEY` | Required. Startup **fails loudly** without it when `DEBUG=False` ([`settings.py:57–67`](../../backend/backgammon/settings.py)). Generate fresh; never the committed dev key. |
+| `DEBUG` | `False`. This one flag turns on the whole hardening block. |
+| `ALLOWED_HOSTS` | The real hostname(s). Default is dev-only and includes a stale LAN IP ([`settings.py:71–73`](../../backend/backgammon/settings.py)). |
+| `DATABASE_URL` | Postgres URL. |
+| `CORS_ALLOWED_ORIGINS` / `CSRF_TRUSTED_ORIGINS` | The web app's origin ([`settings.py:183–184`](../../backend/backgammon/settings.py)). Defaults are `http://localhost:3000`. |
+| `SECURE_HSTS_SECONDS` | **Caution.** Defaults to 1 year *with* `includeSubDomains` and `preload`. Set it to `60` for the first deploys and ramp — HSTS is very hard to undo. |
+| `THROTTLE_RATE_*` | Optional; defaults are sane (see [2.3](#23-throttle-counters-are-per-process)). |
+
+### 1.3 Store the mobile API URL and submission credentials
+
+The mobile client resolves its backend by an explicit precedence chain and
+**refuses to guess in a release build** ([`config.js:58–127`](../../mobile/src/api/config.js)):
+`MANUAL_OVERRIDE` → `EXPO_PUBLIC_API_URL` → `expo.extra.apiUrl` → Metro `hostUri`
+(dev only) → loopback (dev only). A non-`https://` URL in a release build is
+reported as a configuration error rather than failing as an opaque network
+timeout. The values it needs are blank and marked `OWNER TODO`:
+
+- [`eas.json:33`](../../mobile/eas.json) — `preview.env.EXPO_PUBLIC_API_URL` (staging)
+- [`eas.json:41`](../../mobile/eas.json) — `production.env.EXPO_PUBLIC_API_URL`
+- [`app.json:48`](../../mobile/app.json) — `expo.extra.apiUrl` (fallback)
+- [`eas.json:51`](../../mobile/eas.json) — `submit.production` is `{}`. iOS needs
+  `appleId`, `ascAppId`, `appleTeamId`; Android needs `serviceAccountKeyPath`
+  and `track`.
+
+Also owner-side: create the App Store Connect and Play Console entries, produce
+screenshots per required device size, write the listing copy, and complete the
+IARC age rating.
+
+### 1.4 Set the web build's API origin
+
+[`frontend/src/api/config.js`](../../frontend/src/api/config.js) reads
+`REACT_APP_API_BASE_URL` (empty → root-relative, which is what the CRA dev proxy
+wants) and every API module routes through `apiUrl()` — including the refresh
+call in [`authApi.js:26`](../../frontend/src/api/authApi.js), which bypasses
+`apiClient`. CRA inlines the value **at build time**, so it must be set in the
+host's build environment, not at runtime. See
+[`frontend/.env.example`](../../frontend/.env.example).
+
+### 1.5 Publish the legal documents
+
+Drafts exist and were written against the actual code — no analytics, ads, or
+third-party SDKs are claimed, because none exist:
+[`privacy-policy.md`](../legal/privacy-policy.md),
+[`terms-of-service.md`](../legal/terms-of-service.md), with the blocking
+checklist in [`docs/legal/README.md`](../legal/README.md).
+
+They are **not publishable as-is**: **20 `[TODO]` placeholders in the privacy
+policy and 15 in the terms** cover the legal entity name, contact email, dates,
+jurisdiction and venue, hosting provider and log retention, minimum age,
+GDPR/CCPA applicability, and the liability cap. A lawyer should read both. Then
+host them at stable public URLs (Play additionally wants a web-accessible
+account-deletion request URL) and link them from both clients and both store
+listings.
+
+> One correction the drafts need: they still say account deletion is
+> unimplemented. It **is** implemented now — see [3.11](#3-done). That section of
+> both documents, and of `docs/legal/README.md`, is stale.
+
+### 1.6 Backups, admin credentials, and monitoring accounts
+
+- Enable the managed database's automated backups and **test a restore once**.
+  Untested backups are not backups. Nothing in the repo can do this.
+- Choose a strong superuser password and decide how `/admin/` is protected (see
+  [2.5](#25-django-admin-is-publicly-exposed-at-a-predictable-path)).
+- If you want error alerting, create the Sentry (or equivalent) project and
+  supply a DSN — the code side is a small change, the account is not
+  ([2.7](#27-no-error-monitoring)).
 
 ---
 
-## 2. Should-fix before launch
+## 2. Still open in code
 
-Not strictly blocking, but each is a real problem you will hit within days.
+Real remaining work, ranked by severity.
 
-### 2.1 Registration silently bypasses the password validators
+### 2.1 A deleted account's seat becomes an anonymous-playable guest seat
 
-[`settings.py:63–68`](../../backend/backgammon/settings.py) configures four
-`AUTH_PASSWORD_VALIDATORS` — and **nothing calls them**. `RegisterSerializer`
-([`serializers.py:163–173`](../../backend/game/serializers.py)) is a plain
-`serializers.Serializer` whose only password rule is `min_length=8`, then calls
-`User.objects.create_user`, which does not validate either. So `password123` and
-`12345678` are both accepted; the validators are effectively dead configuration
-for every account created through the API.
+**Severity: high. This is a live security hole, and it was introduced by the
+account-deletion feature.**
 
-**Fix.** In `RegisterSerializer`, add
-`from django.contrib.auth.password_validation import validate_password` and a
-`validate_password(self, value)` method that calls it (translating
-`django.core.exceptions.ValidationError` to DRF's). Add a test.
+Every user FK on `Game` and `Match` is `on_delete=models.SET_NULL`
+([`models.py:6–11`](../../backend/game/models.py),
+[`models.py:37–42`](../../backend/game/models.py)), and
+`_purge_unjoined_lobby_entries` ([`views.py:158`](../../backend/game/views.py))
+only removes `status="waiting"` lobby adverts — an **in-progress** game is kept
+deliberately (asserted by `test_in_progress_game_is_not_destroyed` in
+[`test_account_deletion.py`](../../backend/game/tests/test_account_deletion.py)).
+So after Alice deletes her account mid-game, `game.player1_user_id` is `NULL`.
 
-### 2.2 Refresh tokens are never rotated or revocable
+`_seat_permission_error` ([`views.py:247–286`](../../backend/game/views.py)) reads
+a null seat FK as *"this is a guest seat, and guests are unverifiable"*:
 
-[`settings.py:93–96`](../../backend/backgammon/settings.py) sets only the two
-lifetimes — access 1 hour, refresh **7 days** — with no `ROTATE_REFRESH_TOKENS`
-and no `BLACKLIST_AFTER_ROTATION`, and
-`rest_framework_simplejwt.token_blacklist` is absent from `INSTALLED_APPS`
-([`settings.py:13–23`](../../backend/backgammon/settings.py)). Consequence: logout
-is client-side only (both clients just clear storage), and a **leaked refresh
-token is valid for a full week with no way to revoke it**. On web the tokens live
-in `localStorage`, so any XSS is a 7-day account takeover.
+```python
+if user_id is None or is_participant:
+    return None                      # views.py:284 — anonymous request allowed
+```
 
-**Fix.** Add the blacklist app, run its migration, set
-`ROTATE_REFRESH_TOKENS = True` and `BLACKLIST_AFTER_ROTATION = True`, expose a
-logout endpoint that blacklists the presented refresh token, and call it from both
-clients. Consider shortening the refresh lifetime to 1–2 days.
+There is no field distinguishing "never had an account" from "had one and
+deleted it", so **any anonymous caller can now roll, move, confirm turns, and
+offer/answer doubles on the deleted player's seat** in every unfinished game
+they were in. Secondarily, the surviving opponent satisfies `is_participant` on
+the orphaned seat and can play both sides. `_match_permission_error`
+([`views.py:289–318`](../../backend/game/views.py)) has the same shape, so
+`next_game` opens to anonymous callers on that match too.
 
-### 2.3 No logging configuration and no error monitoring
+**Fix (pick one).** Either (a) add a per-seat `player1_seat_closed` /
+`player2_seat_closed` boolean (or a single `seat_closed` char field mirroring the
+`"p1"`/`"p2"` convention) set during deletion, and treat a closed seat as
+*nobody may act* in both permission helpers; or (b) resolve the account's
+unfinished games at deletion time — forfeit them to the opponent, or mark them
+`status="finished"` with a new `win_type` — so no orphaned seat is ever
+playable. (a) preserves history and is the smaller change. Whichever lands needs
+a test in `test_account_deletion.py` asserting an anonymous `roll_dice` on the
+orphaned seat returns 403.
 
-There is **no `LOGGING` dict** in
-[`settings.py`](../../backend/backgammon/settings.py) and no Sentry/Rollbar
-integration anywhere (grep for `sentry|LOGGING` across `backend/` returns
-nothing). With `DEBUG=False` a 500 produces a bare "Server Error" for the user
-and, absent `ADMINS` + email config, **no notification to anyone**. You would
-learn about outages from players.
+### 2.2 `GET /api/games/` is still public and unscoped
 
-**Fix.** Add a `LOGGING` config writing structured logs to stdout (what every
-container platform expects), and wire an error tracker — `sentry-sdk[django]` is
-a ~10-line addition and pays for itself on day one. Set a release/environment tag
-so mobile and web errors are distinguishable.
+`GameViewSet.get_queryset` ([`views.py:536–541`](../../backend/game/views.py)) is
+`Game.objects.all()` with only an optional `?status=` filter, the default
+permission is `AllowAny` ([`settings.py:211–214`](../../backend/backgammon/settings.py)),
+and `GameSerializer` uses `fields = "__all__"`
+([`serializers.py:20–28`](../../backend/game/serializers.py)) — full board state,
+both usernames, and both user IDs.
 
-### 2.4 No health-check endpoint
+Pagination now bounds a *single* response to 100 rows
+([`BareListPagination`, `views.py:40–62`](../../backend/game/views.py)), but
+`?page=N` walks the whole table, and the anon throttle (120/min) allows ~12,000
+rows a minute per IP. The exposure is unchanged; only the blast radius per
+request shrank.
 
-[`urls.py`](../../backend/backgammon/urls.py) exposes exactly two routes,
-`admin/` and `api/`. Every PaaS and load balancer wants a cheap liveness URL;
-without one they will probe `/` (404) or the DB-touching list endpoint.
+**Fix.** Scope the default `list` to open/lobby games plus the requester's own
+games. Keep retrieve-by-id open — link sharing depends on it, and the lobby list
+is legitimately anonymous. Note both clients consume these endpoints as **bare
+arrays**, so any change must preserve that shape (the pagination class returns a
+bare array for exactly this reason — see its docstring).
 
-**Fix.** Add `path("healthz/", …)` returning 200 with a trivial DB query, exempt
-from auth and throttling.
+### 2.3 Throttle counters are per-process
 
-### 2.5 `GET /api/games/` returns every game ever, unpaginated and unauthenticated
+There is **no `CACHES` setting** in
+[`settings.py`](../../backend/backgammon/settings.py) (verified by grep), so DRF's
+throttles fall back to Django's default `LocMemCache` — **per worker process, and
+wiped on restart**. The Dockerfile and Procfile both default to
+`--workers 3`, so the effective limits are ~3× the configured ones (`login`
+10/hour becomes ~30/hour), and a deploy resets every counter.
 
-`GameViewSet.get_queryset` ([`views.py:303–308`](../../backend/game/views.py))
-starts from `Game.objects.all()` with only an optional `?status=` filter, DRF
-default permission is `AllowAny`
-([`settings.py:84–86`](../../backend/backgammon/settings.py)), and **no
-pagination is configured** (no `DEFAULT_PAGINATION_CLASS` / `PAGE_SIZE`
-anywhere). Any anonymous caller can dump every game row — full board state,
-player names, user associations — in one request, and the response grows without
-bound as the app is used.
+**Fix.** Add a shared `CACHES` backend (Redis, or `django.core.cache.backends.db`
+if you'd rather not run one) and point it at the platform's cache add-on. Until
+then, treat the numbers in
+[`.env.example:52–56`](../../backend/.env.example) as upper bounds divided by
+`WEB_CONCURRENCY`.
 
-**Fix.** Set `DEFAULT_PAGINATION_CLASS` + `PAGE_SIZE` in `REST_FRAMEWORK`. Scope
-the default `list` to open/lobby games or the requester's own games; keep
-retrieve-by-id open if link sharing depends on it.
+### 2.4 Guest seats are unverifiable by design
 
-### 2.6 Accounts have no email, so there is no recovery path
+A seat with a null user FK has no server identity to check, so anonymous
+requests on it are allowed — see the policy docstring at
+[`views.py:247–271`](../../backend/game/views.py). This is what keeps
+hotseat/guest play working without an account, and it is a deliberate,
+documented trade-off rather than an oversight. It is listed here because it is
+also the mechanism [2.1](#21-a-deleted-accounts-seat-becomes-an-anonymous-playable-guest-seat)
+abuses.
 
-The register serializer accepts **username + password only**
-([`serializers.py:163–165`](../../backend/game/serializers.py)) on the stock
-`django.contrib.auth.models.User`. No email verification, no password reset, no
-password change endpoint. A user who forgets their password has **no recourse
-whatsoever** and their match history is gone — and you will be handling those
-support emails by hand.
+**Fix (larger).** A guest token minted at game creation and stored client-side,
+checked alongside the user FK. Not required for launch; required before anyone
+plays for anything that matters.
 
-**Fix.** Add an optional-but-encouraged email field at registration and Django's
-password-reset flow (needs an email backend: SES, Postmark, Resend). Verification
-can wait; recovery cannot.
+### 2.5 Django admin is publicly exposed at a predictable path
 
-### 2.7 EAS declares update channels without `expo-updates`
-
-[`eas.json:16 and 22`](../../mobile/eas.json) set `"channel": "preview"` and
-`"channel": "production"`, but
-[`mobile/package.json`](../../mobile/package.json) has **no `expo-updates`
-dependency** and [`app.json`](../../mobile/app.json) has no `runtimeVersion` or
-`updates` block. The channels are inert, and you get **no OTA update path** — every
-JS fix requires a full store resubmission and review.
-
-**Fix.** `npx expo install expo-updates`, set a `runtimeVersion` policy in
-`app.json`, and verify `eas update` publishes to the right channel. For a
-client-heavy game with duplicated rules logic, OTA is worth a lot: a rules bug
-otherwise takes days to reach users.
-
-### 2.8 No CI, so nothing enforces the 487 tests
-
-There is **no `.github/` directory** (verified absent). The three suites in
-[CLAUDE.md](../../CLAUDE.md#tests) run only when someone remembers. Given the
-project's defining risk — the game engine is implemented **three times**
-([`game_logic.py`](../../backend/game/game_logic.py),
-[`gameLogic.js`](../../frontend/src/utils/gameLogic.js),
-[`logic.js`](../../mobile/src/game/logic.js)) and they must stay in sync — an
-unenforced test suite is the single highest-leverage gap in the list.
-
-**Fix.** A GitHub Actions workflow running all three suites plus
-`npm run build` (which nothing currently exercises) and `manage.py check
---deploy` on every push. Block merges on it.
-
-### 2.9 No deployment manifest of any kind
-
-No Dockerfile, docker-compose, Procfile, `render.yaml`, `fly.toml`,
-`railway.json`, `vercel.json`, or `netlify.toml` exists in the tree. The deploy
-is currently "whatever someone types into a server," which is unrepeatable and
-undocumented.
-
-**Fix.** Commit one Dockerfile (or platform manifest) with an explicit release
-command — `migrate && collectstatic` then `gunicorn backgammon.wsgi`. Document
-the required env vars alongside it: `DJANGO_SECRET_KEY`, `DJANGO_DEBUG`,
-`DJANGO_ALLOWED_HOSTS`, `DATABASE_URL`, `CORS_ORIGINS`, `CSRF_ORIGINS`,
-`SENTRY_DSN`.
-
-### 2.10 Django admin is publicly exposed
-
-[`urls.py:5`](../../backend/backgammon/urls.py) mounts `admin/` at a predictable
-path with no IP allowlist, no 2FA, and — per 1.10 — no login throttling. Admin
-compromise means total control of every account and game.
+[`backgammon/urls.py:7`](../../backend/backgammon/urls.py) mounts `admin/` with no
+IP allowlist and no 2FA. And note **DRF throttles do not cover it** — the admin
+login is a plain Django view, so the `login` scope
+([`views.py:98`](../../backend/game/views.py)) protects `/api/auth/login/` only.
+Admin compromise is total compromise.
 
 **Fix.** Move it to a non-obvious path, restrict by IP or put it behind the
-platform's auth proxy, enforce a strong superuser password, and (once 1.10 lands)
-confirm throttling covers the admin login form as well as the API.
+platform's auth proxy, and add `django-axes` (or equivalent) if you want lockout
+on the admin form specifically.
 
-### 2.11 No database backups
+### 2.6 No email on accounts, so there is no password recovery
 
-Follows from 1.4 but deserves its own line: nothing in the repo or docs describes
-a backup or restore procedure. Losing the accounts table loses every player's
-history permanently.
+`RegisterSerializer` ([`serializers.py:191–224`](../../backend/game/serializers.py))
+takes username + password only. No email verification, no password reset, no
+password-change endpoint. A user who forgets their password loses their entire
+match history and you handle it by hand — and account deletion now requires the
+password ([`AccountDeleteSerializer`, `serializers.py:165–188`](../../backend/game/serializers.py)),
+so a forgotten password blocks self-service deletion too, which is exactly the
+flow store reviewers test.
 
-**Fix.** Enable the managed database's automated backups, and — critically —
-**test a restore once** before launch. Untested backups are not backups.
+**Fix.** Optional-but-encouraged email at registration plus Django's
+password-reset flow (needs an email backend: SES, Postmark, Resend).
+Verification can wait; recovery cannot.
 
----
+### 2.7 No error monitoring
 
-## 3. Nice-to-have / post-launch
+`LOGGING` ([`settings.py:263–302`](../../backend/backgammon/settings.py)) writes
+structured logs to stdout, which every container platform captures — that gap is
+closed. But there is still no Sentry/Rollbar integration (grep for `sentry`
+across `backend/` returns nothing outside `venv/`) and no `ADMINS` email, so a
+500 notifies nobody. You'd learn about outages from players.
 
-- **Web client has no auto-refresh.** Mobile polls ~3.5s
-  ([`useGame.js`](../../mobile/src/game/useGame.js)); the web client requires a
-  manual reload to see an opponent's move. Fine for hotseat, poor for online play.
-  Polling is the cheap fix; WebSockets/Channels is the real one (currently listed
-  under **Planned** in [CLAUDE.md](../../CLAUDE.md)).
-- **Polling cost.** Every active mobile game is ~17 requests/minute against an
-  unpaginated, uncached endpoint. Add caching or conditional requests (ETag /
-  `If-Modified-Since`) before this becomes a bill.
-- **No matchmaking.** Online play is link/code only. Expect low engagement from
-  solo installs — a store user with no friend to send a link to has nothing to do
-  online. See [overview.md](../architecture/overview.md).
-- **Web PWA polish.** [`frontend/public/`](../../frontend/public/) contains only
-  `index.html` — no favicon, `manifest.json`, `robots.txt`, Open Graph tags, or
-  `<meta name="description">`. Shared game links will preview as a bare URL, and
-  the tab title is just "Backgammon"
-  ([`index.html:6`](../../frontend/public/index.html)).
-- **The higher-die rule is still only enforced during bear-off** (see
-  [game-logic.md](../architecture/game-logic.md)). A knowledgeable player will
-  notice and report it as a bug. Worth closing before a rules-literate audience
-  finds it.
+**Fix.** `sentry-sdk[django]` is ~10 lines plus a DSN env var. Tag the
+release/environment so web and mobile errors are distinguishable.
+
+### 2.8 CI doesn't run `check --deploy` or the web build
+
+[`ci.yml`](../../.github/workflows/ci.yml) runs all three suites, but the comment
+at [`ci.yml:56–62`](../../.github/workflows/ci.yml) declines to run
+`manage.py check --deploy` on the grounds that "the env var contract doesn't
+exist in the repo yet." **That is now stale** — the contract exists
+([`backend/.env.example`](../../backend/.env.example)) and a production-shaped
+run passes clean. `npm run build` is also never exercised, so a build-only
+breakage (CRA is stricter than the test transform) reaches you at deploy time.
+
+**Fix.** Add a `check --deploy` step with `DEBUG=False`, a throwaway
+`SECRET_KEY`, and `ALLOWED_HOSTS=example.com`, plus a `npm run build` step in the
+web job. Delete the stale comment.
+
+### 2.9 No OTA updates: `expo-updates` is not installed
+
+[`eas.json:27,37`](../../mobile/eas.json) declare `"channel": "preview"` and
+`"channel": "production"`, but `expo-updates` is absent from
+[`mobile/package.json`](../../mobile/package.json) and
+[`app.json`](../../mobile/app.json) has no `runtimeVersion` or `updates` block.
+The channels are inert — every JS fix needs a full store resubmission and review.
+For a client that re-implements the rules engine locally, that is a slow path for
+a rules bug.
+
+**Fix.** `npx expo install expo-updates`, set a `runtimeVersion` policy, verify
+`eas update` publishes to the right channel.
+
+### 2.10 Rules and API surface
+
+- **The higher-die rule is enforced only during bear-off.**
+  `higher_die_required_moves` is server-only and bear-off-scoped; the official
+  rule is general. See [game-logic.md](../architecture/game-logic.md). A
+  rules-literate player will report it as a bug.
 - **`move_checker` is dead API surface.** No client uses it
-  ([CLAUDE.md](../../CLAUDE.md)); it is extra attack surface for zero benefit.
-  Consider removing it rather than maintaining it.
-- **Repo hygiene.** `mobile/MOBILE_PROGRESS.md` and `mobile/.claude/settings.json`
-  are tracked (`git ls-files mobile/`); the former is scratch session notes that
-  probably belong outside the repo.
+  ([`views.py:637`](../../backend/game/views.py)); it is extra attack surface for
+  zero benefit. Consider removing it.
+- **Web online play has no auto-refresh.** Mobile polls ~3.5s
+  ([`useGame.js`](../../mobile/src/game/useGame.js)); the web client needs a
+  manual reload to see an opponent's move or a pending double. Polling is the
+  cheap fix; WebSockets is the real one (**Planned**, see
+  [CLAUDE.md](../../CLAUDE.md)).
+
+### 2.11 Polish and hygiene
+
+- **Web page metadata.** [`frontend/public/`](../../frontend/public/) contains only
+  `index.html` — no favicon, `manifest.json`, `robots.txt`, Open Graph tags, or
+  `<meta name="description">`, and the title is just "Backgammon". Shared game
+  links preview as a bare URL.
+- **Tracked scratch files.** `git ls-files` still shows
+  `mobile/MOBILE_PROGRESS.md` and `mobile/.claude/settings.json`; the former is
+  session notes that probably belong outside the repo.
 - **Mobile version numbers.** [`app.json`](../../mobile/app.json) declares
-  `version 1.0.0`, `buildNumber "1"`, `versionCode 1`, but
-  [`eas.json:4`](../../mobile/eas.json) sets `"appVersionSource": "remote"` with
-  `autoIncrement` on the production profile — so EAS, not the file, owns build
-  numbers. Harmless, but know which one is authoritative before you debug a
-  rejected upload.
-- **No load testing.** You have no idea what concurrency the stack survives. One
-  `locust`/`k6` run against the deployed API before launch would be cheap
-  insurance.
+  `version 1.0.0` / `buildNumber "1"` / `versionCode 1`, but
+  [`eas.json:15`](../../mobile/eas.json) sets `"appVersionSource": "remote"` with
+  `autoIncrement` on production — EAS, not the file, owns build numbers. Harmless
+  once you know which is authoritative.
+- **No load testing.** Nobody knows what concurrency this survives. One `k6` or
+  `locust` run against the deployed API is cheap insurance.
+- **No matchmaking.** Online play is link/code only, so a store user with no
+  friend to send a link to has nothing to do online. A product risk, not a
+  technical blocker. See [overview.md](../architecture/overview.md).
 
 ---
 
-## Minimum path to launch
+## 3. Done
 
-If you want the shortest honest sequence:
+Closed since the first audit. Recorded so the next reader doesn't redo them —
+each was verified by reading the file, not by trusting a changelog.
 
-1. **Backend config** — 1.1, 1.2, 1.3, 1.5, 1.6, 1.7 in one settings refactor
-   driven by env vars; re-run `manage.py check --deploy` until clean.
-2. **Postgres + deploy manifest** — 1.4 and 2.9; deploy, verify migrations,
-   turn on backups (2.11).
-3. **Lock the doors** — 1.10 throttling, 2.1 password validators, 2.2 token
-   blacklist, 2.10 admin, 2.3 Sentry, 2.4 healthz.
-4. **Web** — resolve 1.8, then deploy and smoke-test the real build artifact.
-5. **Mobile** — resolve 1.9, `eas build --profile preview`, test on a device off
-   the dev network.
-6. **Legal + store** — 1.11: policy, terms, account deletion, screenshots,
-   Data Safety / App Privacy, then submit.
-
-Add CI (2.8) at step 1 so everything after it is verified continuously.
+1. **Settings are fully env-driven.** `SECRET_KEY` from the environment, with a
+   dev fallback and a hard `ImproperlyConfigured` when `DEBUG=False`
+   ([`settings.py:55–67`](../../backend/backgammon/settings.py)); `DEBUG`,
+   `ALLOWED_HOSTS`, `DATABASE_URL`, CORS/CSRF origins, throttle rates, HSTS, and
+   log level all read via `env_bool` / `env_list` helpers. `python-dotenv` loads
+   an optional `backend/.env`. **Local dev still needs no `.env` at all** —
+   every default is the previous hardcoded value.
+2. **`check --deploy` is clean.** Zero issues with `DEBUG=False`, down from six.
+   The whole `SECURE_*` block — SSL redirect, proxy SSL header, HSTS with
+   subdomains + preload, secure session/CSRF cookies, nosniff, referrer policy,
+   `X_FRAME_OPTIONS = DENY` — is gated on `not DEBUG`
+   ([`settings.py:239–250`](../../backend/backgammon/settings.py)), with
+   `/healthz/` exempted from the HTTPS redirect for in-network probes.
+3. **Dependencies pinned and production-complete.**
+   [`requirements.txt`](../../backend/requirements.txt) pins exact versions and
+   adds `gunicorn`, `whitenoise`, `dj-database-url`, `psycopg2-binary`,
+   `python-dotenv`.
+4. **Postgres is a config change, not a code change** — `DATABASE_URL` via
+   `dj-database-url` with `conn_max_age`, health checks, and optional SSL
+   ([`settings.py:126–133`](../../backend/backgammon/settings.py)). (Provisioning
+   is still owner work — [1.1](#11-pick-a-host-and-provision-postgresql).)
+5. **Static files work.** `STATIC_ROOT`, WhiteNoise middleware immediately after
+   `SecurityMiddleware`, and `CompressedManifestStaticFilesStorage` outside
+   `DEBUG` ([`settings.py:88–99, 151–174`](../../backend/backgammon/settings.py)).
+6. **Deploy manifests exist.** Root [`Dockerfile`](../../Dockerfile) (non-root
+   user, build-time `collectstatic`, `HEALTHCHECK`, `migrate` + gunicorn),
+   [`Procfile`](../../Procfile), [`.dockerignore`](../../.dockerignore) (excludes
+   `.env`, `db.sqlite3`, `venv/`, `node_modules/`), and an annotated
+   [`backend/.env.example`](../../backend/.env.example).
+7. **`/healthz/` exists** — [`backgammon/health.py`](../../backend/backgammon/health.py),
+   unauthenticated, `never_cache`, `SELECT 1`, 200/503, wired at
+   [`urls.py:10`](../../backend/backgammon/urls.py).
+8. **Generic write verbs are gone.** Both viewsets dropped `ModelViewSet` for
+   explicit Create/List/Retrieve mixins
+   ([`views.py:366–371`](../../backend/game/views.py),
+   [`views.py:511–516`](../../backend/game/views.py)), so `PUT`/`PATCH`/`DELETE`
+   on games and matches are 405 rather than unguarded. Covered by
+   `WriteVerbsRemovedTest` in
+   [`test_hardening.py`](../../backend/game/tests/test_hardening.py).
+9. **`next_game` is permission-checked** — `_match_permission_error`
+   ([`views.py:289–318`](../../backend/game/views.py)), called before any state
+   check, with the participant/stranger/anonymous matrix tested.
+10. **Registration runs `AUTH_PASSWORD_VALIDATORS`.** `RegisterSerializer.validate`
+    ([`serializers.py:200–221`](../../backend/game/serializers.py)) calls
+    `password_validation.validate_password` with a `User(username=...)` so the
+    similarity validator works, and re-raises as a DRF field error. `"password"`
+    and `"12345678"` are now rejected.
+11. **Account deletion exists, end to end.** `DELETE /api/auth/me/`
+    ([`MeView`, `views.py:174–218`](../../backend/game/views.py)) requires the
+    account's own password, blacklists every outstanding refresh token
+    (`_blacklist_refresh_tokens`), purges unjoined lobby adverts, and anonymises
+    rather than cascades game history. UI on both clients
+    ([`DeleteAccountPanel.jsx`](../../frontend/src/components/DeleteAccountPanel.jsx),
+    [`DeleteAccountSection.jsx`](../../mobile/src/components/DeleteAccountSection.jsx)),
+    with a dedicated backend suite
+    ([`test_account_deletion.py`](../../backend/game/tests/test_account_deletion.py)).
+    This is the App Store / Play requirement. **But see
+    [2.1](#21-a-deleted-accounts-seat-becomes-an-anonymous-playable-guest-seat)**
+    — the feature opened a permission hole.
+12. **List endpoints are paginated** — `BareListPagination`
+    ([`views.py:40–62`](../../backend/game/views.py)), 100/page, `?page_size=` up
+    to 200. It returns a **bare JSON array, not DRF's
+    `{count, next, previous, results}` envelope**, deliberately: both clients
+    `.map()` over the response and an envelope would break the lobby on web and
+    silently empty it on mobile.
+13. **Auth endpoints are throttled.** Global anon/user rates plus scoped limits
+    on login (`10/hour`), register (`5/hour`), and refresh (`60/hour`)
+    ([`settings.py:201–224`](../../backend/backgammon/settings.py);
+    `LoginView` / `RegisterView` / `RefreshView`,
+    [`views.py:90–120`](../../backend/game/views.py)). `OptionalScopedRateThrottle`
+    treats a missing rate as unthrottled instead of a 500, and reads
+    `api_settings` live so the rates are testable. Rates are auto-disabled under
+    `manage.py test`. **Caveat: the counters are per-process — see
+    [2.3](#23-throttle-counters-are-per-process).**
+14. **Refresh tokens rotate and are revocable.** `token_blacklist` in
+    `INSTALLED_APPS` ([`settings.py:83`](../../backend/backgammon/settings.py)),
+    `ROTATE_REFRESH_TOKENS` + `BLACKLIST_AFTER_ROTATION`
+    ([`settings.py:226–233`](../../backend/backgammon/settings.py)).
+15. **Logging is configured** — console handler, `LOG_LEVEL` env var, and
+    `django.request` pinned to WARNING outside dev so the suite stays readable
+    ([`settings.py:261–302`](../../backend/backgammon/settings.py)).
+16. **The web build can reach a remote API.** `REACT_APP_API_BASE_URL` +
+    `apiUrl()` ([`frontend/src/api/config.js`](../../frontend/src/api/config.js)),
+    used by `apiClient.js` **and** by the raw refresh `fetch` in `authApi.js`
+    that bypasses it. [`frontend/.env.example`](../../frontend/.env.example)
+    documents it, with tests in `api/__tests__/config.test.js`.
+17. **The mobile build can reach a remote API, and fails loudly if it can't.**
+    `resolveApiConfig` ([`mobile/src/api/config.js:58–127`](../../mobile/src/api/config.js))
+    implements the documented precedence chain, rejects relative URLs, rejects
+    plaintext `http://` in release builds (iOS ATS / Android
+    `usesCleartextTraffic`), and surfaces a configuration error instead of
+    silently pointing at loopback. `assertApiConfigured()` routes the failure
+    into the UI's normal error path.
+18. **CI exists.** [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml)
+    runs backend / web / mobile as three jobs on every push and PR, with
+    concurrency cancellation and the correct per-suite invocation (`npm test --`
+    for CRA, bare `npx jest` for Expo — swapping them fails confusingly).
+19. **Legal drafts written** — [`privacy-policy.md`](../legal/privacy-policy.md),
+    [`terms-of-service.md`](../legal/terms-of-service.md), and a
+    [README](../legal/README.md) listing what stands between drafts and
+    publication. Honest about what the app actually collects. Publishing them is
+    owner work ([1.5](#15-publish-the-legal-documents)).

@@ -14,7 +14,7 @@ gammon/backgammon detection. Both clients talk to the same backend.
 - **Gammon / backgammon detection** — worth 2 and 3 points respectively
 - **Doubling cube** — offer/accept/drop before rolling, cube ownership, redoubles to 64, points multiplied by cube value, Crawford rule in match play
 - **Game over screen** — shows win type, points awarded, and running match score
-- **User accounts** — register/login, JWT auth, win/loss and stats tracking
+- **User accounts** — register/login, JWT auth, win/loss and stats tracking, and self-serve account deletion (your games are anonymised, not destroyed, so opponents keep their history)
 - **Profile page** — lifetime stats: games, wins, losses, gammons, backgammons, points won/lost, win %, gammon rate
 - **Online play** — create an online game, share a deep link, join by code, open-games list
 - **Turn-ownership security** — the server rejects gameplay actions (403) from anyone who doesn't own the current seat; online, the mobile app also gates its UI so a device only acts on the seat it owns and only on its turn (read-only "waiting"/"spectating" views otherwise)
@@ -43,16 +43,24 @@ This README is the setup and feature tour. Deeper reference lives in
 | [data-model.md](docs/architecture/data-model.md) | Django models and schema |
 | [auth.md](docs/architecture/auth.md) | Accounts, JWT, token lifecycle |
 | [going-live.md](docs/operations/going-live.md) | What's left before this can ship |
+| [legal/](docs/legal/README.md) | Draft privacy policy and terms (need your details filled in) |
 
 [`CLAUDE.md`](CLAUDE.md) is the working brief for AI coding sessions.
 
 ## Project status
 
-Feature-complete for local and link-based online play, with 487 passing tests —
-but **it has never been deployed, and cannot be as configured.** `DEBUG` is on,
-the `SECRET_KEY` is committed, the database is SQLite, and neither client can
-reach a non-local backend in a production build. See
-[going-live.md](docs/operations/going-live.md) for the full checklist.
+Feature-complete for local and link-based online play, with **617 passing tests**
+and CI running all three suites on every push.
+
+The app is now **deployable but not deployed.** Settings are env-driven,
+`manage.py check --deploy` passes clean, gunicorn/whitenoise/Postgres support and
+a `Dockerfile`/`Procfile` are in place, and both clients can be pointed at a
+remote backend. What's left genuinely needs decisions only you can make: choosing
+a host, provisioning a database, a domain and TLS, and filling in the `[TODO]`
+markers in the [legal drafts](docs/legal/README.md) before store submission. The
+full checklist lives in [going-live.md](docs/operations/going-live.md).
+
+**Local development still needs zero configuration** — no `.env` file required.
 
 ---
 
@@ -156,7 +164,7 @@ auto-incrementing version).
 
 ## Running tests
 
-### Backend (232 tests)
+### Backend (296 tests)
 
 ```bash
 cd backend
@@ -166,7 +174,7 @@ python manage.py test game.tests
 
 The runner uses an in-memory database, so you don't need to reset the dev DB.
 
-### Web frontend (172 tests, Jest + React Testing Library)
+### Web frontend (207 tests, Jest + React Testing Library)
 
 ```bash
 cd frontend
@@ -177,7 +185,7 @@ Covers the game-logic port, the `useGame` staged-turn hook, the board / dice /
 controls components, and the auth stack (token storage, `register`/`login`/
 `fetchMe`/refresh, the 401 refresh-retry, and the login/register pages).
 
-### Mobile (83 tests, Jest + React Native Testing Library)
+### Mobile (114 tests, Jest + React Native Testing Library)
 
 ```bash
 cd mobile
@@ -233,7 +241,7 @@ seat-permission rules — lives in
 | GET/POST | `/api/games/` | List all games (unpaginated) / create game |
 | GET | `/api/games/?status=waiting` | Open lobby games |
 | GET | `/api/games/{id}/` | Game detail (includes `viewer_seat` / `viewer_is_participant` for the requester) |
-| PUT/PATCH/DELETE | `/api/games/{id}/` | Update / delete a game — **live and unguarded**, see note below |
+| DELETE | `/api/auth/me/` | Delete your account (requires your password) |
 | POST | `/api/games/{id}/join/` | Join a waiting game |
 | POST | `/api/games/{id}/roll_dice/` | Roll dice for current turn |
 | POST | `/api/games/{id}/move_checker/` | Apply one move (legacy — no client uses it) |
@@ -242,14 +250,18 @@ seat-permission rules — lives in
 | POST | `/api/games/{id}/respond_to_double/` | Accept (`{"accept": true}`) or drop a pending double |
 | GET/POST | `/api/matches/` | List matches / create match (also creates the match's first game; `target_points` must be 3, 5, 7, or 9) |
 | GET | `/api/matches/{id}/` | Match detail + current score |
-| PUT/PATCH/DELETE | `/api/matches/{id}/` | Update / delete a match — **live and unguarded** |
-| POST | `/api/matches/{id}/next_game/` | Start the next game in a match |
+| POST | `/api/matches/{id}/next_game/` | Start the next game in a match (seat-enforced) |
 | POST | `/api/matches/{id}/join/` | Join a match that has no second player yet |
+| GET | `/healthz/` | Health check — DB connectivity, no auth |
 
-> ⚠️ **Not production-ready as it stands.** Games and matches are plain DRF
-> `ModelViewSet`s, so the update/delete verbs are exposed with no permission
-> check, `next_game` has no seat enforcement, and `GET /api/games/` is public and
-> unpaginated. These and the rest of the launch blockers are catalogued in
+Games and matches expose only list / retrieve / create plus the seat-enforced
+custom actions; `PUT` / `PATCH` / `DELETE` are not routed at all (405). List
+endpoints are paginated (`?page=`, `?page_size=`) but still return a bare JSON
+array, so clients need no envelope handling.
+
+> ⚠️ **`GET /api/games/` remains public and unscoped.** Pagination bounds each
+> response, but anyone can page through every game. Scoping it would break guest
+> hotseat resume, so it's a deliberate open item — see
 > [`docs/operations/going-live.md`](docs/operations/going-live.md).
 
 `viewer_seat` (`"p1"` / `"p2"` / `"p1p2"` / `null`) is a server-side ownership
