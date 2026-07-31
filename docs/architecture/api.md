@@ -21,18 +21,28 @@ Related: [auth.md](auth.md) (token lifecycle), [data-model.md](data-model.md)
   only authentication class in
   [`settings.py`](../../backend/backgammon/settings.py)
   (`rest_framework_simplejwt.authentication.JWTAuthentication`).
-- **Default permission is `AllowAny`.** `GET /api/auth/me/` is the *only*
-  endpoint with `IsAuthenticated`. Everything else accepts anonymous requests —
+- **Default permission is `AllowAny`.** `/api/auth/me/` (`MeView`, both `GET`
+  and `DELETE`) is the *only* route with `IsAuthenticated`. Everything else
+  accepts anonymous requests —
   guest play depends on it. Authorization for gameplay is per-action seat
   enforcement, not a permission class (see [Seat enforcement](#seat-enforcement)).
-- **Token lifetimes** (`SIMPLE_JWT`): access **1 hour**, refresh **7 days**. No
-  rotation, no blacklist.
-- **CORS** (`django-cors-headers`): `CORS_ALLOWED_ORIGINS = ["http://localhost:3000"]`
-  — the CRA dev server only. Credentials are not enabled. Native clients (Expo)
+- **Token lifetimes** (`SIMPLE_JWT`): access **1 hour**, refresh **7 days**.
+  `ROTATE_REFRESH_TOKENS` and `BLACKLIST_AFTER_ROTATION` are both on, backed by
+  the `rest_framework_simplejwt.token_blacklist` app.
+- **CORS** (`django-cors-headers`): `CORS_ALLOWED_ORIGINS` defaults to
+  `["http://localhost:3000"]` — the CRA dev server only — and is overridable by
+  env var. Credentials are not enabled. Native clients (Expo)
   send no `Origin` and are unaffected; a browser served from a LAN IP would be
   blocked until that origin is added.
-- **No pagination, no throttling.** List endpoints return a bare JSON array.
-  `DEFAULT_PAGINATION_CLASS` and throttle classes are unset.
+- **Pagination without an envelope.** `BareListPagination` caps every list
+  response at **100** items (`?page=N`, `?page_size=` up to **200**) but returns
+  a **bare JSON array**, not DRF's `{count, next, previous, results}` — both
+  clients consume these endpoints as arrays.
+- **Throttling is on.** DRF's `anon`/`user` rates apply globally
+  (`120/min` / `240/min` by default), plus scoped rates on the auth views:
+  `login` `10/hour`, `register` `5/hour`, `refresh` `60/hour`. All rates are
+  env-overridable and are **disabled while running the test suite**. Over the
+  limit → **429**.
 - **Ordering:** both `Game` and `Match` use `Meta.ordering = ["-created_at", "-id"]`,
   so lists are newest-first.
 - **Error bodies:** custom actions return `{"error": "<message>"}`. DRF's own
@@ -49,10 +59,11 @@ Related: [auth.md](auth.md) (token lifecycle), [data-model.md](data-model.md)
 | `POST` | `/api/auth/login/` | none |
 | `POST` | `/api/auth/refresh/` | none (refresh token in body) |
 | `GET` | `/api/auth/me/` | **required** |
+| `DELETE` | `/api/auth/me/` | **required** (+ password in body) |
 | `GET` | `/api/games/` | optional |
 | `POST` | `/api/games/` | optional |
 | `GET` | `/api/games/{id}/` | optional |
-| `PUT`/`PATCH`/`DELETE` | `/api/games/{id}/` | optional (unused by clients) |
+| `PUT`/`PATCH`/`DELETE` | `/api/games/{id}/` | **not routed** — 405 |
 | `POST` | `/api/games/{id}/join/` | optional |
 | `POST` | `/api/games/{id}/roll_dice/` | seat-enforced |
 | `POST` | `/api/games/{id}/move_checker/` | seat-enforced (legacy) |
@@ -62,9 +73,15 @@ Related: [auth.md](auth.md) (token lifecycle), [data-model.md](data-model.md)
 | `GET` | `/api/matches/` | optional |
 | `POST` | `/api/matches/` | optional |
 | `GET` | `/api/matches/{id}/` | optional |
-| `PUT`/`PATCH`/`DELETE` | `/api/matches/{id}/` | optional (unused by clients) |
-| `POST` | `/api/matches/{id}/next_game/` | none (not seat-enforced) |
+| `PUT`/`PATCH`/`DELETE` | `/api/matches/{id}/` | **not routed** — 405 |
+| `POST` | `/api/matches/{id}/next_game/` | participant-enforced |
 | `POST` | `/api/matches/{id}/join/` | optional |
+
+One route sits outside `/api/`: `GET /healthz/` (wired in
+[`backgammon/urls.py`](../../backend/backgammon/urls.py) →
+[`health.py`](../../backend/backgammon/health.py)), no auth, for platform health
+checks. **200** `{"status": "ok", "database": "ok"}`, or **503** with
+`"status": "error"` when the DB is unreachable.
 
 ---
 
@@ -82,10 +99,10 @@ pair immediately** — no second login round-trip.
 
 **201** → `{ "user": <UserSerializer>, "refresh": "<jwt>", "access": "<jwt>" }`
 
-**400** — username taken (`"Username already taken."`) or password shorter than
-8 characters. Django's `AUTH_PASSWORD_VALIDATORS` are **not** applied here;
-`RegisterSerializer` calls `User.objects.create_user` directly, so only the
-serializer's `min_length=8` and uniqueness checks run.
+**400** — username taken (`"Username already taken."`), password shorter than 8
+characters, or any failure from Django's `AUTH_PASSWORD_VALIDATORS`, which
+`RegisterSerializer.validate` runs explicitly (`create_user` does not) and
+re-raises keyed on `"password"` as a normal DRF field error.
 
 ### `POST /api/auth/login/`
 
@@ -97,8 +114,10 @@ Stock SimpleJWT `TokenObtainPairView`. Body `{ "username", "password" }`.
 
 Stock SimpleJWT `TokenRefreshView`. Body `{ "refresh" }`.
 
-**200** → `{ "access" }` · **401** if the refresh token is invalid/expired.
-No rotation — the same refresh token stays usable for its full 7 days.
+**200** → `{ "access", "refresh" }` · **401** if the refresh token is
+invalid/expired or has been blacklisted. Rotation is on: each call mints a
+**new** refresh token and blacklists the one it replaced, so a refresh token is
+single-use.
 
 ### `GET /api/auth/me/`
 
@@ -110,6 +129,41 @@ No rotation — the same refresh token stays usable for its full 7 days.
 Only `status="finished"` games count, across both seats.
 
 **401** when the header is missing or the token is invalid/expired.
+
+### `DELETE /api/auth/me/`
+
+`MeView.destroy` + `AccountDeleteSerializer`, `IsAuthenticated`. Permanently
+deletes **the bearer's own** account — `get_object` returns `request.user`, so
+the endpoint is structurally incapable of naming someone else's account (extra
+`username`/`id` keys in the body are ignored).
+
+| Field | Type | Required |
+|-------|------|----------|
+| `password` | string (write-only) | yes — the caller's *current* password |
+
+The password re-check is deliberate: a bearer token proves only that a session is
+open, not that the person is present. In order, `destroy` then blacklists every
+outstanding refresh token for the user, deletes their **unstarted** lobby entries
+(`waiting` games, never-joined matches), flags every remaining seat they hold as
+**closed** (`player*_deleted`), and finally calls `user.delete()`.
+
+Everything else survives: user FKs are `on_delete=SET_NULL`, so each seat is
+*anonymised* — names, boards, winners, scores and match history stay intact and
+the opponent's stats are unchanged. See
+[data-model.md](data-model.md#closed-seats-player_deleted) for what a closed seat
+means and why such a game deadlocks rather than forfeiting.
+
+**204** → no body. The account is gone; access tokens 401 immediately (the user
+row no longer resolves) and refresh tokens 401 as blacklisted.
+
+| Status | Trigger |
+|--------|---------|
+| 400 | `{"password": ["Password is incorrect."]}` — wrong password; nothing is deleted or blacklisted |
+| 400 | `{"password": ["This field is required."]}` — password omitted |
+| 401 | missing/invalid bearer token |
+
+Covered by
+[`test_account_deletion.py`](../../backend/game/tests/test_account_deletion.py).
 
 ---
 
@@ -126,6 +180,7 @@ fields. Key fields:
 | `match` | int \| null | read-only; set only by the match flow |
 | `player1_user` / `player2_user` | int \| null | read-only; null = guest seat |
 | `player1_name` / `player2_name` | string | the only writable fields |
+| `player1_deleted` / `player2_deleted` | bool | read-only; `true` = **closed seat** (its registered owner deleted their account) |
 | `board_state` | object | `{ "points": int[24], "bar": {p1,p2}, "off": {p1,p2} }` |
 | `current_turn` | `"p1"` \| `"p2"` | read-only |
 | `dice_values` | int[] | `[]` = not rolled; doubles are 4 identical values |
@@ -142,7 +197,11 @@ fields. Key fields:
 | `viewer_is_participant` | bool | `viewer_seat is not None` |
 
 Everything except `player1_name`/`player2_name` is in `read_only_fields`, so a
-write request can only ever set those two.
+write request can only ever set those two. `player1_deleted`/`player2_deleted`
+are exposed so a client can show "this player deleted their account" instead of
+leaving the opponent waiting on a turn that never comes, but they are read-only
+like the rest — writable, a caller could close a seat at create time and grief
+the other player.
 
 **`viewer_seat` semantics.** Computed by matching the *requesting authenticated
 user's* id against `player1_user_id` / `player2_user_id`:
@@ -161,7 +220,8 @@ in [`test_lobby.py`](../../backend/game/tests/test_lobby.py).
 
 **200** → array of games. Optional filter `?status=waiting|active|finished`
 (exact match on `status`; any other query param is ignored). `?status=waiting`
-is the lobby / open-games list. No pagination.
+is the lobby / open-games list. Paginated at 100 per page (bare array — see
+[Conventions](#conventions)).
 
 ### `POST /api/games/`
 
@@ -185,9 +245,11 @@ Server sets `board_state` to the initial position, `current_turn="p1"`,
 
 ### `PUT` / `PATCH` / `DELETE /api/games/{id}/`
 
-Exposed by `ModelViewSet` but used by no client and guarded by no seat check.
-Writes can only touch `player1_name` / `player2_name` (everything else is
-read-only); `DELETE` destroys the game unconditionally.
+**Not routed — 405.** `GameViewSet` is deliberately assembled from the create /
+list / retrieve mixins rather than being a `ModelViewSet`: the generic write
+verbs were previously exposed with no seat check at all, letting any caller
+overwrite a board mid-game or delete someone else's game. All state changes go
+through the custom actions below, which enforce seat ownership.
 
 ### `POST /api/games/{id}/join/`
 
@@ -358,20 +420,22 @@ permission check, so a non-participant hitting a finished game gets 400, not 403
 
 `MatchSerializer`, `fields = "__all__"` plus `current_game_id`:
 `id`, `player1_user`, `player2_user`, `player1_name`, `player2_name`,
+`player1_deleted`, `player2_deleted`,
 `target_points`, `player1_score`, `player2_score`,
 `status` (`"active"`/`"finished"`), `winner` (`"p1"`/`"p2"`/null),
 `created_at`, `updated_at`, `current_game_id`.
 
 `current_game_id` resolves to the match's first `status="active"` game, falling
 back to its most recent game, else null. Writable fields: `player1_name`,
-`player2_name`, `target_points` — everything else is read-only.
+`player2_name`, `target_points` — everything else is read-only, including the
+two `player*_deleted` closed-seat flags (same meaning as on `Game`).
 
 `MatchSerializer` has **no `viewer_seat`**; that field is game-only.
 
 ### `GET /api/matches/`
 
-**200** → array of all matches. No `?status` filter (unlike games) and no
-pagination.
+**200** → array of matches. No `?status` filter (unlike games); paginated at 100
+per page like `/api/games/`.
 
 ### `POST /api/matches/`
 
@@ -394,18 +458,32 @@ winner moves first (`"p1"` if there is no finished game yet).
 
 Assigns `crawford_game=True` when a player has just reached match point
 (`target_points − 1` equals either score) **and** no game in the match is already
-flagged Crawford — exactly one Crawford game per match.
+flagged Crawford — exactly one Crawford game per match. It also copies the
+match's `player1_deleted` / `player2_deleted` onto the new game, so a closed seat
+stays closed instead of reappearing as a guest seat on a fresh board.
 
 **201** → the new game (`GameSerializer`).
 
 | Status | Trigger |
 |--------|---------|
+| 403 | `_match_permission_error` (see below) — checked first |
 | 400 | `"Match is already finished."` |
 | 400 | `"A game is already in progress."` — an `active` or `waiting` game exists |
 | 404 | unknown id |
 
-**No seat enforcement** — any caller, including anonymous, can start the next
-game of any match.
+**Participant enforcement.** `_match_permission_error` is the match-level lift of
+the seat rule: a request is allowed if the caller could act for *either* seat.
+
+| Requester | Result |
+|-----------|--------|
+| a registered participant (owns either seat) | allowed |
+| any other logged-in account | 403 `"You are not a participant in this match."` |
+| anonymous, ≥ 1 seat null **and not closed** | allowed (guest/hotseat matches) |
+| anonymous, both seats registered *or* closed | 403 `"This match belongs to registered players. Log in to continue it."` |
+
+A **closed** seat does not count as a guest seat despite its null FK — otherwise
+deleting an account would silently open every match you were in to anonymous
+callers.
 
 ### `POST /api/matches/{id}/join/`
 
@@ -438,6 +516,7 @@ five gameplay actions (`roll_dice`, `move_checker`, `confirm_turn`,
 
 | Seat FK | Requester | Result |
 |---------|-----------|--------|
+| **null + `player*_deleted`** (closed) | **anyone, including the surviving opponent** | **403** `"This player deleted their account — their seat is closed."` |
 | registered user | that user | allowed |
 | registered user | the other participant | 403 `"It's not your turn."` |
 | registered user | another logged-in account | 403 `"You are not a participant in this game."` |
@@ -445,6 +524,16 @@ five gameplay actions (`roll_dice`, `move_checker`, `confirm_turn`,
 | null (guest) | anonymous | **allowed** |
 | null (guest) | a participant of this game | allowed (covers hotseat) |
 | null (guest) | another logged-in account | 403 `"You are not a participant in this game."` |
+
+The closed-seat row is checked **first**, before every other branch. A seat is
+closed when its flag is true *and* its FK is null — i.e. a registered player was
+there and deleted their account (`DELETE /api/auth/me/`). Without it the null FK
+would fall through to the guest rule and the seat would become anonymously
+playable by anyone holding the game id. The surviving opponent is refused too:
+they satisfy the participant test on the orphaned seat and could otherwise play
+both sides of the board. Consequence: such a game **deadlocks** — no action on
+the closed seat ever succeeds and nothing auto-forfeits it. See
+[data-model.md](data-model.md#closed-seats-player_deleted).
 
 Consequences worth knowing:
 
@@ -455,11 +544,14 @@ Consequences worth knowing:
 - The **web UI does not gate** locally — an unauthorized click surfaces the
   server's 403. Mobile hides controls via
   [`gating.js`](../../mobile/src/game/gating.js) as UX on top of the same rules.
-- Non-gameplay routes (`join`, `next_game`, `PATCH`/`DELETE`) are **not**
-  seat-enforced.
+- `next_game` is guarded by the separate `_match_permission_error`
+  ([above](#post-apimatchesidnext_game)); `join` on either resource is **not**
+  guarded at all, and `PUT`/`PATCH`/`DELETE` are no longer routed.
 
-Covered by [`test_seat_security.py`](../../backend/game/tests/test_seat_security.py)
-and the permission tests in [`test_cube.py`](../../backend/game/tests/test_cube.py).
+Covered by [`test_seat_security.py`](../../backend/game/tests/test_seat_security.py),
+the permission tests in [`test_cube.py`](../../backend/game/tests/test_cube.py),
+and the closed-seat tests in
+[`test_account_deletion.py`](../../backend/game/tests/test_account_deletion.py).
 
 ---
 
@@ -467,8 +559,8 @@ and the permission tests in [`test_cube.py`](../../backend/game/tests/test_cube.
 
 Not in the code today — do not assume them:
 
-- **Pagination and filtering beyond `?status`.** No page/limit params, no
-  ordering param, no search. `GET /api/games/` returns every game in the DB.
+- **Filtering beyond `?status`.** No ordering param and no search. (Pagination
+  *does* exist — see [Conventions](#conventions).)
 - **A "my games" endpoint.** Nothing filters by the requesting user; clients
   fetch by id or list everything.
 - **Real-time push.** No WebSockets/Channels/ASGI and no long-poll endpoint.
@@ -477,13 +569,14 @@ Not in the code today — do not assume them:
 - **Matchmaking / lobby queue endpoints.** Pairing is manual via
   `?status=waiting` plus `join`. No queue, ranking, or auto-pairing route.
 - **Resign / abandon / rematch endpoints.** A game can only end on the board or
-  by dropping a double.
+  by dropping a double — which is also why a closed seat leaves a game
+  permanently stuck rather than forfeited.
 - **Chat.** No endpoint exists.
-- **Rate limiting.** No DRF throttle classes on any route, including login and
-  register.
-- **Token revocation.** No SimpleJWT blacklist app, so there is no logout
-  endpoint — clients just discard tokens.
-- **Password reset / change, or any email flow.**
+- **A logout endpoint.** The blacklist app *is* installed and is used by refresh
+  rotation and by account deletion, but no route revokes a token on demand —
+  clients just discard them.
+- **Password reset / change, or any email flow.** Account *deletion* exists
+  (`DELETE /api/auth/me/`); nothing else mutates credentials.
 - **API versioning and an OpenAPI/schema endpoint.** Paths are unversioned and
   no schema generator is installed; the browsable `DefaultRouter` root is the
   only self-description.

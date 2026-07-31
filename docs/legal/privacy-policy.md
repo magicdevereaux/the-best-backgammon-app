@@ -154,18 +154,21 @@ plainly that data is kept indefinitely until deletion is requested.]`
 
 ### Account deletion
 
-> **`[TODO — REQUIRED BEFORE STORE SUBMISSION]`** Account deletion is **not
-> implemented in the API today**. There is no endpoint that deletes a user
-> account or its associated game records. Both the Apple App Store and Google
-> Play require an in-app path to account deletion for apps that support account
-> creation.
->
-> Until that is built, this section must not claim self-service deletion. The
-> minimum honest interim wording is: *"To delete your account and its game
-> records, email `[TODO: contact email]` from the account you wish to delete
-> and we will action it manually within `[TODO: number]` days."* — and you must
-> actually be able to honour that, by hand, in the Django admin. The permanent
-> fix is a delete endpoint plus a delete button in both clients.
+You can delete your account at any time from the profile screen in either the
+web app or the mobile app. You will be asked to re-enter your password to
+confirm. Deletion takes effect immediately and signs you out everywhere.
+
+Deleting your account **unlinks it from your past games rather than erasing
+them.** Your chosen display name, the boards you played, and the results stay
+visible to your opponents, so their own game history is not damaged by your
+decision. Games you had created but nobody had joined are removed entirely. Any
+game still in progress becomes unplayable for your seat.
+
+> **`[TODO — REQUIRED BEFORE STORE SUBMISSION]`** In-app deletion exists, but
+> Google Play additionally requires a **web-accessible account-deletion request
+> URL** that a person can use without installing the app. That page cannot exist
+> until the service is hosted. Publish one, link it here, and then delete this
+> notice. Confirm the two paragraphs above still match what you ship.
 
 ### Other rights
 

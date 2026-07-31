@@ -43,16 +43,20 @@ This README is the setup and feature tour. Deeper reference lives in
 | [data-model.md](docs/architecture/data-model.md) | Django models and schema |
 | [auth.md](docs/architecture/auth.md) | Accounts, JWT, token lifecycle |
 | [going-live.md](docs/operations/going-live.md) | What's left before this can ship |
+| [railway-deploy.md](docs/operations/railway-deploy.md) | Step-by-step Railway deployment runbook |
 | [legal/](docs/legal/README.md) | Draft privacy policy and terms (need your details filled in) |
 
 [`CLAUDE.md`](CLAUDE.md) is the working brief for AI coding sessions.
 
 ## Project status
 
-Feature-complete for local and link-based online play, with **617 passing tests**
+Feature-complete for local and link-based online play, with **635 passing tests**
 and CI running all three suites on every push.
 
-The app is now **deployable but not deployed.** Settings are env-driven,
+The app is now **deployable but not deployed** — the target is **Railway**, with
+[`railway.json`](railway.json) committed and a
+[step-by-step runbook](docs/operations/railway-deploy.md) written, but no deploy
+has run yet. Settings are env-driven,
 `manage.py check --deploy` passes clean, gunicorn/whitenoise/Postgres support and
 a `Dockerfile`/`Procfile` are in place, and both clients can be pointed at a
 remote backend. What's left genuinely needs decisions only you can make: choosing
@@ -164,7 +168,7 @@ auto-incrementing version).
 
 ## Running tests
 
-### Backend (296 tests)
+### Backend (314 tests)
 
 ```bash
 cd backend

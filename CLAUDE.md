@@ -70,7 +70,8 @@ frontend/   React web client  (src/: api/ components/ hooks/ pages/ context/ uti
 mobile/     Expo mobile client (app/: router screens; src/: api/ components/ game/ context/)
 docs/       architecture/ + operations/ + legal/ + decisions/  (see below)
 .github/    CI workflow running all three test suites
-Dockerfile  Procfile  .dockerignore   host-agnostic deploy scaffolding
+Dockerfile  Procfile  .dockerignore   deploy scaffolding (gunicorn, host-agnostic)
+railway.json                          Railway builder + healthcheck config
 README.md   user-facing setup & feature overview
 ```
 
@@ -140,15 +141,27 @@ no `.env` file is required. That property is load-bearing; preserve it.
   non-`https` production URLs.
 
 `/healthz/` ([`health.py`](backend/backgammon/health.py)) is unauthenticated and
-does a `SELECT 1`; it returns 503 if the DB is unreachable. Root `Dockerfile` and
-`Procfile` run gunicorn and are host-agnostic — no Railway/Fly/Render-specific
-files exist, by choice.
+does a `SELECT 1`; it returns 503 if the DB is unreachable. The root
+`Dockerfile` and `Procfile` run gunicorn and stay host-agnostic; the Dockerfile
+`CMD` binds Railway's injected `$PORT` and runs `migrate` before `exec`-ing
+gunicorn as PID 1.
+
+**Deploy target is Railway** (decided 2026-07-31; the owner's `howl` project runs
+there). [`railway.json`](railway.json) pins the **Dockerfile** builder — *not*
+Railpack, which is what `howl` uses — sets `healthcheckPath: /healthz/`, and
+scopes `watchPatterns` to `backend/**` so client- and docs-only commits don't
+redeploy the API. The runbook is
+[railway-deploy.md](docs/operations/railway-deploy.md). Two traps recorded there:
+Railway probes the health check from an internal host, so `ALLOWED_HOSTS` needs
+`healthcheck.railway.app` alongside `${{RAILWAY_PUBLIC_DOMAIN}}` or the probe
+400s while logs look healthy; and the filesystem is **ephemeral**, so SQLite
+would be wiped every deploy — Postgres is mandatory there, not optional.
 
 ## Tests
 
 | Suite | Count | Command (cwd) |
 |-------|-------|---------------|
-| Backend | **296** | `python manage.py test game` (`backend/`, in-memory DB) |
+| Backend | **314** | `python manage.py test game` (`backend/`, in-memory DB) |
 | Web | **207** | `CI=true npm test -- --watchAll=false` (`frontend/`) |
 | Mobile | **114** | `CI=true npx jest` (`mobile/`) |
 
@@ -164,7 +177,7 @@ Auth has full client + server coverage: backend `test_auth.py`; web
 mobile `api/__tests__/{tokenStore,auth,client}.test.js`. See [auth.md](docs/architecture/auth.md)
 for the map.
 
-All three suites were **green as of 2026-07-26** (296 / 207 / 114, 617 total, zero
+All three suites were **green as of 2026-07-31** (314 / 207 / 114, 635 total, zero
 failures). If you see a failure, it is yours — the baseline is clean.
 
 > **Throttling is disabled under test** (`"test" in sys.argv` in
@@ -249,13 +262,15 @@ Board is `points[24]` (index = point − 1), plus `bar` and `off` counts per pla
   (board state, player names, user ids). Scoping the list to open games or the
   requester's own would break guest hotseat resume, so it was left open
   deliberately — see [going-live.md](docs/operations/going-live.md).
-- **A deleted account's seat is indistinguishable from a guest seat.** Account
-  deletion (`DELETE /api/auth/me/`) anonymises rather than destroys: every user FK
-  on `Game`/`Match` is `on_delete=SET_NULL`, so the display name and history
-  survive but the FK goes null. In an **in-progress** game that makes the seat
-  look like a guest seat, which `_seat_permission_error` lets anonymous callers
-  act on. Closing it needs a `models.py` change — a `player*_deleted` flag or a
-  sentinel user — so seat enforcement can tell "deleted account" from "guest".
+- **A closed seat deadlocks its game, and no client says so.** Account deletion
+  now sets `player1_deleted`/`player2_deleted` on `Game` and `Match`, and seat
+  enforcement 403s that seat for *everyone* — including the surviving opponent,
+  who would otherwise be able to play both sides. The deliberate consequence: an
+  in-progress game **cannot proceed** once it is the closed seat's turn. That
+  beats auto-forfeit, which would award points nobody won and corrupt match
+  scores. What's missing is the product half — neither client reads the flags to
+  say "your opponent deleted their account", and there is no abandon/resign
+  endpoint for the survivor.
 - **Throttle counters are per-process.** No `CACHES` entry, so DRF falls back to
   `LocMemCache` and limits are per-gunicorn-worker, not global.
 - **Clients don't model the higher-die rule**, so a client can happily stage a
@@ -297,7 +312,11 @@ Index with contribution rules: [docs/README.md](docs/README.md).
 - [docs/architecture/data-model.md](docs/architecture/data-model.md) — Django
   models and schema.
 - [docs/operations/going-live.md](docs/operations/going-live.md) — production
-  readiness: hard blockers, should-fix, post-launch, with file/line evidence.
+  readiness: blocked-on-owner, still-open-in-code, and done, with file/line
+  evidence. **Start here** before any launch work.
+- [docs/operations/railway-deploy.md](docs/operations/railway-deploy.md) —
+  step-by-step Railway runbook: service creation, Postgres plugin and
+  `DATABASE_URL`, every env var, migrations, superuser, domain, smoke test.
 - [docs/legal/](docs/legal/README.md) — **draft** privacy policy and terms, written
   against what the code actually collects. Full of `[TODO]` markers needing the
   owner's real details; both stores require the policy at a live public URL.
@@ -307,12 +326,16 @@ Index with contribution rules: [docs/README.md](docs/README.md).
 
 These are intended but **do not exist in the code today** — don't assume them:
 
-- **A running deployment.** Nothing is hosted yet. The app is *deployable* —
-  env-driven settings, `Dockerfile`/`Procfile`, gunicorn, whitenoise, health
-  check — but no host, domain, or TLS exists, and no production `.env` has been
-  written. **Postgres is wired but unused**: `psycopg2-binary` and
-  `dj-database-url` are installed and `DATABASE_URL` is honoured, yet every
-  environment today still resolves to the dev SQLite file.
+- **A running deployment.** Nothing is hosted yet. The app is *deployable* and
+  the target is chosen (Railway, with `railway.json` committed), but **no deploy
+  has run**: no service, no domain, no TLS, no production env values.
+  **Postgres is wired but unused** — `psycopg2-binary` and `dj-database-url` are
+  installed and `DATABASE_URL` is honoured, yet every environment today still
+  resolves to the dev SQLite file, and the migrations have only ever been applied
+  against SQLite. Verify them on an empty Postgres before cutting over.
+- **A hosted web client.** The plan is Vercel with `REACT_APP_API_BASE_URL` set at
+  build time (mirroring `howl`), but nothing is deployed and no build pipeline for
+  the web client exists.
 - **WebSockets / real-time push.** There is no Channels/ASGI setup. Opponent moves
   are synced by **mobile polling** (~3.5s in [`mobile/src/game/useGame.js`](mobile/src/game/useGame.js));
   the **web client has no auto-refresh** (manual reload). A socket layer is future work.

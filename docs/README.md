@@ -25,7 +25,8 @@ detail.
 
 | Doc | What it answers |
 |-----|-----------------|
-| [going-live.md](operations/going-live.md) | Production-readiness audit: hard blockers, should-fix, and post-launch items on the way to shipping. |
+| [going-live.md](operations/going-live.md) | Production-readiness audit: blocked-on-owner, still-open-in-code, and done. |
+| [railway-deploy.md](operations/railway-deploy.md) | Railway runbook: service, Postgres, env vars, migrations, domain, smoke test. |
 
 ## Decisions
 
