@@ -20,6 +20,7 @@ from rest_framework_simplejwt.token_blacklist.models import (
     OutstandingToken,
 )
 
+from game.game_logic import get_initial_board_state
 from game.models import Game, Match
 
 
@@ -329,3 +330,295 @@ class AccountDeleteGameRecordsTest(TestCase):
         )
         self._delete_alice()
         self.assertTrue(Game.objects.filter(id=guest_game.id).exists())
+
+
+class DeletedSeatIsClosedTest(TestCase):
+    """
+    An anonymised seat must not decay into a *guest* seat.
+
+    Both user FKs are ``on_delete=SET_NULL``, so after a deletion the seat's
+    FK is null — exactly what a guest seat looks like, and guest seats are
+    deliberately playable by anonymous callers. Without a marker, deleting your
+    account would hand every live game you were in to anyone holding its id.
+    ``player*_deleted`` is that marker; these tests pin both halves: the closed
+    seat is shut to everyone, and genuine guest play is unchanged.
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+        self.alice = make_user("alice")
+        self.bob = make_user("bob")
+        self.mallory = make_user("mallory")
+
+    def _delete_alice(self):
+        client = APIClient()
+        tokens = login(client, "alice")
+        client.credentials(HTTP_AUTHORIZATION=f"Bearer {tokens['access']}")
+        resp = client.delete("/api/auth/me/", {"password": PASSWORD}, format="json")
+        self.assertEqual(resp.status_code, 204)
+
+    def _live_game(self, current_turn="p1", **kwargs):
+        fields = dict(
+            player1_user=self.alice, player1_name="alice",
+            player2_user=self.bob, player2_name="bob",
+            board_state=get_initial_board_state(), dice_values=[],
+            status="active", current_turn=current_turn,
+        )
+        fields.update(kwargs)
+        return Game.objects.create(**fields)
+
+    # -- the flags get set ---------------------------------------------------
+
+    def test_deletion_flags_both_the_game_and_match_seats(self):
+        match = Match.objects.create(
+            player1_user=self.bob, player1_name="bob",
+            player2_user=self.alice, player2_name="alice",
+        )
+        game = Game.objects.create(
+            match=match,
+            player1_user=self.bob, player1_name="bob",
+            player2_user=self.alice, player2_name="alice",
+            board_state={}, dice_values=[], status="active",
+        )
+        self._delete_alice()
+
+        game.refresh_from_db()
+        match.refresh_from_db()
+        self.assertTrue(game.player2_deleted)
+        self.assertFalse(game.player1_deleted)   # bob's seat is untouched
+        self.assertTrue(match.player2_deleted)
+        self.assertFalse(match.player1_deleted)
+
+    def test_finished_games_are_flagged_too(self):
+        """Harmless, and it keeps the flag a truthful statement about the seat."""
+        game = Game.objects.create(
+            player1_user=self.alice, player1_name="alice",
+            player2_user=self.bob, player2_name="bob",
+            board_state={}, dice_values=[], status="finished", winner="p2",
+        )
+        self._delete_alice()
+        game.refresh_from_db()
+        self.assertTrue(game.player1_deleted)
+
+    # -- the hole itself -----------------------------------------------------
+
+    def test_anonymous_cannot_roll_on_a_deleted_seat(self):
+        game = self._live_game(current_turn="p1")
+        self._delete_alice()
+
+        resp = APIClient().post(f"/api/games/{game.id}/roll_dice/")
+        self.assertEqual(resp.status_code, 403)
+        self.assertIn("deleted their account", resp.json()["error"])
+        game.refresh_from_db()
+        self.assertEqual(game.dice_values, [])
+
+    def test_anonymous_cannot_confirm_a_turn_on_a_deleted_seat(self):
+        game = self._live_game(current_turn="p1", dice_values=[1, 2])
+        self._delete_alice()
+
+        resp = APIClient().post(
+            f"/api/games/{game.id}/confirm_turn/",
+            {"moves": [{"from_point": 1, "to_point": 2},
+                       {"from_point": 2, "to_point": 4}]},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 403)
+        game.refresh_from_db()
+        self.assertEqual(game.current_turn, "p1")
+        self.assertEqual(game.board_state, get_initial_board_state())
+
+    def test_anonymous_cannot_move_or_double_on_a_deleted_seat(self):
+        game = self._live_game(current_turn="p1", dice_values=[1, 2])
+        self._delete_alice()
+        anon = APIClient()
+
+        move = anon.post(
+            f"/api/games/{game.id}/move_checker/",
+            {"from_point": 1, "to_point": 2}, format="json",
+        )
+        self.assertEqual(move.status_code, 403)
+
+        Game.objects.filter(id=game.id).update(dice_values=[])
+        double = anon.post(f"/api/games/{game.id}/offer_double/")
+        self.assertEqual(double.status_code, 403)
+
+    def test_anonymous_cannot_answer_a_double_as_the_deleted_seat(self):
+        """respond_to_double checks an explicit seat, not current_turn."""
+        game = self._live_game(current_turn="p2")
+        game.double_offered_by = "p2"   # bob doubled; alice's seat must answer
+        game.save()
+        self._delete_alice()
+
+        resp = APIClient().post(
+            f"/api/games/{game.id}/respond_to_double/", {"accept": True}, format="json"
+        )
+        self.assertEqual(resp.status_code, 403)
+        game.refresh_from_db()
+        self.assertEqual(game.cube_value, 1)
+
+    def test_another_logged_in_account_cannot_take_a_deleted_seat(self):
+        game = self._live_game(current_turn="p1")
+        self._delete_alice()
+
+        client = APIClient()
+        client.force_authenticate(user=self.mallory)
+        self.assertEqual(client.post(f"/api/games/{game.id}/roll_dice/").status_code, 403)
+
+    def test_the_opponent_cannot_play_the_deleted_seat_either(self):
+        """
+        The survivor satisfies `is_participant` on the orphaned seat, so
+        without the closed check they could play both sides of the board.
+        """
+        game = self._live_game(current_turn="p1")
+        self._delete_alice()
+
+        client = APIClient()
+        client.force_authenticate(user=self.bob)
+        resp = client.post(f"/api/games/{game.id}/roll_dice/")
+        self.assertEqual(resp.status_code, 403)
+
+    # -- the opponent keeps their own seat -----------------------------------
+
+    def test_the_opponent_can_still_act_on_their_own_turn(self):
+        game = self._live_game(current_turn="p2")
+        self._delete_alice()
+
+        client = APIClient()
+        client.force_authenticate(user=self.bob)
+        resp = client.post(f"/api/games/{game.id}/roll_dice/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn(len(resp.json()["dice_values"]), [2, 4])
+
+    def test_the_opponent_can_still_read_the_game(self):
+        game = self._live_game()
+        self._delete_alice()
+
+        client = APIClient()
+        client.force_authenticate(user=self.bob)
+        data = client.get(f"/api/games/{game.id}/").json()
+        self.assertEqual(data["viewer_seat"], "p2")
+        self.assertTrue(data["player1_deleted"])
+        self.assertFalse(data["player2_deleted"])
+
+    # -- genuine guest play is untouched (the regression risk) ---------------
+
+    def test_a_real_guest_seat_still_allows_anonymous_play(self):
+        game = Game.objects.create(
+            player1_user=self.alice, player1_name="alice",
+            player2_name="a guest",            # null FK, never deleted
+            board_state=get_initial_board_state(), dice_values=[],
+            status="active", current_turn="p2",
+        )
+        self._delete_alice()
+
+        resp = APIClient().post(f"/api/games/{game.id}/roll_dice/")
+        self.assertEqual(resp.status_code, 200)
+
+    def test_a_fully_guest_game_is_unaffected_by_someone_elses_deletion(self):
+        game = Game.objects.create(
+            player1_name="Guest 1", player2_name="Guest 2",
+            board_state=get_initial_board_state(), dice_values=[],
+            status="active", current_turn="p1",
+        )
+        self._delete_alice()
+
+        resp = APIClient().post(f"/api/games/{game.id}/roll_dice/")
+        self.assertEqual(resp.status_code, 200)
+
+    # -- match-level actions -------------------------------------------------
+
+    def test_anonymous_cannot_advance_a_match_through_a_deleted_seat(self):
+        match = Match.objects.create(
+            player1_user=self.alice, player1_name="alice",
+            player2_user=self.bob, player2_name="bob", target_points=5,
+        )
+        Game.objects.create(
+            match=match, player1_user=self.alice, player1_name="alice",
+            player2_user=self.bob, player2_name="bob",
+            board_state={}, dice_values=[], status="finished", winner="p2",
+        )
+        self._delete_alice()
+
+        resp = APIClient().post(f"/api/matches/{match.id}/next_game/")
+        self.assertEqual(resp.status_code, 403)
+
+    def test_a_guest_opponent_can_still_advance_the_match(self):
+        """One seat closed, the other a genuine guest → the guest plays on."""
+        match = Match.objects.create(
+            player1_user=self.alice, player1_name="alice",
+            player2_name="a guest", target_points=5,
+        )
+        Game.objects.create(
+            match=match, player1_user=self.alice, player1_name="alice",
+            player2_name="a guest",
+            board_state={}, dice_values=[], status="finished", winner="p2",
+        )
+        self._delete_alice()
+
+        resp = APIClient().post(f"/api/matches/{match.id}/next_game/")
+        self.assertEqual(resp.status_code, 201)
+
+    def test_next_game_carries_the_closure_into_the_new_game(self):
+        match = Match.objects.create(
+            player1_user=self.alice, player1_name="alice",
+            player2_user=self.bob, player2_name="bob", target_points=5,
+        )
+        Game.objects.create(
+            match=match, player1_user=self.alice, player1_name="alice",
+            player2_user=self.bob, player2_name="bob",
+            board_state={}, dice_values=[], status="finished", winner="p2",
+        )
+        self._delete_alice()
+
+        client = APIClient()
+        client.force_authenticate(user=self.bob)   # the survivor advances
+        resp = client.post(f"/api/matches/{match.id}/next_game/")
+        self.assertEqual(resp.status_code, 201)
+        self.assertTrue(resp.json()["player1_deleted"])
+
+        # ...and the fresh game's orphaned seat is closed, not guest-open.
+        new_game_id = resp.json()["id"]
+        anon = APIClient().post(f"/api/games/{new_game_id}/roll_dice/")
+        self.assertEqual(anon.status_code, 403)
+
+
+class SeatClosedFieldDefaultsTest(TestCase):
+    """
+    The flags default to False, so the migration leaves every existing row —
+    and every ordinary new game — exactly as it was.
+    """
+
+    def test_new_rows_default_to_open_seats(self):
+        game = Game.objects.create(
+            player1_name="p1", player2_name="p2", board_state={}, dice_values=[]
+        )
+        match = Match.objects.create(player1_name="p1", player2_name="p2")
+        self.assertFalse(game.player1_deleted)
+        self.assertFalse(game.player2_deleted)
+        self.assertFalse(match.player1_deleted)
+        self.assertFalse(match.player2_deleted)
+
+    def test_a_row_written_without_the_fields_stays_anonymous_playable(self):
+        """
+        The pre-migration shape: a guest game created with no mention of the
+        new columns behaves exactly as it did before they existed.
+        """
+        game = Game.objects.create(
+            player1_name="Guest 1", player2_name="Guest 2",
+            board_state=get_initial_board_state(), dice_values=[],
+            status="active", current_turn="p1",
+        )
+        self.assertEqual(
+            APIClient().post(f"/api/games/{game.id}/roll_dice/").status_code, 200
+        )
+
+    def test_the_flags_are_read_only_on_create(self):
+        """A caller must not be able to close a seat by asking nicely."""
+        resp = APIClient().post(
+            "/api/games/",
+            {"player1_name": "a", "player2_name": "b", "player1_deleted": True},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 201)
+        self.assertFalse(resp.json()["player1_deleted"])
+        self.assertFalse(Game.objects.get(id=resp.json()["id"]).player1_deleted)

@@ -11,6 +11,13 @@ class Match(models.Model):
     )
     player1_name = models.CharField(max_length=200)
     player2_name = models.CharField(max_length=200, blank=True)
+    # Seat closed because its registered owner deleted their account. The user
+    # FK is SET_NULL, so after a deletion an owned seat is indistinguishable
+    # from a guest seat — and guest seats are anonymous-playable by design.
+    # These flags restore the distinction: null FK + flag = closed (nobody may
+    # act), null FK + no flag = genuine guest. See _match_permission_error.
+    player1_deleted = models.BooleanField(default=False)
+    player2_deleted = models.BooleanField(default=False)
     target_points = models.PositiveIntegerField(default=5)
     player1_score = models.PositiveIntegerField(default=0)
     player2_score = models.PositiveIntegerField(default=0)
@@ -42,6 +49,12 @@ class Game(models.Model):
     )
     player1_name = models.CharField(max_length=200)
     player2_name = models.CharField(max_length=200, blank=True)
+    # Seat closed because its registered owner deleted their account — see the
+    # matching fields on Match. Set by _close_deleted_account_seats during
+    # DELETE /api/auth/me/; consulted by _seat_permission_error, which refuses
+    # every caller (anonymous or not) on a closed seat.
+    player1_deleted = models.BooleanField(default=False)
+    player2_deleted = models.BooleanField(default=False)
     board_state = models.JSONField(default=dict)
     current_turn = models.CharField(
         max_length=100, choices=[("p1", "Player 1"), ("p2", "Player 2")], default="p1"

@@ -20,8 +20,14 @@ class GameSerializer(serializers.ModelSerializer):
     class Meta:
         model = Game
         fields = "__all__"
+        # player1_deleted / player2_deleted are exposed (via "__all__") so a
+        # client can say "this player deleted their account" instead of leaving
+        # the opponent staring at a turn that will never come — but they are
+        # read-only, like every other server-owned field here. Writable, a
+        # caller could close a seat at create time and grief the other player.
         read_only_fields = [
             "match", "player1_user", "player2_user", "board_state", "current_turn",
+            "player1_deleted", "player2_deleted",
             "dice_values", "status", "winner", "win_type", "points_value",
             "cube_value", "cube_owner", "double_offered_by", "crawford_game",
             "created_at", "updated_at",
@@ -57,6 +63,7 @@ class MatchSerializer(serializers.ModelSerializer):
         fields = "__all__"
         read_only_fields = [
             "player1_user", "player2_user", "player1_score", "player2_score",
+            "player1_deleted", "player2_deleted",
             "status", "winner", "created_at", "updated_at",
         ]
         extra_kwargs = {

@@ -171,6 +171,31 @@ def _purge_unjoined_lobby_entries(user):
     Match.objects.filter(player1_user=user, player2_name="").delete()
 
 
+def _close_deleted_account_seats(user):
+    """
+    Flag every seat this account holds as **closed** before the FK is nulled.
+
+    ``on_delete=SET_NULL`` anonymises a seat rather than destroying it, which
+    is what preserves the opponent's history — but it also makes the seat
+    indistinguishable from a *guest* seat, and guest seats are deliberately
+    playable by anonymous callers (there is no identity to verify). Without a
+    marker, deleting your account hands your live games to whoever finds the
+    id: ``_seat_permission_error`` would read the null FK as "guest, allow".
+
+    The flags are the missing bit of state: null FK **+ flag** means "a
+    registered player was here and is gone", which both permission helpers
+    treat as closed to everyone. Genuine guest seats keep their flag False and
+    behave exactly as before.
+
+    Must run *before* ``user.delete()`` — afterwards the rows are no longer
+    reachable by user.
+    """
+    Game.objects.filter(player1_user=user).update(player1_deleted=True)
+    Game.objects.filter(player2_user=user).update(player2_deleted=True)
+    Match.objects.filter(player1_user=user).update(player1_deleted=True)
+    Match.objects.filter(player2_user=user).update(player2_deleted=True)
+
+
 class MeView(generics.RetrieveDestroyAPIView):
     """
     ``GET /api/auth/me/``    — the current user's profile + computed stats.
@@ -193,6 +218,10 @@ class MeView(generics.RetrieveDestroyAPIView):
     handles a null seat FK (it compares ``player*_user_id`` to the viewer's id),
     so nothing downstream breaks. The only records removed are unjoined lobby
     adverts — see ``_purge_unjoined_lobby_entries``.
+
+    Anonymising a seat would, on its own, make it look like a *guest* seat and
+    therefore open it to anonymous play, so each surviving seat is also flagged
+    closed — see ``_close_deleted_account_seats``.
     """
 
     permission_classes = [IsAuthenticated]
@@ -213,6 +242,7 @@ class MeView(generics.RetrieveDestroyAPIView):
 
         _blacklist_refresh_tokens(user)
         _purge_unjoined_lobby_entries(user)
+        _close_deleted_account_seats(user)
         user.delete()
 
         return Response(status=status.HTTP_204_NO_CONTENT)
@@ -256,6 +286,13 @@ def _seat_permission_error(game, user, seat=None):
 
       - Seat owned by a registered user → only that user may act. The other
         participant gets "not your turn"; anyone else isn't a participant.
+      - **Closed seat** (``player*_deleted``) → nobody may act, ever. The FK is
+        null because the owner deleted their account, not because a guest sat
+        there; without this branch the seat would fall through to the guest
+        rule below and become anonymously playable by anyone holding the game
+        id. The surviving opponent is refused too — they satisfy
+        ``is_participant`` on the orphaned seat and would otherwise be able to
+        play both sides of the board.
       - Guest (unowned) seat → anonymous requests and this game's registered
         participants may act (participants cover hotseat games, where one
         account plays both seats on one device). Other logged-in accounts are
@@ -266,11 +303,15 @@ def _seat_permission_error(game, user, seat=None):
     if seat is None:
         seat = game.current_turn
     seat_user_id = game.player1_user_id if seat == "p1" else game.player2_user_id
+    seat_closed = game.player1_deleted if seat == "p1" else game.player2_deleted
     user_id = user.id if user is not None and user.is_authenticated else None
     is_participant = user_id is not None and user_id in (
         game.player1_user_id,
         game.player2_user_id,
     )
+
+    if seat_closed and seat_user_id is None:
+        return "This player deleted their account — their seat is closed."
 
     if seat_user_id is not None:
         if user_id == seat_user_id:
@@ -304,16 +345,25 @@ def _match_permission_error(match, user):
         actions already accept, and it is what keeps hotseat/guest matches
         playable without an account. A match whose seats are *both* registered
         has no guest to impersonate, so anonymous callers are rejected.
+      - A **closed** seat (``player*_deleted``: the owner deleted their
+        account) does not count as a guest seat, even though its FK is null.
+        Otherwise deleting an account would silently open every match you were
+        in to anonymous callers. The surviving registered opponent still
+        qualifies on their own seat.
     """
     user_id = user.id if user is not None and user.is_authenticated else None
     seat_user_ids = (match.player1_user_id, match.player2_user_id)
+    seat_closed = (match.player1_deleted, match.player2_deleted)
 
     if user_id is not None:
         if user_id in seat_user_ids:
             return None
         return "You are not a participant in this match."
 
-    if any(seat_user_id is None for seat_user_id in seat_user_ids):
+    if any(
+        seat_user_id is None and not closed
+        for seat_user_id, closed in zip(seat_user_ids, seat_closed)
+    ):
         return None
     return "This match belongs to registered players. Log in to continue it."
 
@@ -462,6 +512,11 @@ class MatchViewSet(
             player2_user=match.player2_user,
             player1_name=match.player1_name,
             player2_name=match.player2_name,
+            # Carry seat closure forward, or the surviving opponent could
+            # advance the match into a fresh game whose orphaned seat looks
+            # like a guest seat again.
+            player1_deleted=match.player1_deleted,
+            player2_deleted=match.player2_deleted,
             board_state=get_initial_board_state(),
             current_turn=next_turn,
             dice_values=[],
