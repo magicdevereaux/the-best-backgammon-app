@@ -39,8 +39,9 @@ shows no `.env`, and [`.gitignore`](../../.gitignore) covers `db.sqlite3`,
 
 **Order of operations from here.** (1) Fix the deleted-account seat hole
 ([2.1](#21-a-deleted-accounts-seat-becomes-an-anonymous-playable-guest-seat)) —
-it is a live security bug and needs no infrastructure. (2) Owner picks a host,
-provisions Postgres, sets the env vars ([section 1](#1-blocked-on-the-owner)).
+it is a live security bug and needs no infrastructure. (2) Owner provisions
+Postgres on Railway and sets the env vars ([section 1](#1-blocked-on-the-owner);
+runbook in [railway-deploy.md](railway-deploy.md)).
 (3) Deploy, smoke-test, turn on backups. (4) Build web with
 `REACT_APP_API_BASE_URL`, build mobile with `EXPO_PUBLIC_API_URL`, test both off
 the dev LAN. (5) Fill the legal `[TODO]`s, host the policy, submit.
@@ -54,6 +55,15 @@ purchase, or a human signature. Everything here is *config-shaped* — the code
 side is already built and waiting for the value.
 
 ### 1.1 Pick a host and provision PostgreSQL
+
+> **Decided: Railway.** The step-by-step runbook — service creation, the
+> Postgres plugin and `DATABASE_URL` reference, every env var, migrations,
+> superuser, custom domain, and a first-deploy smoke test — is
+> [railway-deploy.md](railway-deploy.md). [`railway.json`](../../railway.json)
+> pins the Dockerfile builder and the `/healthz/` health check. **No deploy has
+> run yet**, so everything below is still open; provisioning Postgres and
+> supplying the values in [1.2](#12-domain-tls-and-the-production-environment)
+> remains owner work.
 
 The app is host-agnostic and ready to deploy: the root
 [`Dockerfile`](../../Dockerfile) builds from the repo root, runs `collectstatic`
