@@ -14,8 +14,9 @@ that tells you it actually worked.
 
 Read [going-live.md](going-live.md) first if you haven't — it is the audit of
 what is and isn't production-ready, and several items there are still open at
-the time of writing (notably [2.1](going-live.md#21-a-deleted-accounts-seat-becomes-an-anonymous-playable-guest-seat),
-a live permission hole). This doc covers *deployment mechanics only*.
+the time of writing (notably [2.1](going-live.md#21-get-apigames-is-still-public-and-unscoped),
+where `GET /api/games/` is public and unscoped, so an anonymous caller can page
+through every game row). This doc covers *deployment mechanics only*.
 
 ---
 
@@ -227,7 +228,7 @@ python manage.py createsuperuser
 Choose a strong password. `/admin/` is publicly exposed at a predictable path
 with no IP allowlist and no 2FA, and **DRF's throttles do not cover it** — the
 admin login is a plain Django view. See
-[going-live.md 2.5](going-live.md#25-django-admin-is-publicly-exposed-at-a-predictable-path)
+[going-live.md 2.4](going-live.md#24-django-admin-is-publicly-exposed-at-a-predictable-path)
 before treating this as safe.
 
 ## 6. Custom domain and TLS
@@ -361,7 +362,7 @@ network timeout — so set it to the full `https://api.example.com`. Details in
   `WEB_CONCURRENCY=3` the effective limits are ~3× the configured ones
   (`login` 10/hour behaves like ~30/hour), and raising `numReplicas` multiplies
   it again. See
-  [going-live.md 2.3](going-live.md#23-throttle-counters-are-per-process).
+  [going-live.md 2.2](going-live.md#22-throttle-counters-are-per-process).
 - **Docker's `HEALTHCHECK` instruction is not what Railway uses.** Railway
   probes `deploy.healthcheckPath` from `railway.json`. The `HEALTHCHECK` line in
   the Dockerfile is for plain `docker run` and other hosts; both point at
