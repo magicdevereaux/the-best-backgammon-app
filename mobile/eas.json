@@ -10,6 +10,19 @@
   // OWNER TODO: fill in the real deployed backend URLs below. Left empty on
   // purpose — an empty value makes the app fail loudly at startup rather than
   // silently pointing at an unreachable host.
+  //
+  // OTA updates: expo-updates is installed and app.json carries the matching
+  // `updates` block plus `runtimeVersion.policy: "appVersion"`. The "channel"
+  // fields below are the build-side half of that; the publish-side half is an
+  // EAS branch linked to each channel, which does not exist yet.
+  //   OWNER TODO: `eas update:configure`, then link branches to channels
+  //   ("production" -> "production", "preview" -> "preview") and publish with
+  //   `eas update --branch production`. Until that runs, both channels remain
+  //   inert and every JS fix still needs a store resubmission.
+  // Because runtimeVersion is "appVersion", an update only reaches binaries
+  // built from the SAME expo.version. Bump app.json's `version` for any native
+  // change; `appVersionSource: "remote"` below only governs buildNumber /
+  // versionCode, which runtimeVersion deliberately does not depend on.
   "cli": {
     "version": ">= 16.0.0",
     "appVersionSource": "remote"

@@ -4,6 +4,10 @@
     "slug": "the-best-backgammon-app",
     "scheme": "backgammon",
     "version": "1.0.0",
+    "//runtimeVersion": "An OTA update may only land on a binary whose runtimeVersion matches exactly. The 'appVersion' policy derives it from expo.version above ('1.0.0'), so every binary built from a given version accepts updates published for that version. Consequence: any change to native code — adding/removing a native module, bumping the Expo SDK, changing a config plugin — REQUIRES bumping expo.version and cutting a new store build. Shipping such a change as an OTA under an unchanged version would push JS to a binary that cannot run it. Note 'nativeVersion' is deliberately not used: it folds in buildNumber/versionCode, which eas.json hands to EAS via appVersionSource=remote, so those values are not authoritative here.",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
     "orientation": "landscape",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
@@ -27,6 +31,13 @@
     },
     "web": {
       "favicon": "./assets/favicon.png"
+    },
+    "//updates": "expo-updates config. The url is derived from extra.eas.projectId below (u.expo.dev/<projectId>) — it is not a guess. fallbackToCacheTimeout 0 means the app always launches instantly from the cached bundle and downloads any new one in the background, so an update applies on the NEXT launch; the alternative blocks the splash screen on a network round trip. OWNER TODO: this config is inert until the owner runs `eas update:configure` and publishes at least once (`eas update --branch production`), and links branches to the channels declared in eas.json (`eas channel:create` / `eas branch` — channel 'production' -> branch 'production', channel 'preview' -> branch 'preview'). Both require an EAS account with access to the linked project. Until then the app checks for an update, finds none, and runs its embedded bundle.",
+    "updates": {
+      "enabled": true,
+      "url": "https://u.expo.dev/ad1de8b5-2517-4198-9de9-a1abbb3aa5a7",
+      "fallbackToCacheTimeout": 0,
+      "checkAutomatically": "ON_LOAD"
     },
     "plugins": [
       "expo-router",
