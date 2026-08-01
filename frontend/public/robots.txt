@@ -1,0 +1,17 @@
+# https://www.robotstxt.org/robotstxt.html
+#
+# Crawling is allowed by default; the rules below carve out the routes that
+# have nothing indexable behind them. Everything under /game/ is a per-game URL
+# shared privately between two players -- there is no stable content there, and
+# crawling it would spend API requests on game state no search user asked for.
+# /profile, /login and /register are account screens, not content.
+
+User-agent: *
+Disallow: /game/
+Disallow: /profile
+Disallow: /login
+Disallow: /register
+
+# OWNER TODO: once a domain exists, add a Sitemap: line with the absolute URL,
+# e.g. "Sitemap: https://<your-domain>/sitemap.xml". Relative sitemap paths are
+# not valid in robots.txt.

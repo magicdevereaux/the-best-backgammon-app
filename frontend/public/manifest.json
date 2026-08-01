@@ -1,0 +1,20 @@
+{
+  "name": "The Best Backgammon App",
+  "short_name": "Backgammon",
+  "description": "Play backgammon on one device or online with a friend, with full match play and the doubling cube.",
+  "lang": "en",
+  "start_url": ".",
+  "scope": ".",
+  "display": "standalone",
+  "orientation": "any",
+  "theme_color": "#181818",
+  "background_color": "#181818",
+  "icons": [
+    {
+      "src": "favicon.svg",
+      "type": "image/svg+xml",
+      "sizes": "any",
+      "purpose": "any"
+    }
+  ]
+}

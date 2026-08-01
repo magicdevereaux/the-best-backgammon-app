@@ -3,7 +3,66 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Backgammon</title>
+
+    <title>The Best Backgammon App</title>
+    <meta
+      name="description"
+      content="Play backgammon in your browser: pass-and-play on a single device, or online with a friend via a shared game link or the open-games lobby. Full match play with the doubling cube."
+    />
+
+    <!-- Matches --bg in src/theme.css, so mobile browser chrome blends with the app. -->
+    <meta name="theme-color" content="#181818" />
+
+    <link rel="icon" href="%PUBLIC_URL%/favicon.svg" type="image/svg+xml" />
+    <link rel="manifest" href="%PUBLIC_URL%/manifest.json" />
+
+    <!-- Open Graph -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="The Best Backgammon App" />
+    <meta property="og:title" content="Backgammon — play locally or online with a friend" />
+    <meta
+      property="og:description"
+      content="Pass-and-play on a single device, or online with a friend via a shared game link or the open-games lobby. Full match play with the doubling cube."
+    />
+    <meta property="og:locale" content="en_US" />
+
+    <!-- Twitter / X card. "summary" (not "summary_large_image") because there is
+         no preview image yet — see the OWNER TODO below. -->
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content="Backgammon — play locally or online with a friend" />
+    <meta
+      name="twitter:description"
+      content="Pass-and-play on a single device, or online with a friend via a shared game link or the open-games lobby. Full match play with the doubling cube."
+    />
+
+    <!--
+      OWNER TODO — og:url and og:image are deliberately absent.
+
+      Both require an ABSOLUTE URL (scheme + host). Crawlers do not resolve
+      relative og:image paths against the page URL, so a PUBLIC_URL-prefixed
+      or "/og.png" path would silently produce no preview image at all — worse than
+      omitting the tag, because it looks done. No domain has been chosen and
+      the web client is not deployed, so there is no honest value to put here.
+
+      Once the web client has a real origin, add:
+
+        <meta property="og:url"   content="https://<your-domain>/" />
+        <meta property="og:image" content="https://<your-domain>/og.png" />
+        <meta property="og:image:width"  content="1200" />
+        <meta property="og:image:height" content="630" />
+        <meta property="og:image:alt"    content="The Best Backgammon App" />
+        <meta name="twitter:image" content="https://<your-domain>/og.png" />
+
+      ...drop a 1200x630 og.png into this directory, and switch the
+      twitter:card above to "summary_large_image". Until then a shared game
+      link previews as title + description with no image.
+
+      Also worth adding at that point (both need binary assets this repo does
+      not have): a PNG/ICO favicon fallback for browsers without SVG favicon
+      support, and 192px/512px PNG icons in manifest.json for Android
+      install-to-home-screen. The manifest currently lists only favicon.svg,
+      which is the only icon file that actually exists here.
+    -->
   </head>
   <body>
     <noscript>You need to enable JavaScript to run this app.</noscript>

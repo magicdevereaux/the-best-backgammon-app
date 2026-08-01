@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  "The Crossed Points" — the app mark, drawn as an SVG favicon.
+
+  Two backgammon points (triangles) meeting nose to nose with a gold checker
+  ring at the crossing. Colours are taken verbatim from frontend/src/theme.css
+  (CSS custom properties, minus their leading dashes):
+    #181818 bg   #5C2010 mahogany   #F5ECD7 ivory   #C9A227 gold
+    #3A2E22 border
+
+  Legibility notes:
+  - Only four shapes, no gradients, no text — the silhouette survives 16x16.
+  - The dark tile is painted, not transparent, so the mark carries its own
+    background and reads on light *and* dark browser chrome. The hairline
+    border keeps the tile edge visible when the chrome is as dark as the tile.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-label="Backgammon">
+  <title>Backgammon</title>
+
+  <!-- Tile -->
+  <rect x="0.5" y="0.5" width="31" height="31" rx="6" fill="#181818" stroke="#3A2E22" stroke-width="1" />
+
+  <!-- Upper point (mahogany, pointing down) -->
+  <path d="M4 4.5 H28 L16 16 Z" fill="#5C2010" />
+
+  <!-- Lower point (ivory, pointing up) -->
+  <path d="M4 27.5 H28 L16 16 Z" fill="#F5ECD7" />
+
+  <!-- Checker ring at the crossing -->
+  <circle cx="16" cy="16" r="4.6" fill="none" stroke="#C9A227" stroke-width="1.9" />
+</svg>
