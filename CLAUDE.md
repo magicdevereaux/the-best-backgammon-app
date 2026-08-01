@@ -40,105 +40,29 @@ above enforced so nothing is trusted that isn't real. Human readability is a
 secondary goal there and a *primary* one in [`README.md`](README.md) — that file
 is the human's front door and should stay welcoming and prose-y.
 
-## What this is
-
-A full-stack backgammon app: one Django REST backend shared by **two clients** — a
-React web app and a React Native (Expo) mobile app. It supports hotseat play,
-online games via shareable links, user accounts with JWT auth, single games and
-match play (first to N points), gammon/backgammon scoring, and the doubling cube
-(with the Crawford rule in matches).
-
-Both clients re-implement the same pure game logic locally (for legal-move
-highlighting and tentative "staged" turns) and send committed turns to the
-backend, which re-validates everything authoritatively.
-
-## Tech stack
-
-| Part | Stack |
-|------|-------|
-| Backend | Django 4.2 + Django REST Framework, `djangorestframework-simplejwt`, `django-cors-headers`. **SQLite** (dev). WSGI. |
-| Web | React 18 (Create React App / `react-scripts` 5), `react-router-dom` 6. Dev server proxies `/api/*` to `:8000`. |
-| Mobile | Expo SDK 56 (React Native 0.85, React 19), Expo Router (file-based), `react-native-svg` board, `expo-secure-store`. Landscape-locked. EAS build config present. |
-
-## Repo structure
-
-```
-backend/    Django REST API (shared by both clients)
-  backgammon/   settings (env-driven) + root urls + health.py
-  game/         models.py, serializers.py, views.py, game_logic.py, urls.py, tests/
-frontend/   React web client  (src/: api/ components/ hooks/ pages/ context/ utils/)
-mobile/     Expo mobile client (app/: router screens; src/: api/ components/ game/ context/)
-docs/       architecture/ + operations/ + legal/ + decisions/  (see below)
-.github/    CI workflow running all three test suites
-Dockerfile  Procfile  .dockerignore   deploy scaffolding (gunicorn, host-agnostic)
-railway.json                          Railway builder + healthcheck config
-README.md   user-facing setup & feature overview
-```
+## The engine exists three times over
 
 The **canonical game engine** is [`backend/game/game_logic.py`](backend/game/game_logic.py).
 It is ported to JS twice — [`frontend/src/utils/gameLogic.js`](frontend/src/utils/gameLogic.js)
 and [`mobile/src/game/logic.js`](mobile/src/game/logic.js). **These three files must
 stay in sync**; change one and mirror the others.
 
-## Running locally
-
-**Backend** (from `backend/`, with the venv active):
-```bash
-python manage.py migrate
-python manage.py runserver          # http://localhost:8000/api/
-```
-The venv lives at `backend/venv/`; Django is invoked as
-`backend/venv/Scripts/python.exe` directly.
-
-**Node on this Windows machine.** POSIX nvm is cloned at `~/.nvm` (Node v22.9.0
-and v20.3.0, `default` alias → `node`). As of 2026-07-25 it is wired up: `~/.bashrc`
-sources `nvm.sh` and `~/.profile` sources `~/.bashrc`, and Node's bin directory is
-on the Windows user PATH. Practical consequences:
-
-- A **fresh** shell (new terminal, new session) has `node`/`npm` — just run them.
-- A **login** bash shell always works: `bash -lc 'node -v'`.
-- `$NVM_DIR` is only set *after* the profile loads — don't write
-  `. "$NVM_DIR/nvm.sh"` blind; it silently no-ops in a shell that hasn't sourced
-  the profile. Use `. "$HOME/.nvm/nvm.sh"` or the explicit PATH prefix
-  `export PATH="$HOME/.nvm/versions/node/v22.9.0/bin:$PATH"` as the fallback.
-
-**Web** (from `frontend/`): `npm install && npm start` → http://localhost:3000
-(requests to `/api/*` proxy to Django).
-
-**Mobile** (from `mobile/`): `npm install && npm start`, then `i`/`a` or scan in
-Expo Go. The client auto-detects the dev-machine LAN IP from Metro; the backend
-must be reachable (`runserver 0.0.0.0:8000` and add the host to `ALLOWED_HOSTS`).
-Override the host via `MANUAL_OVERRIDE` in [`mobile/src/api/config.js`](mobile/src/api/config.js).
-
-See [`README.md`](README.md) for the full device matrix and EAS build commands.
-
 ## Configuration (all env-driven, dev needs none)
 
 **Nothing needs configuring for local dev** — every var has a working default and
-no `.env` file is required. That property is load-bearing; preserve it.
+no `.env` file is required. That property is load-bearing; preserve it. The vars
+themselves are documented in [`backend/.env.example`](backend/.env.example). Two
+behaviours you can't read off that file:
 
-- **Backend** reads env via `os.environ` in [`settings.py`](backend/backgammon/settings.py)
-  (with optional `.env` loading through `python-dotenv`). Vars are documented in
-  [`backend/.env.example`](backend/.env.example): `SECRET_KEY`, `DEBUG`,
-  `ALLOWED_HOSTS`, `DATABASE_URL`, `CORS_ALLOWED_ORIGINS`,
-  `CSRF_TRUSTED_ORIGINS`, `THROTTLE_RATE_*`, `LOG_LEVEL`, and serving vars
-  (`PORT`, `WEB_CONCURRENCY`). `SECRET_KEY` falls back to the old dev key **only**
-  under `DEBUG`; with `DEBUG=False` a missing key raises `ImproperlyConfigured`.
-- **Security settings are gated on `DEBUG`.** SSL redirect, HSTS, secure cookies,
-  nosniff, and `X_FRAME_OPTIONS` apply only when `DEBUG=False`.
+- **`SECRET_KEY` falls back to the old dev key only under `DEBUG`.** With
+  `DEBUG=False` a missing key raises `ImproperlyConfigured` at startup.
+- **The security settings are gated on `DEBUG`.** SSL redirect, HSTS, secure
+  cookies, nosniff, and `X_FRAME_OPTIONS` apply only when `DEBUG=False`.
   `manage.py check --deploy` reports **0 issues** in that mode.
-- **Database** resolves through `dj-database-url` from `DATABASE_URL`, defaulting
-  to the same SQLite file as before. Postgres needs only the env var — the driver
-  is already installed.
-- **Web** resolves its API base from `REACT_APP_API_BASE_URL`
-  ([`frontend/src/api/config.js`](frontend/src/api/config.js)), defaulting to `""`
-  so the CRA dev proxy is unchanged.
-- **Mobile** resolves in this order: `MANUAL_OVERRIDE` → `EXPO_PUBLIC_API_URL` →
-  `expoConfig.extra.apiUrl` → Metro `hostUri` (dev only) → loopback (dev only) →
-  hard configuration error ([`mobile/src/api/config.js`](mobile/src/api/config.js)).
-  A release build with no configured host now **throws a readable error at the
-  first API call** instead of silently pointing at localhost, and rejects
-  non-`https` production URLs.
+
+Client-side API host resolution lives in [`frontend/CLAUDE.md`](frontend/CLAUDE.md)
+and [`mobile/CLAUDE.md`](mobile/CLAUDE.md), which load when you work in those
+directories.
 
 `/healthz/` ([`health.py`](backend/backgammon/health.py)) is unauthenticated and
 does a `SELECT 1`; it returns 503 if the DB is unreachable. The root
@@ -146,16 +70,8 @@ does a `SELECT 1`; it returns 503 if the DB is unreachable. The root
 `CMD` binds Railway's injected `$PORT` and runs `migrate` before `exec`-ing
 gunicorn as PID 1.
 
-**Deploy target is Railway** (decided 2026-07-31; the owner's `howl` project runs
-there). [`railway.json`](railway.json) pins the **Dockerfile** builder — *not*
-Railpack, which is what `howl` uses — sets `healthcheckPath: /healthz/`, and
-scopes `watchPatterns` to `backend/**` so client- and docs-only commits don't
-redeploy the API. The runbook is
-[railway-deploy.md](docs/operations/railway-deploy.md). Two traps recorded there:
-Railway probes the health check from an internal host, so `ALLOWED_HOSTS` needs
-`healthcheck.railway.app` alongside `${{RAILWAY_PUBLIC_DOMAIN}}` or the probe
-400s while logs look healthy; and the filesystem is **ephemeral**, so SQLite
-would be wiped every deploy — Postgres is mandatory there, not optional.
+Deploy target is **Railway** — runbook and its traps in
+[railway-deploy.md](docs/operations/railway-deploy.md) (or the `railway-deploy` skill).
 
 ## Tests
 
@@ -164,18 +80,6 @@ would be wiped every deploy — Postgres is mandatory there, not optional.
 | Backend | **314** | `python manage.py test game` (`backend/`, in-memory DB) |
 | Web | **207** | `CI=true npm test -- --watchAll=false` (`frontend/`) |
 | Mobile | **114** | `CI=true npx jest` (`mobile/`) |
-
-CI runs all three on push and PR — [`.github/workflows/ci.yml`](.github/workflows/ci.yml),
-one job per suite.
-
-Backend tests live in [`backend/game/tests/`](backend/game/tests/) (models, views,
-auth, lobby, match, serializers, logic). Web tests sit beside sources in
-`__tests__/` dirs; mobile likewise under `src/**/__tests__/`.
-
-Auth has full client + server coverage: backend `test_auth.py`; web
-`api/__tests__/authApi.test.js` + `apiClient.test.js` + `pages/__tests__/LoginPage.test.jsx`;
-mobile `api/__tests__/{tokenStore,auth,client}.test.js`. See [auth.md](docs/architecture/auth.md)
-for the map.
 
 All three suites were **green as of 2026-07-31** (314 / 207 / 114, 635 total, zero
 failures). If you see a failure, it is yours — the baseline is clean.
@@ -294,33 +198,11 @@ Board is `points[24]` (index = point − 1), plus `bar` and `off` counts per pla
 
 ## Deeper docs
 
-Index with contribution rules: [docs/README.md](docs/README.md).
-
-- [docs/architecture/overview.md](docs/architecture/overview.md) — how web, mobile,
-  and backend relate; auth; online multiplayer; sync.
-- [docs/architecture/api.md](docs/architecture/api.md) — **full HTTP reference**:
-  every route, request/response shape by serializer, per-endpoint error tables
-  with real codes and messages, the seat-permission matrix. Check here before
-  reading `views.py`.
-- [docs/architecture/clients.md](docs/architecture/clients.md) — map of both
-  clients: counterpart file table, staged-turn flow with real state names,
-  routes, token storage, gating, rendering, engine duplication.
-- [docs/architecture/auth.md](docs/architecture/auth.md) — accounts, JWT endpoints,
-  client token lifecycle + refresh-retry, auth test map, security limitations.
-- [docs/architecture/game-logic.md](docs/architecture/game-logic.md) — the rules
-  engine, combined-move DFS, maximal-dice enforcement.
-- [docs/architecture/data-model.md](docs/architecture/data-model.md) — Django
-  models and schema.
-- [docs/operations/going-live.md](docs/operations/going-live.md) — production
-  readiness: blocked-on-owner, still-open-in-code, and done, with file/line
-  evidence. **Start here** before any launch work.
-- [docs/operations/railway-deploy.md](docs/operations/railway-deploy.md) —
-  step-by-step Railway runbook: service creation, Postgres plugin and
-  `DATABASE_URL`, every env var, migrations, superuser, domain, smoke test.
-- [docs/legal/](docs/legal/README.md) — **draft** privacy policy and terms, written
-  against what the code actually collects. Full of `[TODO]` markers needing the
-  owner's real details; both stores require the policy at a live public URL.
-- [docs/decisions/adr-001-combined-moves.md](docs/decisions/adr-001-combined-moves.md).
+Annotated index with contribution rules: [docs/README.md](docs/README.md) — start
+there. Two entries are worth naming here:
+[api.md](docs/architecture/api.md) is the full HTTP reference (read it before
+`views.py`), and [going-live.md](docs/operations/going-live.md) is the production
+readiness ledger — start there before any launch work.
 
 ## Planned / Not Yet Implemented
 
