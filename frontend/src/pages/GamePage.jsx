@@ -7,6 +7,7 @@ import DoublingCube from "../components/DoublingCube";
 import GameOverScreen from "../components/GameOverScreen";
 import MatchScore from "../components/MatchScore";
 import { useGame } from "../hooks/useGame";
+import { blockedSeat } from "../utils/seats";
 import { useAuth } from "../context/AuthContext";
 import { joinGame, createGame } from "../api/gameApi";
 import { fetchMatch, nextGame } from "../api/matchApi";
@@ -16,6 +17,7 @@ const T = {
   heading: { margin: "0 0 0.25rem", fontWeight: 700, fontSize: "1.1rem", color: "var(--ivory)" },
   sub:     { margin: "0 0 0.75rem", fontSize: "0.85rem", color: "var(--text-secondary)" },
   err:     { color: "var(--error)", fontSize: "0.85rem", marginTop: "0.5rem" },
+  closed:  { margin: "0 0 0.75rem", fontSize: "0.85rem", fontWeight: 600, color: "var(--error)" },
   input:   { background: "var(--surface)", border: "1px solid var(--border)", color: "var(--ivory)", borderRadius: 5, padding: "0.45rem 0.7rem", fontSize: "0.85rem" },
   joinBtn: { padding: "0.5rem 1rem", background: "var(--gold)", color: "var(--on-gold)", border: "none", borderRadius: 5, fontWeight: 600, cursor: "pointer" },
 };
@@ -30,8 +32,8 @@ export default function GamePage() {
     pendingMoves, legalMoves, mustUseMoreDice,
     stageMove, resetTurn, confirmTurn,
     offerDouble, respondToDouble, canOfferDouble,
-    reload,
-  } = useGame(id);
+    deadlocked, reload,
+  } = useGame(id, user?.id);
 
   const [guestJoinName, setGuestJoinName] = useState("");
   const [joinError, setJoinError] = useState(null);
@@ -93,6 +95,15 @@ export default function GamePage() {
 
   const turnName = game.current_turn === "p1" ? game.player1_name : game.player2_name;
 
+  // Deadlock copy: name the seat that owes the next action (the responder while
+  // a double is pending, otherwise the current turn). `viewer_seat` is the
+  // server's ownership signal — when it says the closed seat isn't ours, the
+  // player reading this is the survivor.
+  const closedSeat = blockedSeat(game);
+  const closedName = closedSeat === "p1" ? game.player1_name : game.player2_name;
+  const closedSeatIsTheirs =
+    (game.viewer_seat === "p1" || game.viewer_seat === "p2") && game.viewer_seat !== closedSeat;
+
   return (
     <div style={T.page}>
       {game.status === "finished" && (
@@ -109,35 +120,49 @@ export default function GamePage() {
 
       <h2 style={T.heading}>{game.player1_name} vs {game.player2_name}</h2>
       {game.status === "active" && (
-        <p style={T.sub}>{turnName}'s turn</p>
+        deadlocked ? (
+          <p style={T.closed}>
+            {closedSeatIsTheirs
+              ? "Your opponent deleted their account — this game can't continue."
+              : `${closedName} deleted their account — this game can't continue.`}
+          </p>
+        ) : (
+          <p style={T.sub}>{turnName}'s turn</p>
+        )
       )}
 
       <div style={{ overflowX: "auto" }}>
         <Board
           boardState={stagedBoard}
           currentPlayer={game.current_turn}
-          legalMoves={legalMoves}
+          legalMoves={deadlocked ? [] : legalMoves}
           onMove={stageMove}
         />
       </div>
 
       <Dice diceValues={stagedDice} />
 
-      <DoublingCube
-        game={game}
-        canOfferDouble={canOfferDouble}
-        onOfferDouble={offerDouble}
-        onRespondToDouble={respondToDouble}
-      />
+      {/* Every action on a closed seat 403s, so a deadlocked game offers no
+          controls at all — the board stays visible, read-only. */}
+      {!deadlocked && (
+        <>
+          <DoublingCube
+            game={game}
+            canOfferDouble={canOfferDouble}
+            onOfferDouble={offerDouble}
+            onRespondToDouble={respondToDouble}
+          />
 
-      <GameControls
-        game={game}
-        onRollDice={rollDice}
-        onResetTurn={resetTurn}
-        onConfirmTurn={confirmTurn}
-        hasPendingMoves={pendingMoves.length > 0}
-        mustUseMoreDice={mustUseMoreDice}
-      />
+          <GameControls
+            game={game}
+            onRollDice={rollDice}
+            onResetTurn={resetTurn}
+            onConfirmTurn={confirmTurn}
+            hasPendingMoves={pendingMoves.length > 0}
+            mustUseMoreDice={mustUseMoreDice}
+          />
+        </>
+      )}
 
       {actionError && <p style={T.err}>{actionError}</p>}
     </div>

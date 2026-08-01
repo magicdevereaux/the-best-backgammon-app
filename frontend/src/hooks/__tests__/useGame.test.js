@@ -265,3 +265,130 @@ describe('useGame', () => {
     expect(result.current.pendingMoves).toEqual([]);
   });
 });
+
+/*
+ * Auto-refresh. The web client used to require a manual reload to see an
+ * opponent's move; it now polls on the same 3.5s cadence as mobile, with the
+ * same guards. Fake timers throughout — advance by POLL_MS to fire a tick.
+ */
+describe('useGame polling', () => {
+  const ONLINE = { ...baseGame, player1_user: 1, player2_user: 2, updated_at: 't1' };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    jest.useFakeTimers();
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  // Settles the initial fetch without letting waitFor advance the poll timer.
+  async function load(hookArgs = [1, 1]) {
+    const rendered = renderHook(() => useGame(...hookArgs));
+    await act(async () => {});
+    return rendered;
+  }
+
+  test('re-fetches an active online game every 3.5s', async () => {
+    gameApi.fetchGame.mockResolvedValue(ONLINE);
+    await load();
+    expect(gameApi.fetchGame).toHaveBeenCalledTimes(1);
+
+    await act(async () => { jest.advanceTimersByTime(3500); });
+    expect(gameApi.fetchGame).toHaveBeenCalledTimes(2);
+
+    await act(async () => { jest.advanceTimersByTime(3500); });
+    expect(gameApi.fetchGame).toHaveBeenCalledTimes(3);
+  });
+
+  test('swaps in a changed payload but leaves an unchanged one alone', async () => {
+    gameApi.fetchGame.mockResolvedValue(ONLINE);
+    const { result } = await load();
+    const first = result.current.game;
+
+    // Same updated_at: the identical object is kept, so nothing re-renders.
+    await act(async () => { jest.advanceTimersByTime(3500); });
+    expect(result.current.game).toBe(first);
+
+    // The opponent moved.
+    gameApi.fetchGame.mockResolvedValue({ ...ONLINE, current_turn: 'p2', updated_at: 't2' });
+    await act(async () => { jest.advanceTimersByTime(3500); });
+    expect(result.current.game.current_turn).toBe('p2');
+  });
+
+  test('skips a tick while the local player has staged moves', async () => {
+    gameApi.fetchGame.mockResolvedValue(ONLINE);
+    const { result } = await load();
+
+    act(() => { result.current.stageMove(1, 4); });
+
+    await act(async () => { jest.advanceTimersByTime(3500 * 3); });
+    expect(gameApi.fetchGame).toHaveBeenCalledTimes(1); // only the initial load
+    // The staged turn survived untouched.
+    expect(result.current.pendingMoves).toEqual([{ from_point: 1, to_point: 4 }]);
+    expect(result.current.stagedDice).toEqual([5]);
+
+    // Once the staged moves are cleared, polling resumes.
+    act(() => { result.current.resetTurn(); });
+    await act(async () => { jest.advanceTimersByTime(3500); });
+    expect(gameApi.fetchGame).toHaveBeenCalledTimes(2);
+  });
+
+  test('never polls a local hotseat game', async () => {
+    // Both seats on this device: no accounts, or only the viewer's own.
+    for (const g of [
+      { ...baseGame, player1_user: null, player2_user: null },
+      { ...baseGame, player1_user: 1, player2_user: null },
+    ]) {
+      jest.clearAllMocks();
+      gameApi.fetchGame.mockResolvedValue(g);
+      const { unmount } = await load();
+      await act(async () => { jest.advanceTimersByTime(3500 * 4); });
+      expect(gameApi.fetchGame).toHaveBeenCalledTimes(1);
+      unmount();
+    }
+  });
+
+  test('polls a waiting game so the creator sees the opponent arrive', async () => {
+    gameApi.fetchGame.mockResolvedValue({ ...ONLINE, status: 'waiting', player2_user: null });
+    await load();
+    await act(async () => { jest.advanceTimersByTime(3500); });
+    expect(gameApi.fetchGame).toHaveBeenCalledTimes(2);
+  });
+
+  test('stops polling once the game is finished', async () => {
+    gameApi.fetchGame.mockResolvedValue({ ...ONLINE, status: 'finished', winner: 'p1' });
+    await load();
+    await act(async () => { jest.advanceTimersByTime(3500 * 4); });
+    expect(gameApi.fetchGame).toHaveBeenCalledTimes(1);
+  });
+
+  test('stops polling a game deadlocked on a closed seat', async () => {
+    // p2 deleted their account and it is p2's turn — the payload can never change.
+    gameApi.fetchGame.mockResolvedValue({ ...ONLINE, current_turn: 'p2', player2_deleted: true });
+    const { result } = await load();
+    expect(result.current.deadlocked).toBe(true);
+
+    await act(async () => { jest.advanceTimersByTime(3500 * 4); });
+    expect(gameApi.fetchGame).toHaveBeenCalledTimes(1);
+  });
+
+  test('keeps polling when the closed seat is not the one that has to act', async () => {
+    // p2 deleted, but p1 is on turn — p1 can still play, so this is live.
+    gameApi.fetchGame.mockResolvedValue({ ...ONLINE, current_turn: 'p1', player2_deleted: true });
+    const { result } = await load();
+    expect(result.current.deadlocked).toBe(false);
+
+    await act(async () => { jest.advanceTimersByTime(3500); });
+    expect(gameApi.fetchGame).toHaveBeenCalledTimes(2);
+  });
+
+  test('clears the interval on unmount', async () => {
+    gameApi.fetchGame.mockResolvedValue(ONLINE);
+    const { unmount } = await load();
+    unmount();
+
+    await act(async () => { jest.advanceTimersByTime(3500 * 5); });
+    expect(gameApi.fetchGame).toHaveBeenCalledTimes(1);
+  });
+});

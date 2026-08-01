@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import {
   fetchGame,
   rollDice as apiRollDice,
@@ -7,6 +7,11 @@ import {
   respondToDouble as apiRespondToDouble,
 } from "../api/gameApi";
 import { getLegalMoves, getCombinedMoves, applyMove, maxMovesUsable } from "../utils/gameLogic";
+import { isDeadlocked, isOnlineGame } from "../utils/seats";
+
+// How often to re-fetch the game to pick up the opponent's moves. Matches the
+// mobile client's cadence (mobile/src/game/useGame.js).
+const POLL_MS = 3500;
 
 function cloneBoard(boardState) {
   return {
@@ -21,8 +26,12 @@ function cloneBoard(boardState) {
  * tentative moves the player is trying out before committing them. Staged
  * moves update a local copy of the board and dice but are not sent to the
  * backend until `confirmTurn` is called.
+ *
+ * `viewerUserId` (the logged-in user's id, or undefined for a guest) is only
+ * used to tell an online game from a single-device hotseat one, which decides
+ * whether polling makes any sense — see utils/seats.isOnlineGame.
  */
-export function useGame(gameId) {
+export function useGame(gameId, viewerUserId) {
   const [game, setGame] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -46,6 +55,40 @@ export function useGame(gameId) {
   }, [gameId, reloadToken]);
 
   const reload = useCallback(() => setReloadToken((t) => t + 1), []);
+
+  // The turn sits on a seat closed by account deletion: nothing on the server
+  // can change it, so the banner says so and the poll below stops.
+  const deadlocked = isDeadlocked(game);
+
+  // Keep refs of the bits the poller reads so the interval can stay stable (one
+  // subscription for the life of the game) without disrupting a staged turn.
+  const pendingRef = useRef(0);
+  const statusRef = useRef(null);
+  const pollableRef = useRef(false);
+  pendingRef.current = pendingMoves.length;
+  statusRef.current = game?.status;
+  pollableRef.current = isOnlineGame(game, viewerUserId) && !deadlocked;
+
+  // Poll for the opponent's moves and doubles. Skips a tick whenever the local
+  // player has staged moves (a refresh must never clobber their turn), when the
+  // game is finished, when it's deadlocked on a closed seat (nobody is coming —
+  // see seats.isDeadlocked), and entirely for hotseat games, where this device
+  // is the only thing that can change the board. Only state that actually
+  // changed is swapped in (by updated_at), so a stream of identical responses
+  // causes no re-render and no flicker.
+  useEffect(() => {
+    if (!gameId) return;
+    const interval = setInterval(() => {
+      if (!pollableRef.current) return;
+      if (statusRef.current === "finished" || pendingRef.current > 0) return;
+      fetchGame(gameId)
+        .then((fresh) => {
+          setGame((cur) => (cur && fresh.updated_at === cur.updated_at ? cur : fresh));
+        })
+        .catch(() => {});
+    }, POLL_MS);
+    return () => clearInterval(interval);
+  }, [gameId]);
 
   // Whenever the authoritative game state changes (initial load, a dice
   // roll, or a confirmed turn), start a fresh staged turn from it.
@@ -203,6 +246,7 @@ export function useGame(gameId) {
     offerDouble,
     respondToDouble,
     canOfferDouble,
+    deadlocked,
     reload,
   };
 }
