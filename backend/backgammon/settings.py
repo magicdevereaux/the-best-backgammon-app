@@ -48,6 +48,67 @@ def env_list(name, default):
     return [item.strip() for item in raw.split(",") if item.strip()]
 
 
+def parse_admin(entry):
+    """
+    Turn one ADMINS entry into Django's (name, email) pair.
+
+    Accepts "Name <addr@example.com>" or a bare "addr@example.com".
+    """
+    if "<" in entry and entry.rstrip().endswith(">"):
+        name, _, email = entry.rstrip().rstrip(">").partition("<")
+        return (name.strip(), email.strip())
+    return (entry.strip(), entry.strip())
+
+
+def cache_settings(redis_url):
+    """
+    Build the CACHES dict for a given REDIS_URL.
+
+    Empty/None gives Django's in-process LocMemCache — correct for dev, tests
+    and CI, and the reason no configuration is needed to run this project. It
+    is *not* correct for a multi-worker deployment: DRF stores throttle
+    counters in the default cache, so per-process caches mean each gunicorn
+    worker enforces its own copy of every rate limit (see .env.example).
+
+    Split out as a function so tests can exercise both branches without a live
+    Redis and without re-importing this module.
+    """
+    if redis_url:
+        return {
+            "default": {
+                "BACKEND": "django.core.cache.backends.redis.RedisCache",
+                "LOCATION": redis_url,
+                # Shared Redis instances are common; keep our keys namespaced.
+                "KEY_PREFIX": "backgammon",
+            }
+        }
+    return {
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+            "LOCATION": "backgammon-locmem",
+        }
+    }
+
+
+def sentry_options(dsn, environment, release, traces_sample_rate):
+    """
+    Build the kwargs for `sentry_sdk.init()`, or None when there is no DSN.
+
+    No DSN means no init call at all — importing this module with an empty
+    environment must not reach out to anything.
+    """
+    if not dsn:
+        return None
+    return {
+        "dsn": dsn,
+        "environment": environment,
+        "release": release or None,
+        "traces_sample_rate": traces_sample_rate,
+        # Never ship usernames/IPs/request bodies to a third party by default.
+        "send_default_pii": False,
+    }
+
+
 # --------------------------------------------------------------------------
 # Core
 # --------------------------------------------------------------------------
@@ -131,6 +192,16 @@ DATABASES = {
         ssl_require=env_bool("DB_SSL_REQUIRE", False),
     )
 }
+
+# --------------------------------------------------------------------------
+# Cache (this is where DRF keeps throttle counters)
+# --------------------------------------------------------------------------
+# REDIS_URL overrides; default is an in-process LocMemCache so dev/CI need no
+# Redis. See cache_settings() above for why that matters in production.
+
+REDIS_URL = os.environ.get("REDIS_URL", "").strip()
+
+CACHES = cache_settings(REDIS_URL)
 
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
@@ -300,3 +371,56 @@ LOGGING = {
         },
     },
 }
+
+# --------------------------------------------------------------------------
+# Error reporting
+# --------------------------------------------------------------------------
+# Two independent, both-optional channels. With an empty environment neither is
+# active and behaviour is exactly as before.
+
+# 1. ADMINS — Django's built-in "email me the traceback" path. Format:
+#    "Name <addr@example.com>, Other <other@example.com>". The mail_admins
+#    handler is only attached when ADMINS is non-empty, because our LOGGING
+#    dict replaces Django's default django.request logger wholesale.
+ADMINS = [parse_admin(entry) for entry in env_list("ADMINS", [])]
+MANAGERS = ADMINS
+SERVER_EMAIL = os.environ.get("SERVER_EMAIL", "root@localhost")
+
+if ADMINS:
+    LOGGING["handlers"]["mail_admins"] = {
+        "class": "django.utils.log.AdminEmailHandler",
+        "level": "ERROR",
+        "include_html": False,
+    }
+    LOGGING["loggers"]["django.request"]["handlers"].append("mail_admins")
+
+# 2. Sentry — initialised only when SENTRY_DSN is set, and never under test.
+#    Release falls back to the commit SHA Railway injects into the build.
+SENTRY_DSN = os.environ.get("SENTRY_DSN", "").strip()
+SENTRY_ENVIRONMENT = os.environ.get(
+    "SENTRY_ENVIRONMENT", "development" if DEBUG else "production"
+).strip()
+SENTRY_RELEASE = (
+    os.environ.get("SENTRY_RELEASE", "").strip()
+    or os.environ.get("RAILWAY_GIT_COMMIT_SHA", "").strip()
+)
+SENTRY_TRACES_SAMPLE_RATE = float(os.environ.get("SENTRY_TRACES_SAMPLE_RATE", "0"))
+
+SENTRY_OPTIONS = (
+    None
+    if TESTING
+    else sentry_options(
+        SENTRY_DSN, SENTRY_ENVIRONMENT, SENTRY_RELEASE, SENTRY_TRACES_SAMPLE_RATE
+    )
+)
+SENTRY_ENABLED = False
+
+if SENTRY_OPTIONS is not None:
+    try:
+        import sentry_sdk
+        from sentry_sdk.integrations.django import DjangoIntegration
+    except ImportError:  # pragma: no cover - sentry-sdk is pinned in requirements.txt
+        pass
+    else:
+        sentry_sdk.init(integrations=[DjangoIntegration()], **SENTRY_OPTIONS)
+        SENTRY_ENABLED = True

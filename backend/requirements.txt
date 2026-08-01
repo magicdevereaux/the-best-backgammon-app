@@ -25,3 +25,15 @@ whitenoise==6.12.0            # static file serving from the app process
 # Unused in dev (default DATABASE_URL is the local SQLite file); required when
 # DATABASE_URL points at PostgreSQL.
 psycopg2-binary==2.9.12
+
+# --- Cache -----------------------------------------------------------------
+# Client for django.core.cache.backends.redis.RedisCache. Unused in dev (no
+# REDIS_URL == LocMemCache); required in production so DRF's throttle counters
+# are shared across gunicorn workers instead of one copy per worker.
+redis==8.1.0
+
+# --- Error monitoring ------------------------------------------------------
+# No-op unless SENTRY_DSN is set. `[django]` pulls in nothing extra by itself
+# (the Django integration ships in the base wheel) but pins the extra's intent.
+sentry-sdk[django]==2.66.1
+certifi==2026.7.22            # TLS roots for sentry-sdk's transport
