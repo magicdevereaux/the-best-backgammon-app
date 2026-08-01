@@ -1,5 +1,6 @@
 import copy
 
+from django.db.models import Q
 from rest_framework import generics, mixins, viewsets, status
 from rest_framework.decorators import action
 from rest_framework.pagination import PageNumberPagination
@@ -368,6 +369,51 @@ def _match_permission_error(match, user):
     return "This match belongs to registered players. Log in to continue it."
 
 
+def _list_scope_q(user):
+    """
+    The rows ``GET /api/games/`` may show `user` (anonymous or not).
+
+    The list used to be ``Game.objects.all()`` on an ``AllowAny`` view with a
+    ``fields = "__all__"`` serializer, so an anonymous caller could page through
+    every row in the table: live board states, both usernames, both user ids.
+    Scoping it to the *requester* fixes that. Three disjunctive rules, unioned:
+
+      1. **Open games** (``status="waiting"``) with neither seat closed — this
+         is the public lobby. Its whole purpose is to advertise a seat to
+         strangers, so it stays visible to everyone. A deleted account's
+         unjoined adverts are already removed outright (see
+         ``_purge_unjoined_lobby_entries``), so the closure check here is
+         belt-and-braces: it means the lobby cannot advertise an unjoinable
+         seat even if a closed-seat row ever survives that purge.
+      2. **Your own games** — either seat's user FK is the requester. Registered
+         players get their full history back regardless of status. Anonymous
+         requesters have no identity, so this rule contributes nothing for them.
+      3. **Fully-guest games** — *both* seat FKs null and *neither* seat closed.
+         Guest/hotseat resume depends on finding your game in the list with no
+         account to scope by, and such a row carries no PII: no usernames tied to
+         accounts, no user ids. Requiring both ``player*_deleted`` False keeps a
+         seat orphaned by account deletion (null FK + flag) out of this rule —
+         the same distinction ``_seat_permission_error`` draws.
+
+    Scoping applies to ``list`` only. ``retrieve`` by id stays open to everyone
+    because link/code sharing is how online games are joined at all.
+
+    Note the deliberate consequence for a *mixed* game (one guest seat, one
+    registered seat) past the waiting stage: the guest can no longer find it in
+    the list and needs the id/link. Nothing else can be done without a guest
+    identity — see "Guest seats are unverifiable" in the root ``CLAUDE.md``.
+    """
+    scope = Q(status="waiting", player1_deleted=False, player2_deleted=False) | Q(
+        player1_user__isnull=True,
+        player2_user__isnull=True,
+        player1_deleted=False,
+        player2_deleted=False,
+    )
+    if user is not None and user.is_authenticated:
+        scope |= Q(player1_user=user) | Q(player2_user=user)
+    return scope
+
+
 def _finish_game(game, board, winner):
     """
     Finish a game won on the board: classify the win from the final position
@@ -583,6 +629,10 @@ class GameViewSet(
     delete someone else's game. All state changes go through the custom actions,
     which enforce seat ownership, so the generic write verbs are off the routed
     surface entirely (405).
+
+    ``list`` is scoped to the requester by ``_list_scope_q``; ``retrieve`` and
+    the detail actions deliberately are not (link sharing depends on fetching a
+    game by id).
     """
 
     serializer_class = GameSerializer
@@ -590,6 +640,8 @@ class GameViewSet(
 
     def get_queryset(self):
         qs = Game.objects.all()
+        if self.action == "list":
+            qs = qs.filter(_list_scope_q(self.request.user))
         status_filter = self.request.query_params.get("status")
         if status_filter:
             qs = qs.filter(status=status_filter)
