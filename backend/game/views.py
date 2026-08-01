@@ -623,6 +623,7 @@ class GameViewSet(
       POST /api/games/{id}/join/
       POST /api/games/{id}/offer_double/
       POST /api/games/{id}/respond_to_double/
+      POST /api/games/{id}/abandon/
 
     Deliberately **not** a ModelViewSet: PUT/PATCH/DELETE were routed with no
     permission check at all, so any caller could overwrite a board mid-game or
@@ -1015,6 +1016,91 @@ class GameViewSet(
             )
 
         game.save()
+
+        serializer = self.get_serializer(game)
+        return Response(serializer.data)
+
+    @action(detail=True, methods=["post"], url_path="abandon")
+    def abandon(self, request, pk=None):
+        """
+        Close out a game that is **deadlocked** by a closed seat.
+
+        This is not a resign button. Resigning has scoring semantics (you
+        concede points to your opponent); this endpoint exists only for the
+        one position the seat rules can produce but not escape: the player who
+        owes the next action deleted their account, so
+        ``_seat_permission_error`` refuses that seat to *everyone* — including
+        the surviving opponent, who would otherwise get to play both sides —
+        and the game can never advance again. See the "closed seat deadlocks
+        its game" gap in the root ``CLAUDE.md``.
+
+        Preconditions, in the order they are checked:
+
+          1. The game is ``active``. A ``finished`` game has nothing to close
+             out; a ``waiting`` game has no seat that owes an action yet.
+          2. The seat that owes the next action is closed. That seat is
+             normally ``current_turn``, but a pending double is answered by the
+             *offerer's opponent*, exactly as ``respond_to_double`` computes it.
+          3. The caller may act for the surviving seat, judged by the same
+             ``_seat_permission_error`` every gameplay action uses. A registered
+             survivor must be logged in as themselves; a guest survivor is
+             anonymous-playable, the documented guest-seat trade-off. If *both*
+             seats are closed the survivor seat check fails too, and nobody can
+             abandon — correct, since there is no survivor to act for.
+
+        The outcome invents nothing. The game finishes with no winner and a
+        non-scoring ``win_type="abandoned"``, and the match score is left
+        untouched — writing points nobody won is precisely why auto-forfeit was
+        rejected. The match is finished as well (again with no winner and no
+        score change), because ``next_game`` copies the seat-closure flags onto
+        the game it creates: leaving the match open would let the survivor mint
+        an endless series of games that are dead on arrival.
+        """
+        game = self.get_object()
+
+        if game.status == "finished":
+            return Response(
+                {"error": "Game is already finished."}, status=status.HTTP_400_BAD_REQUEST
+            )
+        if game.status != "active":
+            return Response(
+                {"error": "Game is not active."}, status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Whose action is the game waiting on? A pending double blocks all play
+        # until the offerer's opponent answers it.
+        blocked = (
+            opponent(game.double_offered_by) if game.double_offered_by else game.current_turn
+        )
+        blocked_closed = game.player1_deleted if blocked == "p1" else game.player2_deleted
+        if not blocked_closed:
+            return Response(
+                {
+                    "error": "This game is not abandoned — the player to act "
+                             "still has an open seat."
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        survivor = opponent(blocked)
+        perm_error = _seat_permission_error(game, request.user, seat=survivor)
+        if perm_error:
+            return Response({"error": perm_error}, status=status.HTTP_403_FORBIDDEN)
+
+        game.status = "finished"
+        game.winner = None
+        game.win_type = "abandoned"
+        game.points_value = 0
+        game.dice_values = []
+        game.double_offered_by = None
+        game.save()
+
+        if game.match_id:
+            match = game.match
+            # No winner, no score change — only the match's ability to spawn
+            # another dead game is revoked.
+            match.status = "finished"
+            match.save()
 
         serializer = self.get_serializer(game)
         return Response(serializer.data)
