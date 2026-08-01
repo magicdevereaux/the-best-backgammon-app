@@ -1,6 +1,13 @@
 import copy
+import logging
 
+from django.conf import settings
+from django.contrib.auth.models import User
+from django.contrib.auth.tokens import default_token_generator
+from django.core.mail import send_mail
 from django.db.models import Q
+from django.utils.encoding import force_bytes
+from django.utils.http import urlsafe_base64_encode
 from rest_framework import generics, mixins, viewsets, status
 from rest_framework.decorators import action
 from rest_framework.pagination import PageNumberPagination
@@ -17,6 +24,8 @@ from .serializers import (
     AccountDeleteSerializer,
     GameSerializer,
     MatchSerializer,
+    PasswordResetConfirmSerializer,
+    PasswordResetRequestSerializer,
     RegisterSerializer,
     UserSerializer,
 )
@@ -32,6 +41,8 @@ from .game_logic import (
     win_points,
     opponent,
 )
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -197,10 +208,17 @@ def _close_deleted_account_seats(user):
     Match.objects.filter(player2_user=user).update(player2_deleted=True)
 
 
-class MeView(generics.RetrieveDestroyAPIView):
+class MeView(generics.RetrieveUpdateDestroyAPIView):
     """
     ``GET /api/auth/me/``    — the current user's profile + computed stats.
+    ``PATCH /api/auth/me/``  — set or change the current user's email address.
     ``DELETE /api/auth/me/`` — permanently delete the current user's account.
+
+    **Why PATCH lives here.** Email is optional at registration, so an account
+    created before this field existed — or by someone who skipped it — needs a
+    way to add one later, otherwise password reset is permanently out of reach
+    for exactly the users who need it. ``UserSerializer`` marks every field but
+    ``email`` read-only, so this cannot become a general profile-rewrite hole.
 
     Deletion is hung off the existing "me" resource rather than a new
     ``/api/auth/delete-account/`` route for three reasons: it is the plain REST
@@ -247,6 +265,130 @@ class MeView(generics.RetrieveDestroyAPIView):
         user.delete()
 
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+# ---------------------------------------------------------------------------
+# Password reset
+# ---------------------------------------------------------------------------
+
+# One fixed sentence, returned for a hit and a miss alike. See
+# PasswordResetRequestView for why it can never vary.
+PASSWORD_RESET_REQUEST_DETAIL = (
+    "If an account with that email address exists, a password reset link has "
+    "been sent to it."
+)
+
+
+def build_password_reset_url(user):
+    """
+    The link that goes in the email.
+
+    Shape: ``{FRONTEND_BASE_URL}/reset-password/{uid}/{token}``.
+
+    The server cannot know where the client is served from — web is a separate
+    origin and mobile is a deep link — so the origin comes from the
+    ``FRONTEND_BASE_URL`` setting (defaulting to the React dev server). The uid
+    and token are path segments rather than a query string so a client router
+    can bind them as ordinary route params.
+    """
+    uid = urlsafe_base64_encode(force_bytes(user.pk))
+    token = default_token_generator.make_token(user)
+    return f"{settings.FRONTEND_BASE_URL}/reset-password/{uid}/{token}"
+
+
+def send_password_reset_email(user):
+    """
+    Mail one account its reset link. Never raises.
+
+    Swallowing send failures is a security requirement, not laziness: if a dead
+    SMTP host turned this request into a 500 while a miss stayed a 200, the
+    status code itself would become the account-enumeration oracle the flat
+    response text is designed to prevent. The failure is logged instead.
+    """
+    try:
+        send_mail(
+            subject="Reset your Backgammon password",
+            message=(
+                f"Hi {user.username},\n\n"
+                "Someone asked to reset the password on your Backgammon "
+                "account. Open the link below to choose a new one:\n\n"
+                f"{build_password_reset_url(user)}\n\n"
+                "If that wasn't you, you can ignore this email — your password "
+                "will not change until the link is used.\n"
+            ),
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            recipient_list=[user.email],
+            fail_silently=False,
+        )
+    except Exception:  # pragma: no cover - depends on a live mail backend
+        logger.exception("Failed to send password reset email to user %s", user.pk)
+
+
+class PasswordResetRequestView(generics.GenericAPIView):
+    """
+    ``POST /api/auth/password-reset/`` — ``{"email": "..."}``.
+
+    **Always 200, always the same body**, whether or not the address is
+    registered. A response that differed turns this unauthenticated endpoint
+    into a membership oracle: feed it a list of addresses and it tells you which
+    of them have accounts here. The throttle (scope ``password_reset``) caps
+    how fast that could be probed by timing instead.
+
+    Django's HTML ``PasswordResetView`` is deliberately not used — this project
+    has no session login, no templates and no server-rendered pages, so the
+    HTML flow would be a second, unreachable auth surface.
+
+    Multiple accounts may share an address (``User.email`` is not unique); each
+    one gets its own mail with its own token.
+    """
+
+    serializer_class = PasswordResetRequestSerializer
+    throttle_classes = [OptionalScopedRateThrottle]
+    throttle_scope = "password_reset"
+
+    def post(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        email = serializer.validated_data["email"]
+
+        # `email__iexact` because only the domain half is normalised on write;
+        # `is_active` because a disabled account should not be recoverable.
+        # An empty address can't reach here — EmailField rejects blanks — which
+        # matters, since it would otherwise match every account that never set
+        # one.
+        for user in User.objects.filter(email__iexact=email, is_active=True):
+            send_password_reset_email(user)
+
+        return Response(
+            {"detail": PASSWORD_RESET_REQUEST_DETAIL}, status=status.HTTP_200_OK
+        )
+
+
+class PasswordResetConfirmView(generics.GenericAPIView):
+    """
+    ``POST /api/auth/password-reset/confirm/`` —
+    ``{"uid": "...", "token": "...", "new_password": "..."}``.
+
+    On success the account's outstanding refresh tokens are blacklisted. A
+    reset is usually a response to a compromise, and without this the attacker's
+    existing session survives the very act meant to end it — SimpleJWT mints
+    access tokens straight from a refresh payload without consulting the
+    password. The legitimate user simply logs in again with their new password.
+    """
+
+    serializer_class = PasswordResetConfirmSerializer
+    throttle_classes = [OptionalScopedRateThrottle]
+    throttle_scope = "password_reset_confirm"
+
+    def post(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        user = serializer.save()
+        _blacklist_refresh_tokens(user)
+        return Response(
+            {"detail": "Your password has been reset. You can now log in."},
+            status=status.HTTP_200_OK,
+        )
 
 
 # ---------------------------------------------------------------------------

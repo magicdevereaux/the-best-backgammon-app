@@ -257,8 +257,9 @@ CSRF_TRUSTED_ORIGINS = env_list("CSRF_TRUSTED_ORIGINS", ["http://localhost:3000"
 # --------------------------------------------------------------------------
 # Django REST Framework
 # --------------------------------------------------------------------------
-# Throttle scopes `login`, `register` and `refresh` are consumed by the auth
-# views via `throttle_scope = "..."`; keep those names stable.
+# Throttle scopes `login`, `register`, `refresh`, `password_reset` and
+# `password_reset_confirm` are consumed by the auth views via
+# `throttle_scope = "..."`; keep those names stable.
 #
 # `refresh` is much looser than the other two on purpose: both clients call
 # /api/auth/refresh/ automatically on any 401, so the rate has to clear normal
@@ -275,6 +276,15 @@ THROTTLE_RATES = {
     "login": os.environ.get("THROTTLE_RATE_LOGIN", "10/hour"),
     "register": os.environ.get("THROTTLE_RATE_REGISTER", "5/hour"),
     "refresh": os.environ.get("THROTTLE_RATE_REFRESH", "60/hour"),
+    # Password reset. The request endpoint mails a third party, so an
+    # unthrottled one is both an enumeration probe and a way to use this app to
+    # spam someone else's inbox. `confirm` is looser because it is guessing
+    # against a signed token, but still capped so the token space can't be
+    # hammered.
+    "password_reset": os.environ.get("THROTTLE_RATE_PASSWORD_RESET", "5/hour"),
+    "password_reset_confirm": os.environ.get(
+        "THROTTLE_RATE_PASSWORD_RESET_CONFIRM", "20/hour"
+    ),
 }
 if TESTING:
     THROTTLE_RATES = {scope: None for scope in THROTTLE_RATES}
@@ -302,6 +312,44 @@ SIMPLE_JWT = {
     "ROTATE_REFRESH_TOKENS": True,
     "BLACKLIST_AFTER_ROTATION": True,
 }
+
+# --------------------------------------------------------------------------
+# Email (password reset, and Django's own ADMINS error mail)
+# --------------------------------------------------------------------------
+# Plain SMTP, so any provider works: SES, Postmark, Resend, Mailgun, Gmail —
+# they all speak it, and nothing here names one. Set EMAIL_HOST and the
+# credentials the provider gives you.
+#
+# With EMAIL_HOST unset the backend is Django's **console** backend: mail is
+# printed to stdout instead of sent. That is what keeps the "local dev needs no
+# .env" property true through a flow whose whole point is sending mail — run
+# the reset endpoint and the link appears in the runserver log, no account with
+# any provider required. `manage.py test` overrides this with the locmem
+# backend automatically.
+
+EMAIL_HOST = os.environ.get("EMAIL_HOST", "").strip()
+EMAIL_PORT = int(os.environ.get("EMAIL_PORT", "587"))
+EMAIL_HOST_USER = os.environ.get("EMAIL_HOST_USER", "")
+EMAIL_HOST_PASSWORD = os.environ.get("EMAIL_HOST_PASSWORD", "")
+EMAIL_USE_TLS = env_bool("EMAIL_USE_TLS", True)
+DEFAULT_FROM_EMAIL = os.environ.get(
+    "DEFAULT_FROM_EMAIL", "Backgammon <no-reply@localhost>"
+)
+
+EMAIL_BACKEND = (
+    "django.core.mail.backends.smtp.EmailBackend"
+    if EMAIL_HOST
+    else "django.core.mail.backends.console.EmailBackend"
+)
+
+# Origin of the *client*, used to build the password-reset link. The server
+# can't infer this — the web client is a separate origin and mobile is a deep
+# link — so it is configuration. Link shape:
+#   {FRONTEND_BASE_URL}/reset-password/{uid}/{token}
+# Trailing slashes are stripped so the joined URL never doubles one up.
+FRONTEND_BASE_URL = os.environ.get(
+    "FRONTEND_BASE_URL", "http://localhost:3000"
+).strip().rstrip("/")
 
 # --------------------------------------------------------------------------
 # Production hardening (only when DEBUG is False)

@@ -1,10 +1,26 @@
 from django.contrib.auth import password_validation
 from django.contrib.auth.models import User
+from django.contrib.auth.tokens import default_token_generator
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db.models import Sum
+from django.utils.http import urlsafe_base64_decode
 from rest_framework import serializers
 
 from .models import Game, Match
+
+
+def normalise_email(value):
+    """
+    Trim an address and lowercase its domain half.
+
+    Django's ``BaseUserManager.normalize_email`` is deliberately conservative:
+    the domain is case-insensitive per RFC 1034 so it is safe to fold, but the
+    local part is *not*, and lowercasing it wholesale would silently rewrite
+    addresses that some (rare, real) mail servers treat as distinct. Reset
+    lookups therefore use ``email__iexact`` rather than relying on this to make
+    stored values comparable.
+    """
+    return User.objects.normalize_email((value or "").strip())
 
 
 class GameSerializer(serializers.ModelSerializer):
@@ -80,6 +96,12 @@ class MatchSerializer(serializers.ModelSerializer):
 
 
 class UserSerializer(serializers.ModelSerializer):
+    # Optional, and writable via PATCH /api/auth/me/ — an address is the only
+    # way to recover a forgotten password, but requiring one would lock out
+    # every account registered before this field existed and would tax the
+    # guest-friendly "pick a name, start playing" path this app is built around.
+    email = serializers.EmailField(required=False, allow_blank=True)
+
     wins = serializers.SerializerMethodField()
     losses = serializers.SerializerMethodField()
     total_games = serializers.SerializerMethodField()
@@ -93,12 +115,20 @@ class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = [
-            "id", "username",
+            "id", "username", "email",
             "wins", "losses", "total_games",
             "total_gammons", "total_backgammons",
             "total_points_won", "total_points_lost",
             "win_percentage", "gammon_rate",
         ]
+        # `email` is the *only* writable field. Username is identity here —
+        # games and matches carry a denormalised copy of it in
+        # player1_name/player2_name, so letting a PATCH rewrite it would put
+        # the profile and every historical scoresheet out of step.
+        read_only_fields = ["username"]
+
+    def validate_email(self, value):
+        return normalise_email(value)
 
     def _stats(self, obj):
         if not hasattr(obj, "_serializer_stats_cache"):
@@ -198,11 +228,24 @@ class AccountDeleteSerializer(serializers.Serializer):
 class RegisterSerializer(serializers.Serializer):
     username = serializers.CharField(max_length=150)
     password = serializers.CharField(write_only=True, min_length=8)
+    # Optional on purpose: registration with username + password alone must keep
+    # working byte-for-byte as it always has. Supplying an address is what buys
+    # you password recovery — and, because account deletion re-checks the
+    # password, self-service deletion after a forgotten one.
+    #
+    # Not unique-checked: Django's `User.email` has no unique constraint, and
+    # adding one here would both need a migration and turn registration into an
+    # "is this address already registered?" oracle. A shared address simply
+    # means the reset flow mails every account that uses it.
+    email = serializers.EmailField(required=False, allow_blank=True)
 
     def validate_username(self, value):
         if User.objects.filter(username=value).exists():
             raise serializers.ValidationError("Username already taken.")
         return value
+
+    def validate_email(self, value):
+        return normalise_email(value)
 
     def validate(self, attrs):
         """
@@ -229,3 +272,80 @@ class RegisterSerializer(serializers.Serializer):
 
     def create(self, validated_data):
         return User.objects.create_user(**validated_data)
+
+
+class PasswordResetRequestSerializer(serializers.Serializer):
+    """
+    Input for ``POST /api/auth/password-reset/``.
+
+    Validates the *shape* of the address and nothing else. Whether it matches
+    an account is decided in the view, and never reflected in the response —
+    see ``PasswordResetRequestView``.
+    """
+
+    email = serializers.EmailField()
+
+    def validate_email(self, value):
+        return normalise_email(value)
+
+
+class PasswordResetConfirmSerializer(serializers.Serializer):
+    """
+    Input for ``POST /api/auth/password-reset/confirm/``.
+
+    ``uid`` is the base64url-encoded user pk and ``token`` comes from Django's
+    ``default_token_generator``. That generator hashes the user's current
+    password hash and ``last_login`` into the token, which gives single-use
+    semantics for free: the moment ``save()`` writes a new password, every
+    token minted against the old one stops verifying. Nothing needs to be
+    stored or expired by hand.
+
+    A bad uid and a bad token are deliberately indistinguishable in the error
+    response — either one means "this link is no good", and splitting them
+    would let a caller probe which user ids exist.
+    """
+
+    uid = serializers.CharField()
+    token = serializers.CharField()
+    new_password = serializers.CharField(write_only=True, min_length=8)
+
+    @staticmethod
+    def _user_from_uid(uid):
+        try:
+            pk = urlsafe_base64_decode(uid).decode()
+            return User.objects.get(pk=pk)
+        except (TypeError, ValueError, OverflowError, UnicodeDecodeError,
+                User.DoesNotExist):
+            return None
+
+    def validate(self, attrs):
+        """
+        Check the link first, then the password.
+
+        Order matters: validating the password against a link we are about to
+        reject would hand an attacker free password-policy feedback on a token
+        they do not hold. It also mirrors ``RegisterSerializer.validate`` —
+        Django's ``AUTH_PASSWORD_VALIDATORS`` are run explicitly, with the real
+        ``User`` instance so ``UserAttributeSimilarityValidator`` can reject a
+        password that echoes the username, and the resulting messages are
+        re-raised keyed on the field so clients see an ordinary DRF field error.
+        """
+        user = self._user_from_uid(attrs["uid"])
+        if user is None or not default_token_generator.check_token(user, attrs["token"]):
+            raise serializers.ValidationError(
+                {"token": "This password reset link is invalid or has expired."}
+            )
+
+        try:
+            password_validation.validate_password(attrs["new_password"], user=user)
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError({"new_password": list(exc.messages)})
+
+        attrs["user"] = user
+        return attrs
+
+    def save(self, **kwargs):
+        user = self.validated_data["user"]
+        user.set_password(self.validated_data["new_password"])
+        user.save(update_fields=["password"])
+        return user

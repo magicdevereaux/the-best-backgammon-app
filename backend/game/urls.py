@@ -1,7 +1,16 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 
-from .views import GameViewSet, MatchViewSet, LoginView, RefreshView, RegisterView, MeView
+from .views import (
+    GameViewSet,
+    MatchViewSet,
+    LoginView,
+    MeView,
+    PasswordResetConfirmView,
+    PasswordResetRequestView,
+    RefreshView,
+    RegisterView,
+)
 
 router = DefaultRouter()
 router.register(r"games", GameViewSet, basename="game")
@@ -13,4 +22,6 @@ urlpatterns = [
     path("auth/login/", LoginView.as_view()),
     path("auth/refresh/", RefreshView.as_view()),
     path("auth/me/", MeView.as_view()),
+    path("auth/password-reset/", PasswordResetRequestView.as_view()),
+    path("auth/password-reset/confirm/", PasswordResetConfirmView.as_view()),
 ]
