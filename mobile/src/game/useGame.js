@@ -9,6 +9,7 @@ import {
   respondToDouble as apiRespondToDouble,
 } from "../api/games";
 import { getLegalMoves, getCombinedMoves, applyMove, maxMovesUsable } from "./logic";
+import { isDeadlocked } from "./gating";
 
 // How often to poll the backend for the opponent's moves while a game is active.
 const POLL_MS = 3500;
@@ -95,8 +96,13 @@ export function useGame(gameId) {
   // (one subscription) without disrupting an in-progress staged turn.
   const pendingRef = useRef(0);
   const statusRef = useRef(null);
+  const deadlockedRef = useRef(false);
   pendingRef.current = pendingMoves.length;
   statusRef.current = game?.status;
+  // The turn sits on a seat closed by account deletion. Nothing on the server
+  // can change until someone reopens it, so polling would fetch the identical
+  // payload every 3.5s forever.
+  deadlockedRef.current = isDeadlocked(game);
 
   // Only poll while this screen is focused AND the app is foregrounded, so we
   // don't churn the network in the background or yank state out from under a
@@ -122,13 +128,15 @@ export function useGame(gameId) {
 
   // Poll for opponent moves while the game is active. Skips polling whenever
   // the local player has staged moves (never clobbers their turn), while
-  // unfocused/backgrounded, and only swaps in state that actually changed
-  // (by updated_at) so a steady stream of identical responses causes no
-  // re-render or flicker.
+  // unfocused/backgrounded, while the game is deadlocked on a closed seat
+  // (nobody is coming — see gating.isDeadlocked), and only swaps in state that
+  // actually changed (by updated_at) so a steady stream of identical responses
+  // causes no re-render or flicker.
   useEffect(() => {
     if (!gameId) return;
     const interval = setInterval(() => {
       if (statusRef.current !== "active" || pendingRef.current > 0) return;
+      if (deadlockedRef.current) return;
       if (!focusedRef.current || !appActiveRef.current) return;
       fetchGame(gameId)
         .then((fresh) => {

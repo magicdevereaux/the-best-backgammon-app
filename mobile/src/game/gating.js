@@ -3,7 +3,7 @@
 //
 // Inputs:
 //   game     — the game payload (needs status, current_turn, player1_user,
-//              player2_user)
+//              player2_user; optionally player1_deleted/player2_deleted)
 //   userId   — the logged-in user's id, or null/undefined for a guest
 //   seatInfo — device-local seat record { online, seats } or null (see
 //              seatRegistry); catches online-vs-guest games the FKs can't.
@@ -23,6 +23,36 @@
 //                    case: a fresh device with no local record still gates to
 //                    the account's own seat when the server says it owns one.
 //   4. default     — unknown, single-device: both seats interactive.
+
+// True when the seat is marked closed by account deletion. The flags are
+// read-only server fields; a missing/absent flag means the seat is OPEN, so
+// older payloads and fixtures without the fields behave exactly as before.
+export function isSeatClosed(game, seat) {
+  if (!game) return false;
+  return seat === "p1"
+    ? game.player1_deleted === true
+    : seat === "p2"
+      ? game.player2_deleted === true
+      : false;
+}
+
+// A game is deadlocked when the seat that has to act next has been closed: the
+// server 403s that seat for *everyone* (including the surviving opponent, who
+// would otherwise get to play both sides), so nobody can move it along and no
+// opponent is ever coming. Distinct from waitingForOpponent — that one resolves
+// on its own, this one never does. Callers use it to stop polling and to say so.
+//
+// Normally the seat that has to act is current_turn. A pending double is the
+// exception: it blocks all play until the *responder* (the offerer's opponent)
+// answers, so that seat is the one that has to be open.
+export function isDeadlocked(game) {
+  if (!game || game.status !== "active") return false;
+  if (game.double_offered_by) {
+    return isSeatClosed(game, game.double_offered_by === "p1" ? "p2" : "p1");
+  }
+  return isSeatClosed(game, game.current_turn);
+}
+
 export function computeGating({ game, userId, seatInfo }) {
   const iAmP1 =
     userId != null && game.player1_user != null && game.player1_user === userId;
@@ -57,9 +87,21 @@ export function computeGating({ game, userId, seatInfo }) {
   const active = game.status === "active";
   const iOwnASeat = mySeats.length > 0;
   const isMyTurn = !gated || mySeats.includes(game.current_turn);
-  const canInteract = active && isMyTurn;
-  const spectating = gated && !iOwnASeat && active;
-  const waitingForOpponent = gated && iOwnASeat && !isMyTurn && active;
+  // A closed seat outranks every other state: the turn can't move, so nothing is
+  // interactive and nobody is "waiting" in the sense that ends.
+  const deadlocked = isDeadlocked(game);
+  const canInteract = active && isMyTurn && !deadlocked;
+  const spectating = gated && !iOwnASeat && active && !deadlocked;
+  const waitingForOpponent = gated && iOwnASeat && !isMyTurn && active && !deadlocked;
 
-  return { gated, mySeats, iOwnASeat, isMyTurn, canInteract, spectating, waitingForOpponent };
+  return {
+    gated,
+    mySeats,
+    iOwnASeat,
+    isMyTurn,
+    canInteract,
+    spectating,
+    waitingForOpponent,
+    deadlocked,
+  };
 }

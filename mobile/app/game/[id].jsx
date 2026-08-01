@@ -137,11 +137,8 @@ export default function GameScreen() {
 
   // Turn-ownership gating (see src/game/gating.js). Combines the seat user FKs
   // with the device-local seat registry so online-vs-guest games gate correctly.
-  const { gated, mySeats, canInteract, spectating, waitingForOpponent } = computeGating({
-    game,
-    userId: user?.id,
-    seatInfo,
-  });
+  const { gated, mySeats, canInteract, spectating, waitingForOpponent, deadlocked } =
+    computeGating({ game, userId: user?.id, seatInfo });
 
   // Doubling: the offer button follows normal turn gating; the Accept/Drop
   // prompt belongs to the *responder* seat (the offerer's opponent), which is
@@ -149,7 +146,14 @@ export default function GameScreen() {
   const doublePending = Boolean(game.double_offered_by);
   const responderSeat = game.double_offered_by === "p1" ? "p2" : "p1";
   const canRespondToDouble =
-    doublePending && (!gated || mySeats.includes(responderSeat));
+    doublePending && !deadlocked && (!gated || mySeats.includes(responderSeat));
+
+  // Deadlock copy: the closed seat is the one that owes the next action (the
+  // responder while a double is pending, otherwise the current turn). If it
+  // isn't a seat I hold, it's my opponent who left; otherwise name the seat.
+  const blockedSeat = doublePending ? responderSeat : game.current_turn;
+  const blockedName = blockedSeat === "p1" ? game.player1_name : game.player2_name;
+  const deadlockedSeatIsTheirs = gated && !mySeats.includes(blockedSeat);
 
   const turnActive = canInteract && rolledDice.length > 0;
   const canRoll = canInteract && rolledDice.length === 0 && !doublePending;
@@ -180,7 +184,13 @@ export default function GameScreen() {
         <Text style={styles.title}>{game.player1_name} vs {game.player2_name}</Text>
 
         {game.status === "active" && (
-          waitingForOpponent ? (
+          deadlocked ? (
+            <Text style={styles.deadlocked}>
+              {deadlockedSeatIsTheirs
+                ? "Your opponent deleted their account — this game can’t continue."
+                : `${blockedName} deleted their account — this game can’t continue.`}
+            </Text>
+          ) : waitingForOpponent ? (
             <View style={styles.waitRow}>
               <ActivityIndicator color={colors.textMuted} size="small" />
               <Text style={styles.turn}>Waiting for {turnName}…</Text>
@@ -251,6 +261,7 @@ const styles = StyleSheet.create({
   turnMine: { color: colors.gold, fontSize: 14, fontWeight: "700", marginTop: 2, marginBottom: 12 },
   waitRow: { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 2, marginBottom: 12 },
   finished: { color: colors.gold, fontSize: 15, fontWeight: "700", marginTop: 2, marginBottom: 12 },
+  deadlocked: { color: colors.danger, fontSize: 14, fontWeight: "600", marginTop: 2, marginBottom: 12 },
   passHint: { color: colors.textMuted, fontSize: 13, fontStyle: "italic", marginTop: 2 },
   error: { color: colors.danger, marginTop: 10 },
   muted: { color: colors.textMuted, fontSize: 13 },

@@ -1,4 +1,4 @@
-import { computeGating } from "../gating";
+import { computeGating, isDeadlocked, isSeatClosed } from "../gating";
 
 function game(over = {}) {
   return {
@@ -116,5 +116,108 @@ describe("computeGating", () => {
     });
     expect(g.canInteract).toBe(false);
     expect(g.waitingForOpponent).toBe(false);
+  });
+});
+
+// A seat closed by account deletion 403s for everyone, so a game whose next
+// action belongs to that seat can never proceed. Absent flags mean OPEN.
+describe("closed seats (account deletion)", () => {
+  const online = { player1_user: 1, player2_user: 2 };
+
+  test("flags absent entirely behave exactly as before", () => {
+    const g = game({ ...online, current_turn: "p2" });
+    expect(isSeatClosed(g, "p1")).toBe(false);
+    expect(isSeatClosed(g, "p2")).toBe(false);
+    expect(isDeadlocked(g)).toBe(false);
+    const res = computeGating({ game: g, userId: 1, seatInfo: null });
+    expect(res.deadlocked).toBe(false);
+    expect(res.waitingForOpponent).toBe(true);
+  });
+
+  test("neither seat closed (flags present and false) is not deadlocked", () => {
+    const g = game({ ...online, player1_deleted: false, player2_deleted: false });
+    expect(isDeadlocked(g)).toBe(false);
+    expect(computeGating({ game: g, userId: 1, seatInfo: null }).deadlocked).toBe(false);
+  });
+
+  test("closed seat that does NOT hold the turn leaves play normal", () => {
+    // p2 deleted, but it's p1's turn — p1 can still move.
+    const g = game({ ...online, current_turn: "p1", player2_deleted: true });
+    expect(isDeadlocked(g)).toBe(false);
+    const asP1 = computeGating({ game: g, userId: 1, seatInfo: null });
+    expect(asP1.deadlocked).toBe(false);
+    expect(asP1.canInteract).toBe(true);
+  });
+
+  test("closed p2 holding the turn deadlocks it for the surviving p1", () => {
+    const g = game({ ...online, current_turn: "p2", player2_deleted: true });
+    expect(isDeadlocked(g)).toBe(true);
+    const asP1 = computeGating({ game: g, userId: 1, seatInfo: null });
+    expect(asP1.deadlocked).toBe(true);
+    expect(asP1.canInteract).toBe(false);
+    // distinct from waiting: nobody is coming
+    expect(asP1.waitingForOpponent).toBe(false);
+  });
+
+  test("closed p1 holding the turn deadlocks it for the surviving p2", () => {
+    const g = game({ ...online, current_turn: "p1", player1_deleted: true });
+    expect(isDeadlocked(g)).toBe(true);
+    const asP2 = computeGating({ game: g, userId: 2, seatInfo: null });
+    expect(asP2.deadlocked).toBe(true);
+    expect(asP2.canInteract).toBe(false);
+    expect(asP2.waitingForOpponent).toBe(false);
+  });
+
+  test("the deleted account's own viewpoint is deadlocked too, not playable", () => {
+    // Same payload, viewed from the closed seat's user id: still no play.
+    const g = game({ ...online, current_turn: "p1", player1_deleted: true });
+    const asP1 = computeGating({ game: g, userId: 1, seatInfo: null });
+    expect(asP1.deadlocked).toBe(true);
+    expect(asP1.canInteract).toBe(false);
+  });
+
+  test("a spectator sees the deadlock rather than a live game", () => {
+    const g = game({ ...online, current_turn: "p2", player2_deleted: true });
+    const spec = computeGating({ game: g, userId: 99, seatInfo: null });
+    expect(spec.deadlocked).toBe(true);
+    expect(spec.spectating).toBe(false);
+    expect(spec.canInteract).toBe(false);
+  });
+
+  test("hotseat with a closed seat is deadlocked despite both seats being local", () => {
+    const g = game({ current_turn: "p2", player2_deleted: true });
+    const res = computeGating({ game: g, userId: null, seatInfo: null });
+    expect(res.gated).toBe(false);
+    expect(res.deadlocked).toBe(true);
+    expect(res.canInteract).toBe(false);
+  });
+
+  test("a finished game is never deadlocked, closed seat or not", () => {
+    const g = game({ ...online, status: "finished", player1_deleted: true });
+    expect(isDeadlocked(g)).toBe(false);
+    expect(computeGating({ game: g, userId: 2, seatInfo: null }).deadlocked).toBe(false);
+  });
+
+  test("pending double: an open responder can still answer, so no deadlock", () => {
+    // p1 offered then deleted. p2 (open) may still accept or drop.
+    const g = game({
+      ...online,
+      current_turn: "p1",
+      player1_deleted: true,
+      double_offered_by: "p1",
+    });
+    expect(isDeadlocked(g)).toBe(false);
+    expect(computeGating({ game: g, userId: 2, seatInfo: null }).deadlocked).toBe(false);
+  });
+
+  test("pending double: a closed responder deadlocks even on the offerer's turn", () => {
+    const g = game({
+      ...online,
+      current_turn: "p1",
+      player2_deleted: true,
+      double_offered_by: "p1",
+    });
+    expect(isDeadlocked(g)).toBe(true);
+    expect(computeGating({ game: g, userId: 1, seatInfo: null }).deadlocked).toBe(true);
   });
 });
