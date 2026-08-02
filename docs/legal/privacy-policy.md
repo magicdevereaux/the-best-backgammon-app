@@ -15,8 +15,10 @@ at `[TODO: contact email address]`.
 
 ## Short version
 
-- We collect a **username and password**. We do not ask for your email address,
-  phone number, real name, or date of birth.
+- We collect a **username and password**, and an **email address only if you
+  choose to give us one** — it is optional, and used solely to send you a
+  password-reset link. We do not ask for your phone number, real name, or date
+  of birth.
 - We store the **games you play**: the board position, dice, scores, and the
   display names shown on each seat.
 - We do **not** use advertising, analytics, tracking pixels, crash-reporting
@@ -38,9 +40,13 @@ When you register an account, we store:
 | Username | Chosen by you. Shown to your opponents. |
 | Password | Stored only as a salted **hash** (Django's default password hasher). We cannot read your password. |
 | Account creation date | Recorded automatically when the account is created. |
+| Email address | **Optional.** Only stored if you choose to supply one, at registration or later from your profile. Never shown to other players. |
 
-The account system does not request or require an email address. If you forget
-your password there is currently **no self-service password reset** — see
+An email address is used for one thing only: sending you a password-reset link
+when you ask for one. We do not send marketing, newsletters, or notifications.
+If you do not give us an address, everything else works exactly the same — but a
+forgotten password cannot then be reset, because we would have no way to check
+the request came from you. See
 [Limitations you should know about](#limitations-you-should-know-about).
 
 ### Gameplay data
@@ -97,7 +103,8 @@ the code, not policy promises:
   we hold no payment or billing information.
 - **No chat or messaging.** The app has no chat feature, so there are no
   messages to store.
-- **No email addresses** or phone numbers.
+- **No phone numbers.** (An email address is collected only if you volunteer
+  one, and only to send password-reset links — see "Account information" above.)
 - **No cross-app or cross-site tracking**, and no data brokers.
 
 ## How we use what we collect
@@ -108,7 +115,9 @@ We use your data only to run the game:
 2. To run and save your games and matches so you can come back to them, and so
    your opponent sees your moves.
 3. To calculate your statistics.
-4. To keep the service working and secure — for example, to check that the
+4. To send you a password-reset link, if you asked for one and have an email
+   address on file. We send no other mail.
+5. To keep the service working and secure — for example, to check that the
    person making a move is the player whose turn it is, and to investigate abuse
    or technical faults.
 
@@ -136,9 +145,11 @@ required to, or where it is necessary to protect the service or its users.
 
 Running the App involves `[TODO: list every third party that actually processes
 data on your behalf — your hosting/server provider, your database host, your
-domain/DNS or CDN provider, and Expo/EAS if you use their build or update
-services. If you add push notifications, error tracking, or analytics later,
-they must be listed here and the "What we do NOT collect" section corrected.]`
+domain/DNS or CDN provider, your outbound **email/SMTP provider** (password-reset
+mail is sent through one, so whoever you use handles your address), and Expo/EAS
+if you use their build or update services. If you add push notifications, error
+tracking, or analytics later, they must be listed here and the "What we do NOT
+collect" section corrected.]`
 
 Apple and Google distribute the mobile app through their stores and collect
 their own data about downloads under their own privacy policies, which we do not
@@ -213,12 +224,13 @@ We would rather tell you than imply a level of protection we do not have:
   no identity behind it, so we cannot prevent someone else from acting on a guest
   seat in a game they can reach. Sign in and use a registered seat if that
   matters to you.
-- **Some game records can currently be modified or deleted by any caller** of
-  the API, not only by the players in the game. This is a known defect we are
-  working to close; it is recorded in our engineering notes.
-- **Game data is readable without authentication**, as described above.
-- **There is no password reset** and no recovery email on file. If you lose your
-  password, the account cannot currently be recovered.
+- **Game data is readable without authentication**, as described above. Anyone
+  who has a game's link or id can read that game's full state; this is how an
+  online game is shared and joined.
+- **Password recovery depends on you giving us an email address.** Adding one is
+  optional, and if there is no address on your account we have no way to verify
+  that a reset request is really yours — so an account with no email on file
+  cannot be recovered if you lose the password.
 - No system is perfectly secure. Please do not reuse a password you use anywhere
   else, and do not put sensitive information in a display name.
 

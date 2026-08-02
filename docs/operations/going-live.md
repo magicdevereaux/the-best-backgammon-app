@@ -34,9 +34,10 @@ by `settings.py` and set nowhere, so throttle counters are still per-worker, a 5
 still notifies nobody, and reset mail still goes to Django's console backend.
 **Real code gaps** ([section 2](#2-still-open-in-code)) are down to three, none of
 them a bug: a deliberate design trade-off
-([2.1](#21-guest-seats-are-unverifiable-by-design)), the admin path
-([2.2](#22-django-admin-is-publicly-exposed-at-a-predictable-path)), and polish
-([2.3](#23-polish-and-hygiene)). The third category the last pass needed —
+([2.1](#21-guest-seats-are-unverifiable-by-design)), admin login hardening
+([2.2](#22-django-admin-has-no-2fa-ip-allowlist-or-lockout) — the *path* is now
+env-configurable, but 2FA, IP allowlist and lockout are all still absent), and
+polish ([2.3](#23-polish-and-hygiene)). The third category the last pass needed —
 server capabilities no client called — is **empty**: `abandon`, password reset
 and the higher-die rule all have callers now.
 
@@ -50,10 +51,11 @@ System check identified no issues (0 silenced).
 ```
 
 Six warnings → zero. All three suites are green as of **2026-08-02**:
-**backend 441**, **web 312**, **mobile 190** (943 total), and
+**backend 450**, **web 312**, **mobile 190** (952 total), and
 [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) runs each on every
-push. The 167-test growth since the last pass is almost entirely client tests for
-the four items closed below.
+push. The backend count moved from 441 in the previous pass: the `ADMIN_URL`
+tests in [2.2](#22-django-admin-has-no-2fa-ip-allowlist-or-lockout) and the
+transaction tests account for the difference.
 
 Still true, and still good news: **no secrets are committed.** `git status`
 shows no `.env`, and [`.gitignore`](../../.gitignore) covers `db.sqlite3`,
@@ -74,12 +76,13 @@ the difference between a working reset and a dead link.
 `REACT_APP_API_BASE_URL`, build mobile with `EXPO_PUBLIC_API_URL`, test both off
 the dev LAN. (4) Fill the legal `[TODO]`s, host the policy, submit.
 
-The one item in [section 2](#2-still-open-in-code) worth doing *before* real users
-arrive is [2.2](#22-django-admin-is-publicly-exposed-at-a-predictable-path):
-moving `/admin/` off its predictable path is a one-line change that closes the
-largest remaining attack surface. [2.1](#21-guest-seats-are-unverifiable-by-design)
-is a design trade-off, not a defect, and [2.3](#23-polish-and-hygiene) is
-housekeeping.
+The one item in [section 2](#2-still-open-in-code) worth attention *before* real
+users arrive is [2.2](#22-django-admin-has-no-2fa-ip-allowlist-or-lockout). The
+code half is done — the admin path is now the `ADMIN_URL` env var — so all that
+is left there is **setting it to something unguessable at deploy time**, and then
+deciding whether 2FA / an IP allowlist / `django-axes` are worth adding on top.
+[2.1](#21-guest-seats-are-unverifiable-by-design) is a design trade-off, not a
+defect, and [2.3](#23-polish-and-hygiene) is housekeeping.
 
 ---
 
@@ -109,9 +112,13 @@ Heroku-style hosts. Nothing host-specific is committed, on purpose.
 `DATABASES` ([`settings.py:187–194`](../../backend/backgammon/settings.py)) reads
 `DATABASE_URL` through `dj-database-url` and falls back to local SQLite;
 `psycopg2-binary` is pinned in [`requirements.txt`](../../backend/requirements.txt).
-The owner must provision a managed Postgres, set `DATABASE_URL`, and **verify the
-migrations apply cleanly on an empty Postgres before cutting over** — they have
-only ever been run against SQLite.
+The owner must provision a managed Postgres and set `DATABASE_URL`. The old
+warning here — *"verify the migrations apply cleanly on an empty Postgres before
+cutting over, they have only ever been run against SQLite"* — is **discharged as
+of 2026-08-02**: all 34 migrations apply clean to an empty Postgres 16 and the
+full backend suite passes there. Evidence, the compatibility audit, and the two
+settings still to change at cutover (notably `DB_SSL_REQUIRE=True`) are in
+[postgres-readiness.md](postgres-readiness.md).
 
 ### 1.2 Domain, TLS, and the production environment
 
@@ -175,25 +182,46 @@ third-party SDKs are claimed, because none exist:
 [`terms-of-service.md`](../legal/terms-of-service.md), with the blocking
 checklist in [`docs/legal/README.md`](../legal/README.md).
 
-They are **not publishable as-is**: **20 `[TODO]` placeholders in the privacy
-policy and 15 in the terms** cover the legal entity name, contact email, dates,
+They are **not publishable as-is**: **18 `[TODO]` placeholders in the privacy
+policy and 14 in the terms** (counted 2026-08-02; the "20 and 15" in the previous
+pass was stale) cover the legal entity name, contact email, dates,
 jurisdiction and venue, hosting provider and log retention, minimum age,
 GDPR/CCPA applicability, and the liability cap. A lawyer should read both. Then
 host them at stable public URLs (Play additionally wants a web-accessible
 account-deletion request URL) and link them from both clients and both store
 listings.
 
-> One correction the drafts need: they still say account deletion is
-> unimplemented. It **is** implemented now — see [3.11](#3-done) and
-> [3.20](#3-done). That section of both documents, and of
-> `docs/legal/README.md`, is stale.
+> **Factual corrections applied 2026-08-02.** Three claims in the drafts had gone
+> stale and were rewritten this pass:
+>
+> - The privacy policy said *"some game records can currently be modified or
+>   deleted by any caller"*. **False** — both viewsets dropped `ModelViewSet`, so
+>   PUT/PATCH/DELETE are off the routed surface and return 405 ([3.8](#3-done)).
+>   Removed; the remaining, still-true disclosure is unauthenticated **read**.
+> - Both drafts said *"there is no password reset"* and that no email is
+>   collected. **False** — reset ships end to end ([3.23](#3-done),
+>   [3.32](#3-done)) and `email` is an optional field on register and on
+>   `PATCH /api/auth/me/`. Both now describe it, with the correct caveat that an
+>   account with **no address on file** still cannot be recovered.
+> - The earlier note here claimed the drafts still call account deletion
+>   unimplemented. **That claim was itself stale** — the policy's "Account
+>   deletion" section has described the shipped behaviour since 2026-07-26.
+>   `docs/legal/README.md` has been reconciled to match.
+>
+> Still outstanding in the drafts: the `[TODO]` placeholders above, and the
+> `[TODO — REQUIRED BEFORE STORE SUBMISSION]` notice on the deletion section,
+> which waits on a hosted web-accessible deletion-request URL.
 
 ### 1.6 Backups, admin credentials, and the three dormant subsystems
 
 - Enable the managed database's automated backups and **test a restore once**.
   Untested backups are not backups. Nothing in the repo can do this.
-- Choose a strong superuser password and decide how `/admin/` is protected (see
-  [2.2](#22-django-admin-is-publicly-exposed-at-a-predictable-path)).
+- **Set `ADMIN_URL`** to something unguessable, and choose a strong superuser
+  password. The variable exists and defaults to `admin`, so leaving it unset ships
+  the admin at the path every scanner already probes. See
+  [2.2](#22-django-admin-has-no-2fa-ip-allowlist-or-lockout) for what this does
+  and does not buy, and decide there whether you also want 2FA, an IP allowlist,
+  or `django-axes`.
 - **Sentry.** The code side is done — `sentry-sdk[django]` is pinned and
   initialised the moment `SENTRY_DSN` is non-empty ([3.25](#3-done)). Create the
   project, paste the DSN. Until then a 500 still notifies nobody.
@@ -260,20 +288,37 @@ Closing this gap would let both clauses be tightened.
 checked alongside the user FK. Not required for launch; required before anyone
 plays for anything that matters.
 
-### 2.2 Django admin is publicly exposed at a predictable path
+### 2.2 Django admin has no 2FA, IP allowlist, or lockout
 
-[`backgammon/urls.py:7`](../../backend/backgammon/urls.py) mounts `admin/` with no
-IP allowlist and no 2FA. And note **DRF throttles do not cover it** — the admin
-login is a plain Django view, so the `login` scope
-([`LoginView`, `views.py:102–111`](../../backend/game/views.py)) protects
-`/api/auth/login/` only. Admin compromise is total compromise.
+**Partially closed.** The *path* is no longer hard-coded:
+[`backgammon/urls.py`](../../backend/backgammon/urls.py) mounts the admin at
+`settings.ADMIN_URL`, read from the `ADMIN_URL` env var via `env_url_path` in
+[`settings.py`](../../backend/backgammon/settings.py) and defaulting to `"admin"`
+so local dev still needs no `.env`. Slashes are stripped, and a blank or
+slash-only value falls back to the default rather than mounting the admin at the
+site root. Covered by `AdminUrlConfigTest` in
+[`test_hardening.py`](../../backend/game/tests/test_hardening.py). Documented in
+[`.env.example`](../../backend/.env.example).
 
-**This is now the largest remaining attack surface in the tree**, and the only
-section-2 item worth closing before real users arrive.
+Be clear about what that buys: **obscurity, not security**. It takes the login
+form out of the reach of the bots that probe `/admin/` all day, which is worth
+having, and it does nothing at all against anyone who learns the path. Setting a
+real value is now [owner work](#16-backups-admin-credentials-and-the-three-dormant-subsystems),
+not code work.
 
-**Fix.** Move it to a non-obvious path, restrict by IP or put it behind the
-platform's auth proxy, and add `django-axes` (or equivalent) if you want lockout
-on the admin form specifically.
+**Still open, and unchanged:**
+
+- **No 2FA** on the admin login.
+- **No IP allowlist** and no auth proxy in front of it.
+- **No lockout** — `django-axes` or equivalent is not installed.
+- **DRF throttles still do not cover it.** The admin login is a plain Django
+  view, so the `login` scope
+  ([`LoginView`, `views.py:102–111`](../../backend/game/views.py)) protects
+  `/api/auth/login/` only. An unmoved, unthrottled admin form is unlimited
+  password guessing.
+
+Admin compromise is still total compromise, so set `ADMIN_URL` at deploy time and
+treat the four items above as the real fix.
 
 ### 2.3 Polish and hygiene
 
@@ -296,9 +341,13 @@ on the admin form specifically.
   server-side link setting, since `FRONTEND_BASE_URL` is a single value) or a
   proper universal-link / app-link setup so the web URL opens the app when it is
   installed. Neither exists today.
-- **Tracked scratch files.** `git ls-files` still shows
-  `mobile/MOBILE_PROGRESS.md` and `mobile/.claude/settings.json`; the former is
-  session notes that probably belong outside the repo.
+- ~~**Tracked scratch files.**~~ **Closed 2026-08-02.** `mobile/MOBILE_PROGRESS.md`
+  and `mobile/.claude/settings.json` were removed from the index with
+  `git rm --cached` (both still exist on disk) and
+  [`.gitignore`](../../.gitignore) now carries `**/.claude/settings.json`,
+  `**/.claude/settings.local.json` and `mobile/MOBILE_PROGRESS.md`. Note the
+  patterns are deliberately narrow: `.claude/skills/` stays **tracked**, because
+  the `railway-deploy` skill lives there and is meant to be shared.
 - **Mobile version numbers.** [`app.json`](../../mobile/app.json) declares
   `version 1.0.0` / `buildNumber "1"` / `versionCode 1`, but
   [`eas.json:28`](../../mobile/eas.json) sets `"appVersionSource": "remote"` with

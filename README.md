@@ -52,8 +52,9 @@ This README is the setup and feature tour. Deeper reference lives in
 
 ## Project status
 
-Feature-complete for local and link-based online play, with **943 passing tests**
-and CI running all three suites on every push.
+Feature-complete for local and link-based online play, with **976 passing tests**
+and CI running all three suites on every push. The backend suite is green on
+Postgres as well as SQLite, so the database move for hosting is de-risked.
 
 The app is now **deployable but not deployed** — the target is **Railway**, with
 [`railway.json`](railway.json) committed and a
@@ -170,7 +171,7 @@ auto-incrementing version).
 
 ## Running tests
 
-### Backend (441 tests)
+### Backend (474 tests)
 
 ```bash
 cd backend
@@ -297,7 +298,10 @@ All win values are multiplied by the **doubling cube**: a gammon at cube value 4
 
 ---
 
-_Last updated 2026-08-02. Test counts (441 / 312 / 190 = 943) verified green on that
-date. That pass made the higher-die rule general and mirrored it in both clients,
-scoped `GET /api/matches/`, shipped the password-reset and abandon UIs, added web
-polling, and removed the dead `move_checker` endpoint._
+_Last updated 2026-08-02. Test counts (474 / 312 / 190 = 976) verified green on that
+date, on both SQLite and Postgres 16. The most recent pass made every mutating
+endpoint transactional and row-locked, made the Django admin path configurable,
+and corrected two false statements in the legal drafts. Earlier the same day: the
+higher-die rule went general and was mirrored in both clients, `GET /api/matches/`
+was scoped, the password-reset and abandon UIs shipped, web gained polling, and
+the dead `move_checker` endpoint was removed._

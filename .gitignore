@@ -224,3 +224,12 @@ desktop.ini
 *.p12
 .env.production
 secrets.json
+
+# Claude Code local state.
+# Note: .claude/skills/ IS tracked on purpose (the railway-deploy skill lives
+# there and is shared with the team). Only per-machine settings are ignored.
+**/.claude/settings.json
+**/.claude/settings.local.json
+
+# Agent scratch notes — session progress logs, not project documentation.
+mobile/MOBILE_PROGRESS.md

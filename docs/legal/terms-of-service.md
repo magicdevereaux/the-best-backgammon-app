@@ -46,9 +46,11 @@ involvement of a parent or guardian.
   someone else, and not infringing anyone's rights. Display names are visible to
   other players, and — as explained in the [Privacy Policy](privacy-policy.md) —
   are readable through the App's public API.
-- **There is currently no password reset.** We do not collect an email address,
-  so if you lose your password we may not be able to restore access to your
-  account. Please store it safely.
+- **Password reset needs an email address, and giving us one is optional.** If
+  you have added an address you can request a reset link from the sign-in
+  screen. If you have not, we have no way to verify a reset request is yours and
+  may not be able to restore access to your account. Please store your password
+  safely, or add an address from your profile.
 - One person, one account, unless we agree otherwise.
 - Tell us at `[TODO: contact email]` if you believe your account has been used
   without your permission.
@@ -107,9 +109,12 @@ The App is provided **as is** and **as available**. Specifically, and honestly:
 - We do not guarantee that your games, statistics, or account will be preserved
   indefinitely. Do not treat the App as a system of record for anything that
   matters to you.
-- The App's API currently has known security gaps, including that some game
-  records can be read or modified without authentication. We are working to
-  close these. See the [Privacy Policy](privacy-policy.md#limitations-you-should-know-about).
+- The App's API currently has known limitations, including that a game can be
+  **read** without signing in by anyone holding its link or id, and that guest
+  seats carry no identity we can verify. Games can no longer be altered or
+  deleted through the API — every change goes through a move, and moves check
+  whose seat it is. See the
+  [Privacy Policy](privacy-policy.md#limitations-you-should-know-about).
 
 ## 7. Termination
 

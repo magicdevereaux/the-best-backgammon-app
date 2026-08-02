@@ -10,7 +10,8 @@ Two drafts live here:
 They were written against the code as it actually exists — what
 [`backend/game/models.py`](../../backend/game/models.py) stores, what
 [`RegisterSerializer`](../../backend/game/serializers.py) collects (username and
-password only, no email), and what the clients keep on-device. They deliberately
+password, plus an **optional** email used only for password reset), and what the
+clients keep on-device. They deliberately
 do **not** describe analytics, advertising, tracking, crash reporting, payments,
 or third-party SDKs, because none of those exist in this app. If any of those are
 ever added, **both documents must be corrected before that ship** — the honesty
@@ -43,26 +44,33 @@ the liability, governing-law, and GDPR/CCPA sections.
 
 ### 3. Fix the blocking gaps in the product
 
-Two items are called out in the drafts as blockers rather than papered over:
+One item remains; two that used to be listed here have shipped.
 
 - **Account deletion is implemented** (as of 2026-07-26) — `DELETE /api/auth/me/`
   requires the account's current password, with a danger-zone control on the web
   profile page and the mobile profile screen. Deletion **anonymises rather than
   destroys**: user FKs are `on_delete=SET_NULL`, so display names, boards and
   results survive for opponents while the account is unlinked; only unjoined
-  lobby adverts are removed. Outstanding refresh tokens are blacklisted.
+  lobby adverts are removed. Outstanding refresh tokens are blacklisted. The
+  privacy policy's "Account deletion" section already describes it that way.
   **Still outstanding for Play:** a *web-accessible deletion request URL*, which
-  needs the app to be hosted. Both draft documents still describe deletion as a
-  manual email request — **update that prose once a public URL exists.**
-- **Known API security gaps are disclosed, not hidden** — unauthenticated read
-  access to game records, unguarded write/delete on games and matches, and
-  unverifiable guest seats. See
-  [going-live.md](../operations/going-live.md). When those are fixed, update the
-  "Limitations you should know about" section of the privacy policy and section
-  6 of the terms so they keep matching reality.
-
-There is also **no password reset** (no email is on file), which both documents
-state plainly. Adding one would be worth it before launch.
+  needs the app to be hosted. A `[TODO — REQUIRED BEFORE STORE SUBMISSION]`
+  notice sits in the policy at that spot; delete it once the URL exists.
+- **Password reset is implemented** — an email address is optional at
+  registration and addable later via `PATCH /api/auth/me/`, and both clients can
+  request a reset link. Both documents now say so, with the correct caveat: an
+  account with **no address on file** still cannot be recovered. (The emailed
+  link points at the *web* client only — there is no mobile deep link yet — but
+  that is a product gap, not a claim either document makes.)
+- **The remaining API limitation is read access, and it is disclosed, not
+  hidden** — anyone holding a game's link or id can read that game's full state,
+  which is how online games are shared and joined, and guest seats carry no
+  verifiable identity. Write/delete on games and matches is **closed**: both
+  viewsets dropped `ModelViewSet`, so PUT/PATCH/DELETE return 405 and every
+  mutation goes through a seat-checked custom action. See
+  [going-live.md](../operations/going-live.md). If the read surface is ever
+  narrowed, update the "Limitations you should know about" section of the
+  privacy policy and section 6 of the terms so they keep matching reality.
 
 ## Hosting the policy
 

@@ -67,6 +67,13 @@ behaviours you can't read off that file:
 - **The security settings are gated on `DEBUG`.** SSL redirect, HSTS, secure
   cookies, nosniff, and `X_FRAME_OPTIONS` apply only when `DEBUG=False`.
   `manage.py check --deploy` reports **0 issues** in that mode.
+- **`ADMIN_URL` moves the Django admin off its predictable path**, defaulting to
+  `"admin"` so dev still needs no `.env`. `env_url_path()` in
+  [`settings.py`](backend/backgammon/settings.py) strips slashes and whitespace
+  and falls back to the default on a blank value, so the admin can never end up
+  mounted at the site root. Obscurity, not security — it removes the app from
+  automated `/admin/` scanners and nothing more. DRF throttles still do **not**
+  cover the admin login form.
 
 Client-side API host resolution lives in [`frontend/CLAUDE.md`](frontend/CLAUDE.md)
 and [`mobile/CLAUDE.md`](mobile/CLAUDE.md), which load when you work in those
@@ -85,12 +92,16 @@ Deploy target is **Railway** — runbook and its traps in
 
 | Suite | Count | Command (cwd) |
 |-------|-------|---------------|
-| Backend | **441** | `python manage.py test game` (`backend/`, in-memory DB) |
+| Backend | **474** | `python manage.py test game` (`backend/`, in-memory DB) |
 | Web | **312** | `CI=true npm test -- --watchAll=false` (`frontend/`) |
 | Mobile | **190** | `CI=true npx jest` (`mobile/`) |
 
-All three suites were **green as of 2026-08-02** (441 / 312 / 190, 943 total, zero
+All three suites were **green as of 2026-08-02** (474 / 312 / 190, 976 total, zero
 failures). If you see a failure, it is yours — the baseline is clean.
+
+> **The backend suite is also green on Postgres 16**, not just SQLite — all 34
+> migrations apply clean to an empty database and all 474 tests pass there. See
+> [postgres-readiness.md](docs/operations/postgres-readiness.md).
 
 > **Throttling is disabled under test** (`"test" in sys.argv` in
 > [`settings.py`](backend/backgammon/settings.py)), so auth tests don't trip the
@@ -169,6 +180,19 @@ Board is `points[24]` (index = point − 1), plus `bar` and `off` counts per pla
   match point (`match.games.filter(crawford_game=True)` marks it already played).
 - **Stats are computed on read**, not stored — see `UserSerializer` in
   [`serializers.py`](backend/game/serializers.py).
+- **Every mutating action runs in `transaction.atomic()` and locks its row
+  first.** `RowLockingMixin._locked_object()` in
+  [`views.py`](backend/game/views.py) does `get_object()` (unchanged 404
+  semantics) then re-reads under `select_for_update()`. **The guards are then run
+  against the freshly-locked row — that ordering is the whole point.** A guard
+  checked *before* the lock is worthless, so never hoist one out. Lock order is
+  **game → match** everywhere; `next_game` is the only match-first path and never
+  goes on to lock a game, so there is no ABBA deadlock. `_apply_game_result`
+  takes the match lock itself and assumes its callers already hold the game lock
+  inside their own transaction — don't wrap it in a second atomic block. This
+  fixed two live bugs, not just theoretical ones: a double-submitted `next_game`
+  inserted a permanent second game, and a replayed winning `confirm_turn` could
+  score a match twice.
 
 ## Known gaps
 
@@ -236,10 +260,12 @@ These are intended but **do not exist in the code today** — don't assume them:
 - **A running deployment.** Nothing is hosted yet. The app is *deployable* and
   the target is chosen (Railway, with `railway.json` committed), but **no deploy
   has run**: no service, no domain, no TLS, no production env values.
-  **Postgres is wired but unused** — `psycopg2-binary` and `dj-database-url` are
-  installed and `DATABASE_URL` is honoured, yet every environment today still
-  resolves to the dev SQLite file, and the migrations have only ever been applied
-  against SQLite. Verify them on an empty Postgres before cutting over.
+  **Postgres is wired and now verified, but still unused** — `psycopg2-binary`
+  and `dj-database-url` are installed, `DATABASE_URL` is honoured, and the
+  migrations and full suite have been run green against a real Postgres 16
+  ([postgres-readiness.md](docs/operations/postgres-readiness.md)). But every
+  environment today still resolves to the dev SQLite file, so nothing is *running*
+  on Postgres yet.
 - **A hosted web client.** The plan is Vercel with `REACT_APP_API_BASE_URL` set at
   build time (mirroring `howl`), but nothing is deployed and no build pipeline for
   the web client exists.
@@ -254,6 +280,13 @@ These are intended but **do not exist in the code today** — don't assume them:
 - **Automated matchmaking.** No auto-pairing queue, ranking/ELO, or "quick play vs
   a random opponent." Online pairing is always player-initiated via link/code or the
   open-games list. See [overview.md](docs/architecture/overview.md#online-multiplayer).
+- **Inactivity forfeit and game clocks.** A player who walks away from an online
+  game stalls it forever; there is no timeout, no forfeit, and no clock of any
+  kind. The design is agreed and specified in
+  [ADR-002](docs/decisions/adr-002-inactivity-forfeit.md) — **read it before
+  building this**, especially the part explaining why the existing `abandon`
+  action is *not* the thing to extend. Nothing in it is implemented yet: there is
+  no `turn_started_at` field, no claim endpoint, and no clock state.
 - **Chat.** No chat feature exists anywhere.
 - **httpOnly cookie auth.** Auth is JWT **Bearer** tokens stored in `localStorage`
   (web) and `expo-secure-store` (mobile). Cookie-based sessions are not implemented.

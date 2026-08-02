@@ -27,6 +27,7 @@ detail.
 |-----|-----------------|
 | [going-live.md](operations/going-live.md) | Production-readiness audit: blocked-on-owner, still-open-in-code, and done. |
 | [railway-deploy.md](operations/railway-deploy.md) | Railway runbook: service, Postgres, env vars, migrations, domain, smoke test. |
+| [postgres-readiness.md](operations/postgres-readiness.md) | What was actually run against Postgres 16, what the compatibility audit cleared, and the settings still to change at cutover. |
 
 ## Decisions
 
@@ -36,6 +37,7 @@ code moves on.
 | ADR | Decision |
 |-----|----------|
 | [adr-001](decisions/adr-001-combined-moves.md) | Combined (multi-die) moves are expanded client-side; the backend only knows single hops. |
+| [adr-002](decisions/adr-002-inactivity-forfeit.md) | Inactivity forfeit is a pull-based claim on registered seats, separate from `abandon`; live clocks wait for presence. **Accepted, not implemented.** |
 
 ## Adding to these docs
 

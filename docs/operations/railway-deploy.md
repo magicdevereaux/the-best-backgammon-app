@@ -15,10 +15,10 @@ that tells you it actually worked.
 Read [going-live.md](going-live.md) first if you haven't — it is the audit of
 what is and isn't production-ready. As of its 2026-08-02 pass the code-side list
 is down to three items, only one of which touches a deploy:
-[2.2](going-live.md#22-django-admin-is-publicly-exposed-at-a-predictable-path),
-`/admin/` sitting at a predictable path with no IP allowlist and no 2FA — decide
-what you're doing about that before you create the superuser in
-[step 5](#5-create-the-superuser). Both list endpoints are scoped now; neither
+[2.2](going-live.md#22-django-admin-has-no-2fa-ip-allowlist-or-lockout), the
+admin login — which has no 2FA, no IP allowlist and no lockout, and which sits at
+`/admin/` unless you set `ADMIN_URL`. Decide what you're doing about that before
+you create the superuser in [step 5](#5-create-the-superuser). Both list endpoints are scoped now; neither
 enumerates its table. This doc covers *deployment mechanics only*.
 
 ---
@@ -27,7 +27,8 @@ enumerates its table. This doc covers *deployment mechanics only*.
 
 **Only the Django backend.** The web client goes to Vercel and the mobile client
 ships through EAS — see [The two clients](#the-two-clients). Railway serves
-`https://<your-domain>/api/...`, `/admin/`, and `/healthz/`.
+`https://<your-domain>/api/...`, `/healthz/`, and the Django admin at whatever
+`ADMIN_URL` says (default `/admin/`).
 
 ### Why the Dockerfile builder, and what `railway.json` does
 
@@ -179,6 +180,7 @@ the request log line for the exact `Host` value it sent and add that.
 | Variable | First-deploy value | Notes |
 |---|---|---|
 | `SECURE_HSTS_SECONDS` | `60` | **Set this.** The default is **1 year with `includeSubDomains` and `preload`**, and HSTS is very hard to undo — a browser that caches it will refuse plain HTTP to your whole domain tree for a year. Start at 60, ramp once the domain is settled. |
+| `ADMIN_URL` | an unguessable word, e.g. `ops-7f3a2c` | **Set this before [step 5](#5-create-the-superuser).** Path the Django admin is served from; slashes are stripped, blank falls back to the default. Unset → `/admin/`, which every scanner on the internet probes continuously. This is obscurity, not security — nothing else about the admin login is hardened (no 2FA, no IP allowlist, no lockout, and DRF's throttles do not cover it). See [going-live.md 2.2](going-live.md#22-django-admin-has-no-2fa-ip-allowlist-or-lockout). |
 | `LOG_LEVEL` | `INFO` | Default. Railway captures stdout; logging is console-only by design. |
 | `WEB_CONCURRENCY` | `3` | Gunicorn workers. Lower it to `2` on a small instance. See the [throttling caveat](#known-caveats-on-railway). |
 | `REDIS_URL` | `${{Redis.REDIS_URL}}` | **Turns the throttle limits global.** Unset → `LocMemCache`, per worker, wiped every deploy. Add *New → Database → Add Redis* to the project and use the reference form, exactly as with Postgres. See the [throttling caveat](#known-caveats-on-railway). |
@@ -235,10 +237,12 @@ railway ssh
 python manage.py createsuperuser
 ```
 
-Choose a strong password. `/admin/` is publicly exposed at a predictable path
-with no IP allowlist and no 2FA, and **DRF's throttles do not cover it** — the
-admin login is a plain Django view. See
-[going-live.md 2.2](going-live.md#22-django-admin-is-publicly-exposed-at-a-predictable-path)
+Choose a strong password, and **set `ADMIN_URL`** (see the variable table above)
+before you do — with it unset the admin sits at `/admin/`, the path every scanner
+probes. Moving it is obscurity, not security: there is still no IP allowlist, no
+2FA and no lockout, and **DRF's throttles do not cover the admin login** — it is a
+plain Django view, so nothing rate-limits password guessing against it. See
+[going-live.md 2.2](going-live.md#22-django-admin-has-no-2fa-ip-allowlist-or-lockout)
 before treating this as safe; it is the largest remaining attack surface in the
 tree.
 
