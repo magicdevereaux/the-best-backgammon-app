@@ -61,6 +61,53 @@ describe("useGame", () => {
     expect(result.current.game.board_state).toEqual(INITIAL);
   });
 
+  // Higher-die rule affordance. Lone p1 checker on point 12 with a p2 anchor on
+  // point 15: either die of [1, 2] plays on its own, but the follow-up is blocked
+  // both ways, so only one die is usable and the 2 is forced. Mirrors the
+  // server's confirm_turn check (backend/game/tests/test_higher_die.py) and the
+  // identical web test in frontend/src/hooks/__tests__/useGame.test.js.
+  const higherDieGame = {
+    ...baseGame,
+    dice_values: [1, 2],
+    board_state: {
+      points: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, -2, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+      bar: { p1: 0, p2: 0 },
+      off: { p1: 14, p2: 0 },
+    },
+  };
+
+  test("mustPlayHigherDie flags a staged lower-die move", async () => {
+    games.fetchGame.mockResolvedValue(higherDieGame);
+    const { result } = await mountLoaded();
+
+    // Nothing staged yet: the max-dice rule is what blocks Confirm.
+    expect(result.current.mustPlayHigherDie).toBe(false);
+    expect(result.current.mustUseMoreDice).toBe(true);
+
+    act(() => result.current.stageMove(12, 13)); // the lower die (1)
+
+    expect(result.current.mustUseMoreDice).toBe(false); // 1 of 1 usable die
+    expect(result.current.mustPlayHigherDie).toBe(true); // ...but the wrong one
+  });
+
+  test("mustPlayHigherDie stays false when the higher die is staged", async () => {
+    games.fetchGame.mockResolvedValue(higherDieGame);
+    const { result } = await mountLoaded();
+
+    act(() => result.current.stageMove(12, 14)); // the higher die (2)
+
+    expect(result.current.mustUseMoreDice).toBe(false);
+    expect(result.current.mustPlayHigherDie).toBe(false);
+  });
+
+  test("mustPlayHigherDie stays false when the rule does not apply", async () => {
+    const { result } = await mountLoaded(); // opening position, [3, 5]
+
+    act(() => result.current.stageMove(1, 4)); // the lower die, freely chosen
+
+    expect(result.current.mustPlayHigherDie).toBe(false);
+  });
+
   test("undoMove reverts only the last staged move", async () => {
     const { result } = await mountLoaded();
     act(() => result.current.stageMove(1, 4));  // consume 3

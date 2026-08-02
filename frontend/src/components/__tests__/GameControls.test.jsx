@@ -181,3 +181,57 @@ describe('GameControls — maximal dice usage affordance', () => {
     expect(onConfirmTurn).not.toHaveBeenCalled();
   });
 });
+
+describe('GameControls — higher-die affordance', () => {
+  test('Confirm Turn is disabled while the staged turn plays the lower die', () => {
+    render(
+      <GameControls game={activeGameWithDice} onRollDice={() => {}} mustPlayHigherDie={true} />
+    );
+    expect(screen.getByRole('button', { name: /confirm turn/i })).toBeDisabled();
+  });
+
+  test('shows a hint naming the higher-die rule', () => {
+    render(
+      <GameControls game={activeGameWithDice} onRollDice={() => {}} mustPlayHigherDie={true} />
+    );
+    expect(screen.getByText(/must be the higher one/i)).toBeInTheDocument();
+  });
+
+  test('the max-dice hint wins when both rules are unsatisfied', () => {
+    render(
+      <GameControls
+        game={activeGameWithDice}
+        onRollDice={() => {}}
+        mustUseMoreDice={true}
+        mustPlayHigherDie={true}
+      />
+    );
+    expect(screen.getByText(/use as many dice as possible/i)).toBeInTheDocument();
+  });
+
+  test('does not call onConfirmTurn while the wrong die is staged', () => {
+    const onConfirmTurn = jest.fn();
+    render(
+      <GameControls
+        game={activeGameWithDice}
+        onRollDice={() => {}}
+        onConfirmTurn={onConfirmTurn}
+        mustPlayHigherDie={true}
+      />
+    );
+    fireEvent.click(screen.getByRole('button', { name: /confirm turn/i }));
+    expect(onConfirmTurn).not.toHaveBeenCalled();
+  });
+
+  test('Confirm Turn is enabled when neither rule is pending', () => {
+    render(
+      <GameControls
+        game={activeGameWithDice}
+        onRollDice={() => {}}
+        mustUseMoreDice={false}
+        mustPlayHigherDie={false}
+      />
+    );
+    expect(screen.getByRole('button', { name: /confirm turn/i })).not.toBeDisabled();
+  });
+});

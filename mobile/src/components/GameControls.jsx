@@ -30,20 +30,23 @@ function Btn({ label, onPress, disabled, variant = "secondary" }) {
  * turn pass.
  *
  * Backgammon requires using as many dice as legally possible, so while a legal
- * move still exists for an unused die the Confirm button is disabled (the server
- * enforces the same rule — this is the matching UX affordance).
+ * move still exists for an unused die the Confirm button is disabled. The same
+ * goes for the higher-die rule: when only one of the two dice can be played,
+ * staging the lower one keeps Confirm disabled. The server enforces both rules —
+ * these are the matching UX affordances.
  */
 export default function GameControls({
   turnActive,
   hasPendingMoves = false,
   hasLegalMoves = true,
   mustUseMoreDice = false,
+  mustPlayHigherDie = false,
   onUndo,
   onResetTurn,
   onConfirmTurn,
 }) {
   const mustPass = turnActive && !hasPendingMoves && !hasLegalMoves;
-  const blockConfirm = turnActive && mustUseMoreDice;
+  const blockConfirm = turnActive && (mustUseMoreDice || mustPlayHigherDie);
   const confirmLabel = mustPass ? "Pass Turn" : "Confirm Turn";
 
   return (

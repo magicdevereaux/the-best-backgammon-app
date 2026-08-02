@@ -29,7 +29,7 @@ export default function GameScreen() {
   const {
     game, loading, error, actionError,
     rollDice, stagedBoard, stagedDice,
-    pendingMoves, legalMoves, mustUseMoreDice, stageMove,
+    pendingMoves, legalMoves, mustUseMoreDice, mustPlayHigherDie, stageMove,
     resetTurn, undoMove, confirmTurn,
     offerDouble, respondToDouble, canOfferDouble,
     abandonGame,
@@ -242,6 +242,11 @@ export default function GameScreen() {
         {turnActive && mustUseMoreDice && (
           <Text style={styles.passHint}>You must use as many dice as possible before confirming.</Text>
         )}
+        {turnActive && !mustUseMoreDice && mustPlayHigherDie && (
+          <Text style={styles.passHint}>
+            Only one die can be played this turn — it must be the higher one.
+          </Text>
+        )}
 
         {canInteract && (
           <GameControls
@@ -249,6 +254,7 @@ export default function GameScreen() {
             hasPendingMoves={hasPendingMoves}
             hasLegalMoves={hasLegalMoves}
             mustUseMoreDice={mustUseMoreDice}
+            mustPlayHigherDie={mustPlayHigherDie}
             onUndo={undoMove}
             onResetTurn={resetTurn}
             onConfirmTurn={confirmTurn}

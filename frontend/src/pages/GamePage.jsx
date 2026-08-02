@@ -30,7 +30,7 @@ export default function GamePage() {
   const {
     game, loading, error, actionError,
     rollDice, stagedBoard, stagedDice,
-    pendingMoves, legalMoves, mustUseMoreDice,
+    pendingMoves, legalMoves, mustUseMoreDice, mustPlayHigherDie,
     stageMove, resetTurn, confirmTurn,
     offerDouble, respondToDouble, canOfferDouble,
     deadlocked, abandonGame, canAbandon, reload,
@@ -165,6 +165,7 @@ export default function GamePage() {
             onConfirmTurn={confirmTurn}
             hasPendingMoves={pendingMoves.length > 0}
             mustUseMoreDice={mustUseMoreDice}
+            mustPlayHigherDie={mustPlayHigherDie}
           />
         </>
       )}

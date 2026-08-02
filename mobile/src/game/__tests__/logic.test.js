@@ -4,6 +4,7 @@ import {
   getCombinedMoves,
   applyMove,
   maxMovesUsable,
+  higherDieRequiredMoves,
   canBearOff,
   checkWinner,
   isBlotHit,
@@ -213,6 +214,131 @@ describe("maxMovesUsable", () => {
     board.points[8] = -2;  // point 9 blocked
     board.points[9] = -2;  // point 10 blocked
     expect(maxMovesUsable(board, "p1", [2, 6])).toBe(2);
+  });
+});
+
+// Mirrors backend/game/tests/test_higher_die.py and the web port's suite —
+// same positions, same expectations. When only one of the two dice can be
+// played but either is individually playable, the higher one is forced.
+describe("higherDieRequiredMoves", () => {
+  test("forces the exact bear-off with the higher die", () => {
+    // p1 on 19 and 20; anchors on 21 and 24. The 2 only plays 20->22; the 5
+    // bears off from 20 exactly. Only one die is usable, so the 5 is forced.
+    const board = emptyBoard();
+    board.points[18] = 1;
+    board.points[19] = 1;
+    board.points[20] = -2;
+    board.points[23] = -2;
+    board.off.p1 = 13;
+    expect(higherDieRequiredMoves(board, "p1", [2, 5])).toEqual([[20, 25, 5]]);
+  });
+
+  test("forces the higher die on a within-board bear-off move", () => {
+    const board = emptyBoard();
+    board.points[18] = 1;
+    board.points[19] = 1;
+    board.points[20] = -2;
+    board.points[22] = -2;
+    board.off.p1 = 13;
+    expect(higherDieRequiredMoves(board, "p1", [1, 3])).toEqual([[19, 22, 3]]);
+  });
+
+  test("prefers the oversized bear-off from the furthest-back checker", () => {
+    // Last checker on 22 (distance 3), dice [3, 5]: both bear it off but only
+    // one die can be used, so the 5 is spent rather than the 3.
+    const board = emptyBoard();
+    board.points[21] = 1;
+    board.off.p1 = 14;
+    expect(higherDieRequiredMoves(board, "p1", [3, 5])).toEqual([[22, 25, 5]]);
+  });
+
+  test("mirrors for p2 during bear-off", () => {
+    const board = emptyBoard();
+    board.points[5] = -1; // point 6
+    board.points[4] = -1; // point 5
+    board.points[3] = 2;  // point 4 anchored
+    board.points[0] = 2;  // point 1 anchored
+    board.off.p2 = 13;
+    expect(higherDieRequiredMoves(board, "p2", [2, 5])).toEqual([[5, 25, 5]]);
+  });
+
+  test("applies mid-board, nowhere near bear-off (p1)", () => {
+    // Lone checker on 12, anchor on 15: 12->13 or 12->14, follow-up blocked
+    // either way, so only one die is usable and the 2 is forced.
+    const board = emptyBoard();
+    board.points[11] = 1;
+    board.points[14] = -2;
+    board.off.p1 = 14;
+    expect(higherDieRequiredMoves(board, "p1", [1, 2])).toEqual([[12, 14, 2]]);
+  });
+
+  test("applies mid-board for p2 (mirrored direction)", () => {
+    const board = emptyBoard();
+    board.points[12] = -1; // point 13
+    board.points[9] = 2;   // point 10 anchored
+    board.off.p2 = 14;
+    expect(higherDieRequiredMoves(board, "p2", [1, 2])).toEqual([[13, 11, 2]]);
+  });
+
+  test("applies when entering from the bar (p1)", () => {
+    // Both entry points (2 and 5) are open, but point 7 blocks the follow-up
+    // from either, so the entry must be made on the 5.
+    const board = emptyBoard();
+    board.bar.p1 = 1;
+    board.points[6] = -2; // point 7
+    board.off.p1 = 14;
+    expect(higherDieRequiredMoves(board, "p1", [2, 5])).toEqual([[0, 5, 5]]);
+  });
+
+  test("applies when entering from the bar (p2)", () => {
+    const board = emptyBoard();
+    board.bar.p2 = 1;
+    board.points[17] = 2; // point 18
+    board.off.p2 = 14;
+    expect(higherDieRequiredMoves(board, "p2", [2, 5])).toEqual([[0, 20, 5]]);
+  });
+
+  test("no restriction when both dice can be played", () => {
+    const board = emptyBoard();
+    board.points[19] = 1;
+    board.points[21] = 1;
+    board.off.p1 = 13;
+    expect(higherDieRequiredMoves(board, "p1", [5, 3])).toBeNull();
+  });
+
+  test("no restriction when only the lower die is playable at all", () => {
+    const board = emptyBoard();
+    board.points[11] = 1;
+    board.points[17] = -2; // point 18 blocks the 6
+    board.points[18] = -2; // point 19 blocks the 6 after the 1
+    board.off.p1 = 14;
+    expect(higherDieRequiredMoves(board, "p1", [1, 6])).toBeNull();
+  });
+
+  test("no restriction when only the higher die is playable at all", () => {
+    const board = emptyBoard();
+    board.points[18] = 1;
+    [19, 20, 21, 22].forEach((idx) => { board.points[idx] = -2; });
+    board.off.p1 = 14;
+    expect(higherDieRequiredMoves(board, "p1", [1, 6])).toBeNull();
+  });
+
+  test("no restriction on doubles, even when only one die is usable", () => {
+    const board = emptyBoard();
+    board.points[11] = 1;
+    board.points[15] = -2; // point 16 stops the run after 12->14
+    board.off.p1 = 14;
+    expect(maxMovesUsable(board, "p1", [2, 2, 2, 2])).toBe(1);
+    expect(higherDieRequiredMoves(board, "p1", [2, 2, 2, 2])).toBeNull();
+  });
+
+  test("no restriction from the opening position", () => {
+    expect(higherDieRequiredMoves(INITIAL, "p1", [1, 2])).toBeNull();
+  });
+
+  test("no restriction with an empty or single-die roll", () => {
+    expect(higherDieRequiredMoves(INITIAL, "p1", [])).toBeNull();
+    expect(higherDieRequiredMoves(INITIAL, "p1", [3])).toBeNull();
   });
 });
 

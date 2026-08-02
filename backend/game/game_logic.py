@@ -200,12 +200,14 @@ def max_moves_usable(board_state, player, dice_values):
 
 def higher_die_required_moves(board_state, player, dice_values):
     """
-    Higher-die rule during bear-off: with a non-double two-die roll, when
-    exactly one die can legally be played but *either* die individually has a
-    legal move, the player must play the HIGHER die. Returns the set of
-    permitted (from_point, to_point, die) moves when the rule applies, or
-    None when it doesn't (not bearing off, doubles, both dice playable in
-    sequence, or no real choice of die).
+    Higher-die rule: with a non-double two-die roll, when exactly one die can
+    legally be played but *either* die individually has a legal move, the player
+    must play the HIGHER die. Returns the set of permitted
+    (from_point, to_point, die) moves when the rule applies, or None when it
+    doesn't (doubles, both dice playable in sequence, or no real choice of die).
+
+    The rule is general: it applies anywhere on the board, including entering
+    from the bar and ordinary blocked mid-board positions, not just bear-off.
 
     Which higher-die move is required:
       1. An exact bear-off (die == distance), if one exists.
@@ -213,15 +215,13 @@ def higher_die_required_moves(board_state, player, dice_values):
          the furthest-back checker, so that clause is inherited from
          get_legal_moves.
       3. Otherwise any legal higher-die move (the rule pins the die, not the
-         destination).
+         destination). Clauses 1-2 can only fire while bearing off, since
+         get_legal_moves emits to_point 25 only then.
 
-    Scope note: this deliberately covers bear-off only. The official rule is
-    general (any position where only one die can be played), and remains
-    unenforced outside bear-off.
+    Cost: the guard on `len(dice_values) == 2` means max_moves_usable never
+    recurses more than two plies here, so this stays cheap despite the search.
     """
     if len(dice_values) != 2 or dice_values[0] == dice_values[1]:
-        return None
-    if not can_bear_off(board_state, player):
         return None
     if max_moves_usable(board_state, player, dice_values) != 1:
         return None

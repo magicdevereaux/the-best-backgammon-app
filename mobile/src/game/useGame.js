@@ -9,7 +9,13 @@ import {
   respondToDouble as apiRespondToDouble,
   abandonGame as apiAbandonGame,
 } from "../api/games";
-import { getLegalMoves, getCombinedMoves, applyMove, maxMovesUsable } from "./logic";
+import {
+  getLegalMoves,
+  getCombinedMoves,
+  applyMove,
+  maxMovesUsable,
+  higherDieRequiredMoves,
+} from "./logic";
 import { isDeadlocked } from "./gating";
 
 // How often to poll the backend for the opponent's moves while a game is active.
@@ -193,6 +199,25 @@ export function useGame(gameId) {
   // number of dice used so far. More dice must be played while it falls short.
   const mustUseMoreDice = pendingMoves.length < maxDiceUsable;
 
+  // Higher-die rule: when only one die can be played this turn but either die
+  // individually has a legal move, it must be the higher one. Like maxDiceUsable
+  // this is computed from the pre-turn board and the original roll; null means
+  // the rule doesn't apply. Mirrors the server's confirm_turn check exactly.
+  const higherDieMoves = useMemo(() => {
+    if (!game) return null;
+    return higherDieRequiredMoves(game.board_state, game.current_turn, game.dice_values);
+  }, [game]);
+
+  // The staged turn plays the wrong die. (When the rule applies only one die is
+  // usable, so the server likewise judges the first staged move.)
+  const mustPlayHigherDie = Boolean(
+    higherDieMoves &&
+      pendingMoves.length > 0 &&
+      !higherDieMoves.some(
+        (m) => m[0] === pendingMoves[0].from_point && m[1] === pendingMoves[0].to_point
+      )
+  );
+
   const stageMove = useCallback(
     (fromPoint, toPoint) => {
       if (!game || !stagedBoard) return;
@@ -336,6 +361,7 @@ export function useGame(gameId) {
     pendingMoves,
     legalMoves,
     mustUseMoreDice,
+    mustPlayHigherDie,
     stageMove,
     resetTurn,
     undoMove,

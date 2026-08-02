@@ -220,6 +220,51 @@ export function maxMovesUsable(boardState, player, diceValues) {
   return best;
 }
 
+/**
+ * Higher-die rule: with a non-double two-die roll, when exactly one die can
+ * legally be played but *either* die individually has a legal move, the player
+ * must play the HIGHER die. Returns the array of permitted
+ * [from_point, to_point, die] moves when the rule applies, or null when it
+ * doesn't (doubles, both dice playable in sequence, or no real choice of die).
+ *
+ * The rule is general: it applies anywhere on the board, including entering
+ * from the bar and ordinary blocked mid-board positions, not just bear-off.
+ *
+ * Which higher-die move is required:
+ *   1. An exact bear-off (die === distance), if one exists.
+ *   2. Otherwise an oversized bear-off — getLegalMoves only emits these from
+ *      the furthest-back checker, so that clause is inherited.
+ *   3. Otherwise any legal higher-die move (the rule pins the die, not the
+ *      destination). Clauses 1-2 can only fire while bearing off, since
+ *      getLegalMoves emits toPoint 25 only then.
+ *
+ * Direct port of backend higher_die_required_moves() in game_logic.py. The
+ * server enforces it at confirm_turn; the client uses it to gate the Confirm
+ * button so it stops staging turns the server would reject.
+ *
+ * Cost: the guard on diceValues.length === 2 means maxMovesUsable never
+ * recurses more than two plies here, so this stays cheap despite the search.
+ */
+export function higherDieRequiredMoves(boardState, player, diceValues) {
+  if (!diceValues || diceValues.length !== 2) return null;
+  if (diceValues[0] === diceValues[1]) return null;
+  if (maxMovesUsable(boardState, player, diceValues) !== 1) return null;
+
+  const high = Math.max(diceValues[0], diceValues[1]);
+  const low = Math.min(diceValues[0], diceValues[1]);
+  const highMoves = getLegalMoves(boardState, player, [high]);
+  if (highMoves.length === 0) return null; // only the lower die is playable
+  if (getLegalMoves(boardState, player, [low]).length === 0) return null; // no choice
+
+  const exact = highMoves.filter(
+    (m) => m[1] === 25 && bearOffDistance(player, m[0]) === high
+  );
+  if (exact.length > 0) return exact;
+  const oversized = highMoves.filter((m) => m[1] === 25);
+  if (oversized.length > 0) return oversized;
+  return highMoves;
+}
+
 /** Return 'p1' or 'p2' if that player has borne off all 15 checkers, else null. */
 export function checkWinner(boardState) {
   if (boardState.off[P1] === 15) return P1;

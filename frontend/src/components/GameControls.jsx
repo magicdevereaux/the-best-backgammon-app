@@ -52,13 +52,18 @@ export default function GameControls({
   onConfirmTurn,
   hasPendingMoves = false,
   mustUseMoreDice = false,
+  mustPlayHigherDie = false,
 }) {
   const canRoll       = game.status === "active" && (!game.dice_values || game.dice_values.length === 0);
   const turnActive    = game.status === "active" && game.dice_values && game.dice_values.length > 0;
-  // Backgammon requires using as many dice as legally possible. While more dice
-  // could still be played (even via a different move order), block confirmation.
-  // The server enforces the same rule — this is the matching UX affordance.
-  const blockConfirm = turnActive && mustUseMoreDice;
+  // Backgammon requires using as many dice as legally possible, and when only
+  // one of the two dice can be played it must be the higher one. While either
+  // rule is unsatisfied, block confirmation. The server enforces both — this is
+  // the matching UX affordance.
+  const blockConfirm = turnActive && (mustUseMoreDice || mustPlayHigherDie);
+  const blockReason = mustUseMoreDice
+    ? "You must use as many dice as possible."
+    : "Only one die can be played this turn, and it must be the higher one.";
 
   return (
     <div style={{ marginTop: "1rem", display: "flex", gap: "0.6rem", flexWrap: "wrap", alignItems: "center" }}>
@@ -77,11 +82,11 @@ export default function GameControls({
         label="Confirm Turn"
         onClick={onConfirmTurn}
         disabled={!turnActive || blockConfirm}
-        title={blockConfirm ? "You must use as many dice as possible before confirming." : undefined}
+        title={blockConfirm ? blockReason : undefined}
       />
       {blockConfirm && (
         <p style={{ margin: 0, color: "var(--text-secondary)", fontSize: "0.8rem" }}>
-          You must use as many dice as possible.
+          {blockReason}
         </p>
       )}
       {game.status === "finished" && (

@@ -1015,10 +1015,11 @@ class GameViewSet(
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Higher-die rule (bear-off): when only one die can be played but either
-        # die individually has a legal move, the higher die must be the one
-        # played. The maximal-usage check above guarantees exactly one staged
-        # move whenever this rule is active (max_usable == 1).
+        # Higher-die rule: when only one die can be played but either die
+        # individually has a legal move, the higher die must be the one played.
+        # Applies anywhere on the board (bar entry, mid-board, bear-off). The
+        # maximal-usage check above guarantees exactly one staged move whenever
+        # this rule is active (max_usable == 1).
         required = higher_die_required_moves(
             game.board_state, player, list(game.dice_values)
         )
