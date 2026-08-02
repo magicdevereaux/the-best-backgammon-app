@@ -79,4 +79,38 @@ describe("GameOverScreen", () => {
     expect(screen.getByText("New Match")).toBeTruthy();
     expect(screen.queryByText("Next Game")).toBeNull();
   });
+
+  test("abandoned game: names no winner and awards no points", () => {
+    const game = {
+      winner: null,
+      player1_name: "Alice",
+      player2_name: "Bob",
+      win_type: "abandoned",
+      points_value: 0,
+    };
+    const match = {
+      player1_name: "Alice", player2_name: "Bob",
+      player1_score: 2, player2_score: 1,
+      target_points: 5, status: "finished", winner: null,
+    };
+    render(
+      <GameOverScreen
+        game={game}
+        match={match}
+        onNextGame={jest.fn()}
+        onNewMatch={jest.fn()}
+        onLobby={jest.fn()}
+      />
+    );
+
+    expect(screen.getByText("Game closed out")).toBeTruthy();
+    expect(screen.getByText("No winner — no points awarded")).toBeTruthy();
+    // Neither player may be announced as a winner anywhere on the card.
+    expect(screen.queryByText(/wins/)).toBeNull();
+    expect(screen.getByText("Match closed out — no winner.")).toBeTruthy();
+    // The pre-existing match score is shown untouched.
+    expect(screen.getByText(/Alice 2 – 1 Bob/)).toBeTruthy();
+    // A finished match offers a new one, never "Next Game".
+    expect(screen.queryByText("Next Game")).toBeNull();
+  });
 });

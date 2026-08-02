@@ -50,6 +50,22 @@ describe("request() auth behaviour", () => {
     );
   });
 
+  test("surfaces a DRF field error when there is no error/detail key", async () => {
+    // Serializer validation (e.g. PATCH /api/auth/me/) answers with a
+    // field-keyed dict of message arrays, not { error } / { detail }.
+    fetch.mockReturnValueOnce(
+      mockResponse({ email: ["Enter a valid email address."] }, { ok: false, status: 400 })
+    );
+    await expect(request("/api/auth/me/", { method: "PATCH" })).rejects.toThrow(
+      "Enter a valid email address."
+    );
+  });
+
+  test("falls back to the status code when the body carries no message", async () => {
+    fetch.mockReturnValueOnce(mockResponse(null, { ok: false, status: 500 }));
+    await expect(request("/api/games/")).rejects.toThrow("API error: 500");
+  });
+
   test("on 401, refreshes and retries once with the new token", async () => {
     await setTokens("stale", "good-refresh");
     fetch

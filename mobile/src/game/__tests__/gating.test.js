@@ -221,3 +221,102 @@ describe("closed seats (account deletion)", () => {
     expect(computeGating({ game: g, userId: 1, seatInfo: null }).deadlocked).toBe(true);
   });
 });
+
+// canAbandon mirrors POST /api/games/{id}/abandon/: it may only be offered to
+// the surviving seat of a genuinely deadlocked game.
+describe("canAbandon (the abandon button's visibility)", () => {
+  const online = { player1_user: 1, player2_user: 2 };
+
+  function gate(over, userId, seatInfo = null) {
+    return computeGating({ game: game(over), userId, seatInfo });
+  }
+
+  test("false while the game is playable — nothing to close out", () => {
+    expect(gate({ ...online, current_turn: "p1" }, 1).canAbandon).toBe(false);
+    // opponent's turn, both seats open: waiting, not deadlocked
+    expect(gate({ ...online, current_turn: "p2" }, 1).canAbandon).toBe(false);
+  });
+
+  test("false when a closed seat is not the one that owes the action", () => {
+    const res = gate({ ...online, current_turn: "p1", player2_deleted: true }, 1);
+    expect(res.deadlocked).toBe(false);
+    expect(res.canAbandon).toBe(false);
+  });
+
+  test("true for the survivor once the closed seat holds the turn", () => {
+    const asP1 = gate({ ...online, current_turn: "p2", player2_deleted: true }, 1);
+    expect(asP1.deadlocked).toBe(true);
+    expect(asP1.blockedSeat).toBe("p2");
+    expect(asP1.survivingSeat).toBe("p1");
+    expect(asP1.canAbandon).toBe(true);
+
+    const asP2 = gate({ ...online, current_turn: "p1", player1_deleted: true }, 2);
+    expect(asP2.canAbandon).toBe(true);
+    expect(asP2.survivingSeat).toBe("p2");
+  });
+
+  test("false from the closed seat's own viewpoint", () => {
+    // Viewed as the deleted account (user 1, seat p1): p1 is the blocked seat,
+    // so this viewer holds no surviving seat and gets no button.
+    const asClosed = gate({ ...online, current_turn: "p1", player1_deleted: true }, 1);
+    expect(asClosed.deadlocked).toBe(true);
+    expect(asClosed.canAbandon).toBe(false);
+  });
+
+  test("false for a spectator, who owns no seat at all", () => {
+    const spec = gate({ ...online, current_turn: "p2", player2_deleted: true }, 99);
+    expect(spec.deadlocked).toBe(true);
+    expect(spec.iOwnASeat).toBe(false);
+    expect(spec.canAbandon).toBe(false);
+  });
+
+  test("false when BOTH seats are closed — there is no survivor to act for", () => {
+    const res = gate(
+      { ...online, current_turn: "p2", player1_deleted: true, player2_deleted: true },
+      1
+    );
+    expect(res.deadlocked).toBe(true);
+    expect(res.canAbandon).toBe(false);
+  });
+
+  test("false once the game is finished (including right after abandoning)", () => {
+    const res = gate(
+      { ...online, status: "finished", win_type: "abandoned", current_turn: "p2", player2_deleted: true },
+      1
+    );
+    expect(res.deadlocked).toBe(false);
+    expect(res.canAbandon).toBe(false);
+  });
+
+  test("pending double: offered to the responder's survivor, not the offerer's", () => {
+    // p2 (the responder) is closed, so p1 — who offered — is the survivor.
+    const blocked = { ...online, current_turn: "p1", player2_deleted: true, double_offered_by: "p1" };
+    expect(gate(blocked, 1).canAbandon).toBe(true);
+    expect(gate(blocked, 2).canAbandon).toBe(false);
+
+    // A closed *offerer* is no deadlock at all — the open responder can answer.
+    const answerable = { ...online, current_turn: "p1", player1_deleted: true, double_offered_by: "p1" };
+    expect(gate(answerable, 2).canAbandon).toBe(false);
+  });
+
+  test("guest survivor via the local seat registry still gets the button", () => {
+    // Logged-out device that recorded seat p1 in an online game; p2 (an account)
+    // was deleted. The server allows an anonymous caller on a guest seat.
+    const res = gate(
+      { player1_user: null, player2_user: 2, current_turn: "p2", player2_deleted: true },
+      null,
+      { online: true, seats: ["p1"] }
+    );
+    expect(res.canAbandon).toBe(true);
+  });
+
+  test("a device holding only the closed seat gets no button", () => {
+    const res = gate(
+      { player1_user: 1, player2_user: null, current_turn: "p1", player1_deleted: true },
+      null,
+      { online: true, seats: ["p1"] }
+    );
+    expect(res.deadlocked).toBe(true);
+    expect(res.canAbandon).toBe(false);
+  });
+});

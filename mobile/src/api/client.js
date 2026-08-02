@@ -48,8 +48,24 @@ export async function request(path, options = {}) {
 
   const data = await res.json().catch(() => null);
   if (!res.ok) {
-    const message = (data && (data.error || data.detail)) || `API error: ${res.status}`;
+    const message =
+      (data && (data.error || data.detail)) ||
+      firstFieldError(data) ||
+      `API error: ${res.status}`;
     throw new Error(message);
   }
   return data;
+}
+
+// DRF serializer validation returns a field-keyed dict of message arrays
+// (`{"email": ["Enter a valid email address."]}`) rather than the `{error}` /
+// `{detail}` shapes above. Surface the first of those instead of a bare status
+// code, so PATCH /api/auth/me/ and friends can show the server's own wording.
+function firstFieldError(data) {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+  for (const value of Object.values(data)) {
+    if (Array.isArray(value) && typeof value[0] === "string") return value[0];
+    if (typeof value === "string") return value;
+  }
+  return null;
 }

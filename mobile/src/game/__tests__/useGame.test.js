@@ -176,3 +176,85 @@ describe("useGame", () => {
     expect(result.current.actionError).toBe("No double has been offered.");
   });
 });
+
+describe("useGame abandon", () => {
+  // The deadlocked payload the escape hatch exists for: p2 deleted their
+  // account and it is p2's turn, so nothing can ever move.
+  const deadlocked = {
+    ...baseGame,
+    current_turn: "p2",
+    dice_values: [],
+    player1_user: 1,
+    player2_user: 2,
+    player2_deleted: true,
+  };
+  const abandoned = {
+    ...deadlocked,
+    status: "finished",
+    winner: null,
+    win_type: "abandoned",
+    points_value: 0,
+    dice_values: [],
+    double_offered_by: null,
+    updated_at: "t9",
+  };
+
+  test("calls the endpoint and adopts the finished, winner-less game", async () => {
+    games.fetchGame.mockResolvedValue(deadlocked);
+    games.abandonGame.mockResolvedValue(abandoned);
+
+    const { result } = await mountLoaded();
+    await act(async () => { await result.current.abandonGame(); });
+
+    expect(games.abandonGame).toHaveBeenCalledWith(1);
+    expect(result.current.game.status).toBe("finished");
+    expect(result.current.game.winner).toBeNull();
+    expect(result.current.game.win_type).toBe("abandoned");
+    expect(result.current.actionError).toBeNull();
+  });
+
+  test("the poll stays stopped afterwards — deadlocked before, finished after", async () => {
+    jest.useFakeTimers();
+    try {
+      games.fetchGame.mockResolvedValue(deadlocked);
+      games.abandonGame.mockResolvedValue(abandoned);
+
+      const view = renderHook(() => useGame(1));
+      await waitFor(() => expect(view.result.current.loading).toBe(false));
+      const afterLoad = games.fetchGame.mock.calls.length;
+
+      await act(async () => { await view.result.current.abandonGame(); });
+      act(() => { jest.advanceTimersByTime(3500 * 4); });
+
+      // No poll fetch at any point: the deadlock guard covered the before, the
+      // status guard covers the after.
+      expect(games.fetchGame).toHaveBeenCalledTimes(afterLoad);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test("surfaces a 400 (not actually deadlocked) through actionError", async () => {
+    games.fetchGame.mockResolvedValue(deadlocked);
+    games.abandonGame.mockRejectedValue(
+      new Error("This game is not abandoned — the player to act still has an open seat.")
+    );
+
+    const { result } = await mountLoaded();
+    await act(async () => { await result.current.abandonGame(); });
+
+    expect(result.current.actionError).toBe(
+      "This game is not abandoned — the player to act still has an open seat."
+    );
+    expect(result.current.game.status).toBe("active");
+  });
+
+  test("surfaces a 403 (not the surviving seat) through actionError", async () => {
+    games.fetchGame.mockResolvedValue(deadlocked);
+    games.abandonGame.mockRejectedValue(new Error("It is not your turn."));
+
+    const { result } = await mountLoaded();
+    await act(async () => { await result.current.abandonGame(); });
+    expect(result.current.actionError).toBe("It is not your turn.");
+  });
+});

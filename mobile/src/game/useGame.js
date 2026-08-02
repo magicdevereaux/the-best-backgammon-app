@@ -7,6 +7,7 @@ import {
   confirmTurn as apiConfirmTurn,
   offerDouble as apiOfferDouble,
   respondToDouble as apiRespondToDouble,
+  abandonGame as apiAbandonGame,
 } from "../api/games";
 import { getLegalMoves, getCombinedMoves, applyMove, maxMovesUsable } from "./logic";
 import { isDeadlocked } from "./gating";
@@ -295,6 +296,22 @@ export function useGame(gameId) {
     [gameId]
   );
 
+  // Close out a game deadlocked by a closed seat. The returned game is
+  // status="finished", which the poller's status guard reads on the very next
+  // tick — so polling stays stopped (it was already skipping the deadlock) and
+  // the screen switches to its game-over path. Errors (400 not-deadlocked /
+  // already-finished, 403 wrong seat) land in actionError like every other
+  // action's do.
+  const abandonGame = useCallback(async () => {
+    try {
+      setActionError(null);
+      const updated = await apiAbandonGame(gameId);
+      setGame(updated);
+    } catch (err) {
+      setActionError(err.message);
+    }
+  }, [gameId]);
+
   // Doubling is legal on your turn before rolling, with the cube centered or
   // yours, outside the Crawford game and below the 64 cap. Mirrors the
   // server-side rules for button visibility; the server re-validates.
@@ -326,6 +343,7 @@ export function useGame(gameId) {
     offerDouble,
     respondToDouble,
     canOfferDouble,
+    abandonGame,
     reload,
     refresh,
     refreshing,

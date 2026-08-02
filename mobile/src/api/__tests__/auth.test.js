@@ -1,4 +1,12 @@
-import { register, login, fetchMe, logout, deleteAccount } from "../auth";
+import {
+  register,
+  login,
+  fetchMe,
+  logout,
+  deleteAccount,
+  updateEmail,
+  requestPasswordReset,
+} from "../auth";
 import { getAccessToken, getRefreshToken, setTokens, clearTokens } from "../tokenStore";
 
 /*
@@ -49,6 +57,113 @@ describe("register()", () => {
     );
     await expect(register("alice", "securepass123")).rejects.toThrow("Username already taken.");
     expect(await getAccessToken()).toBeNull();
+  });
+
+  test("includes an email address when one is given", async () => {
+    fetch.mockReturnValueOnce(
+      mockResponse({ user: { username: "alice", email: "a@example.com" }, access: "acc", refresh: "ref" }, { status: 201 })
+    );
+    await register("alice", "securepass123", "  a@example.com  ");
+
+    expect(JSON.parse(fetch.mock.calls[0][1].body)).toEqual({
+      username: "alice",
+      password: "securepass123",
+      email: "a@example.com", // trimmed
+    });
+  });
+
+  test("omits email entirely when blank — an account with no address is fine", async () => {
+    fetch.mockReturnValue(
+      mockResponse({ user: { username: "alice" }, access: "acc", refresh: "ref" }, { status: 201 })
+    );
+    for (const blank of [undefined, "", "   "]) {
+      fetch.mockClear();
+      await register("alice", "securepass123", blank);
+      expect(JSON.parse(fetch.mock.calls[0][1].body)).not.toHaveProperty("email");
+    }
+  });
+
+  test("surfaces a malformed-email field error", async () => {
+    fetch.mockReturnValueOnce(
+      mockResponse({ email: ["Enter a valid email address."] }, { ok: false, status: 400 })
+    );
+    await expect(register("alice", "securepass123", "nope")).rejects.toThrow(
+      "Enter a valid email address."
+    );
+    expect(await getAccessToken()).toBeNull();
+  });
+});
+
+describe("updateEmail()", () => {
+  test("PATCHes /me/ with the bearer token and returns the fresh user", async () => {
+    await setTokens("acc", "ref");
+    fetch.mockReturnValueOnce(mockResponse({ username: "alice", email: "a@example.com" }));
+
+    const user = await updateEmail("  a@example.com  ");
+    expect(user).toEqual({ username: "alice", email: "a@example.com" });
+
+    const [url, options] = fetch.mock.calls[0];
+    expect(url).toMatch(/\/api\/auth\/me\/$/);
+    expect(options.method).toBe("PATCH");
+    expect(options.headers.Authorization).toBe("Bearer acc");
+    expect(JSON.parse(options.body)).toEqual({ email: "a@example.com" }); // trimmed
+  });
+
+  test("sends an empty string to clear the address", async () => {
+    await setTokens("acc", "ref");
+    fetch.mockReturnValueOnce(mockResponse({ username: "alice", email: "" }));
+
+    const user = await updateEmail("");
+    expect(JSON.parse(fetch.mock.calls[0][1].body)).toEqual({ email: "" });
+    expect(user.email).toBe("");
+  });
+
+  test("surfaces the server's validation message for a malformed address", async () => {
+    await setTokens("acc", "ref");
+    fetch.mockReturnValueOnce(
+      mockResponse({ email: ["Enter a valid email address."] }, { ok: false, status: 400 })
+    );
+    await expect(updateEmail("nope")).rejects.toThrow("Enter a valid email address.");
+  });
+});
+
+describe("requestPasswordReset()", () => {
+  const FLAT = "If an account with that email address exists, a password reset link has been sent to it.";
+
+  test("POSTs the address unauthenticated and returns the server's message", async () => {
+    fetch.mockReturnValueOnce(mockResponse({ detail: FLAT }));
+
+    expect(await requestPasswordReset("  a@example.com ")).toBe(FLAT);
+
+    const [url, options] = fetch.mock.calls[0];
+    expect(url).toMatch(/\/api\/auth\/password-reset\/$/);
+    expect(options.method).toBe("POST");
+    expect(options.headers.Authorization).toBeUndefined();
+    expect(JSON.parse(options.body)).toEqual({ email: "a@example.com" });
+  });
+
+  test("a hit and a miss are indistinguishable — the client adds no signal", async () => {
+    // The backend answers identically either way (anti-enumeration); assert the
+    // wrapper passes that through without inventing a difference.
+    fetch.mockReturnValue(mockResponse({ detail: FLAT }));
+    const known = await requestPasswordReset("registered@example.com");
+    const unknown = await requestPasswordReset("nobody@example.com");
+    expect(known).toBe(unknown);
+    expect(known).toBe(FLAT);
+  });
+
+  test("surfaces a malformed-address 400", async () => {
+    fetch.mockReturnValueOnce(
+      mockResponse({ email: ["Enter a valid email address."] }, { ok: false, status: 400 })
+    );
+    await expect(requestPasswordReset("nope")).rejects.toThrow("Enter a valid email address.");
+  });
+
+  test("surfaces the throttle response", async () => {
+    fetch.mockReturnValueOnce(
+      mockResponse({ detail: "Request was throttled." }, { ok: false, status: 429 })
+    );
+    await expect(requestPasswordReset("a@example.com")).rejects.toThrow("Request was throttled.");
   });
 });
 

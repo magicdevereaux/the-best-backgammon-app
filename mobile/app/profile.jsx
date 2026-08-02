@@ -4,6 +4,7 @@ import { useRouter, Link, useFocusEffect } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useAuth } from "../src/context/AuthContext";
 import { fetchMe } from "../src/api/auth";
+import EmailSection from "../src/components/EmailSection";
 import DeleteAccountSection from "../src/components/DeleteAccountSection";
 import { colors } from "../src/theme";
 
@@ -111,6 +112,14 @@ export default function ProfileScreen() {
           <StatRow label="Total points won" value={stats.total_points_won} />
           <StatRow label="Total points lost" value={stats.total_points_lost} />
         </View>
+
+        <EmailSection
+          email={stats.email}
+          onUpdated={(me) => {
+            setStats(me);
+            updateUser(me);
+          }}
+        />
 
         <DeleteAccountSection
           onDeleted={async () => {

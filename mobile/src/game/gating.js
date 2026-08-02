@@ -36,21 +36,29 @@ export function isSeatClosed(game, seat) {
       : false;
 }
 
+export function otherSeat(seat) {
+  return seat === "p1" ? "p2" : seat === "p2" ? "p1" : null;
+}
+
+// The seat that owes the next action. Normally that is current_turn. A pending
+// double is the exception: it blocks all play until the *responder* (the
+// offerer's opponent) answers, so that seat is the one that has to act. Mirrors
+// the server's own choice of seat in `respond_to_double` and in `abandon`.
+export function blockedSeat(game) {
+  if (!game) return null;
+  return game.double_offered_by
+    ? otherSeat(game.double_offered_by)
+    : game.current_turn ?? null;
+}
+
 // A game is deadlocked when the seat that has to act next has been closed: the
 // server 403s that seat for *everyone* (including the surviving opponent, who
 // would otherwise get to play both sides), so nobody can move it along and no
 // opponent is ever coming. Distinct from waitingForOpponent — that one resolves
 // on its own, this one never does. Callers use it to stop polling and to say so.
-//
-// Normally the seat that has to act is current_turn. A pending double is the
-// exception: it blocks all play until the *responder* (the offerer's opponent)
-// answers, so that seat is the one that has to be open.
 export function isDeadlocked(game) {
   if (!game || game.status !== "active") return false;
-  if (game.double_offered_by) {
-    return isSeatClosed(game, game.double_offered_by === "p1" ? "p2" : "p1");
-  }
-  return isSeatClosed(game, game.current_turn);
+  return isSeatClosed(game, blockedSeat(game));
 }
 
 export function computeGating({ game, userId, seatInfo }) {
@@ -94,6 +102,24 @@ export function computeGating({ game, userId, seatInfo }) {
   const spectating = gated && !iOwnASeat && active && !deadlocked;
   const waitingForOpponent = gated && iOwnASeat && !isMyTurn && active && !deadlocked;
 
+  // Who is stuck and who is left. `blocked` is the seat that can't act (closed,
+  // when deadlocked); `survivingSeat` is its opponent — the only seat the
+  // server's `abandon` action will accept a caller for.
+  const blocked = blockedSeat(game);
+  const surviving = otherSeat(blocked);
+
+  // Mirror of POST /api/games/{id}/abandon/'s preconditions, so the button only
+  // appears where the server would say yes: the game is genuinely deadlocked and
+  // this viewer holds the *surviving* seat. A spectator (no seats), the closed
+  // seat's own viewpoint (mySeats has only the blocked seat), and the both-seats-
+  // closed case (no survivor to act for) all come back false. The server
+  // re-checks all of it; this is affordance, not authorization.
+  const canAbandon =
+    deadlocked &&
+    surviving != null &&
+    mySeats.includes(surviving) &&
+    !isSeatClosed(game, surviving);
+
   return {
     gated,
     mySeats,
@@ -103,5 +129,8 @@ export function computeGating({ game, userId, seatInfo }) {
     spectating,
     waitingForOpponent,
     deadlocked,
+    blockedSeat: blocked,
+    survivingSeat: surviving,
+    canAbandon,
   };
 }

@@ -23,18 +23,32 @@ export default function GameOverScreen({ game, match, onNextGame, onNewMatch, on
   const detail = WIN_TYPE_DETAIL[game.win_type];
   const matchActive = match && match.status === "active";
   const matchFinished = match && match.status === "finished";
+  // An abandoned game has no winner and no points at all, so the whole
+  // "<name> wins! / N points awarded" headline would be a fabrication —
+  // `game.winner` is null and would render as the p2 name.
+  const abandoned = game.win_type === "abandoned";
 
   return (
     <Modal transparent animationType="fade" visible onRequestClose={onLobby}>
       <View style={styles.backdrop}>
         <View style={styles.card}>
           <Text style={styles.title}>
-            {winnerName} {label}
+            {abandoned ? "Game closed out" : `${winnerName} ${label}`}
           </Text>
 
           <Text style={styles.points}>
-            {pts === 1 ? "1 point awarded" : `${pts} points awarded`}
+            {abandoned
+              ? "No winner — no points awarded"
+              : pts === 1
+                ? "1 point awarded"
+                : `${pts} points awarded`}
           </Text>
+          {abandoned && (
+            <Text style={styles.detail}>
+              This game could never be finished, so it was closed out. The match
+              score is unchanged and nothing was added to either player's record.
+            </Text>
+          )}
           {detail && <Text style={styles.detail}>{detail}</Text>}
 
           {match && (
@@ -45,9 +59,13 @@ export default function GameOverScreen({ game, match, onNextGame, onNewMatch, on
               <Text style={styles.matchScore}>
                 {match.player1_name} {match.player1_score} – {match.player2_score} {match.player2_name}
               </Text>
+              {/* An abandoned match finishes with winner=null; naming a winner
+                  there would invent one, so fall back to a neutral line. */}
               {matchFinished && (
                 <Text style={styles.matchWin}>
-                  {match.winner === "p1" ? match.player1_name : match.player2_name} wins the match!
+                  {match.winner
+                    ? `${match.winner === "p1" ? match.player1_name : match.player2_name} wins the match!`
+                    : "Match closed out — no winner."}
                 </Text>
               )}
             </View>

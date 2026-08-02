@@ -12,6 +12,7 @@ import DoublingCube from "../../src/components/DoublingCube";
 import GameControls from "../../src/components/GameControls";
 import GameOverScreen from "../../src/components/GameOverScreen";
 import MatchScore from "../../src/components/MatchScore";
+import AbandonGameSection from "../../src/components/AbandonGameSection";
 import { useGame } from "../../src/game/useGame";
 import { computeGating } from "../../src/game/gating";
 import { useSeatInfo, recordOnlineSeat } from "../../src/game/seatRegistry";
@@ -31,6 +32,7 @@ export default function GameScreen() {
     pendingMoves, legalMoves, mustUseMoreDice, stageMove,
     resetTurn, undoMove, confirmTurn,
     offerDouble, respondToDouble, canOfferDouble,
+    abandonGame,
     reload, refresh, refreshing,
   } = useGame(id);
 
@@ -137,8 +139,10 @@ export default function GameScreen() {
 
   // Turn-ownership gating (see src/game/gating.js). Combines the seat user FKs
   // with the device-local seat registry so online-vs-guest games gate correctly.
-  const { gated, mySeats, canInteract, spectating, waitingForOpponent, deadlocked } =
-    computeGating({ game, userId: user?.id, seatInfo });
+  const {
+    gated, mySeats, canInteract, spectating, waitingForOpponent, deadlocked,
+    blockedSeat, canAbandon,
+  } = computeGating({ game, userId: user?.id, seatInfo });
 
   // Doubling: the offer button follows normal turn gating; the Accept/Drop
   // prompt belongs to the *responder* seat (the offerer's opponent), which is
@@ -148,10 +152,10 @@ export default function GameScreen() {
   const canRespondToDouble =
     doublePending && !deadlocked && (!gated || mySeats.includes(responderSeat));
 
-  // Deadlock copy: the closed seat is the one that owes the next action (the
-  // responder while a double is pending, otherwise the current turn). If it
-  // isn't a seat I hold, it's my opponent who left; otherwise name the seat.
-  const blockedSeat = doublePending ? responderSeat : game.current_turn;
+  // Deadlock copy: `blockedSeat` (from computeGating) is the seat that owes the
+  // next action — the responder while a double is pending, otherwise the current
+  // turn. If it isn't a seat I hold, it's my opponent who left; otherwise name
+  // the seat.
   const blockedName = blockedSeat === "p1" ? game.player1_name : game.player2_name;
   const deadlockedSeatIsTheirs = gated && !mySeats.includes(blockedSeat);
 
@@ -205,9 +209,14 @@ export default function GameScreen() {
         )}
         {game.status === "finished" && (
           <Text style={styles.finished}>
-            Game over — {game.winner === "p1" ? game.player1_name : game.player2_name} wins!
+            {game.win_type === "abandoned"
+              ? "Game closed out — no winner, no points scored."
+              : `Game over — ${game.winner === "p1" ? game.player1_name : game.player2_name} wins!`}
           </Text>
         )}
+
+        {/* Only rendered for the surviving seat of a deadlocked game. */}
+        <AbandonGameSection canAbandon={canAbandon} onAbandon={abandonGame} />
 
         <Board
           boardState={stagedBoard}

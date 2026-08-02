@@ -5,17 +5,29 @@ import { setTokens, clearTokens, getAccessToken } from "./tokenStore";
 // register/login hit the auth endpoints directly (no bearer token yet), then
 // persist the returned JWT pair to SecureStore.
 
-export async function register(username, password) {
+/**
+ * Create an account. `email` is optional by design — an address is what buys
+ * the account password recovery, but requiring one would shut out the
+ * guest-friendly path the whole app is built around. Omitted entirely from the
+ * body when blank rather than sent as "", so the request stays byte-identical
+ * to the no-email registration it always was.
+ */
+export async function register(username, password, email) {
   assertApiConfigured();
+  const trimmedEmail = (email || "").trim();
+  const body = { username, password };
+  if (trimmedEmail) body.email = trimmedEmail;
+
   const res = await fetch(`${API_BASE_URL}/api/auth/register/`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ username, password }),
+    body: JSON.stringify(body),
   });
   const data = await res.json().catch(() => null);
   if (!res.ok) {
     const msg =
       data?.username?.[0] ||
+      data?.email?.[0] ||
       data?.password?.[0] ||
       data?.detail ||
       "Registration failed.";
@@ -46,6 +58,56 @@ export async function fetchMe() {
   } catch {
     return null;
   }
+}
+
+/**
+ * Set or clear the logged-in account's email address. `email` is the only
+ * writable field on `/api/auth/me/` (`username` is read-only and a PATCH naming
+ * it is silently ignored), and passing `""` clears the address.
+ *
+ * Goes through `request()` for the bearer token and its 401 refresh-and-retry;
+ * a malformed address comes back as `{"email": ["Enter a valid email
+ * address."]}`, which `request` surfaces verbatim.
+ *
+ * Returns the full user payload, same shape as `GET /api/auth/me/`.
+ */
+export async function updateEmail(email) {
+  return request("/api/auth/me/", {
+    method: "PATCH",
+    body: JSON.stringify({ email: (email || "").trim() }),
+  });
+}
+
+/**
+ * Ask the backend to mail a password-reset link. Unauthenticated.
+ *
+ * The backend answers **identically** whether or not an account holds the
+ * address — a deliberate anti-enumeration measure — so this resolves with the
+ * server's own `detail` string and the UI must show it unchanged. Never branch
+ * on whether an account was found; the client cannot know, and must not appear
+ * to.
+ *
+ * The reset link itself opens the *web* client; there is no in-app confirm
+ * screen.
+ */
+export async function requestPasswordReset(email) {
+  assertApiConfigured();
+  const res = await fetch(`${API_BASE_URL}/api/auth/password-reset/`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email: (email || "").trim() }),
+  });
+  const data = await res.json().catch(() => null);
+  if (!res.ok) {
+    // Only ever a malformed/missing address (400) or the 5/hour throttle (429).
+    throw new Error(
+      data?.email?.[0] || data?.detail || "Could not send a reset email. Please try again."
+    );
+  }
+  return (
+    data?.detail ||
+    "If an account with that email address exists, a password reset link has been sent to it."
+  );
 }
 
 /**

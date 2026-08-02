@@ -44,3 +44,13 @@ export function respondToDouble(id, accept) {
     body: JSON.stringify({ accept }),
   });
 }
+
+// Close out a game deadlocked by a closed seat (the player who owes the next
+// action deleted their account, so the server refuses that seat to everyone).
+// Non-scoring and final: the game finishes with no winner, win_type
+// "abandoned", points_value 0, and the match — if any — finishes too with its
+// score untouched. No body. 400 when the game isn't active or isn't actually
+// deadlocked, 403 when the caller may not act for the surviving seat.
+export function abandonGame(id) {
+  return request(`/api/games/${id}/abandon/`, { method: "POST" });
+}
