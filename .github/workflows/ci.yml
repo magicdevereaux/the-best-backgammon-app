@@ -1,9 +1,10 @@
 name: CI
 
-# Runs all three test suites. Each suite is its own job so a red X points at the
-# guilty client (backend / web / mobile) without reading logs.
+# Runs all three test suites, plus Django's deployment check and the web
+# production build. Each suite is its own job so a red X points at the guilty
+# client (backend / web / mobile) without reading logs.
 #
-# Baselines as of 2026-07-25: backend 232, web 172, mobile 83 (487 total).
+# Baselines as of 2026-08-01: backend 421, web 243, mobile 125 (789 total).
 
 on:
   push:
@@ -53,13 +54,22 @@ jobs:
         # `manage.py check` would be redundant.
         run: python manage.py test game --verbosity 2
 
-      # Deliberately NOT running `manage.py check --deploy` here. It requires a
-      # production-shaped settings environment (DEBUG=False, a real SECRET_KEY,
-      # ALLOWED_HOSTS, HTTPS/HSTS/secure-cookie settings). Wiring that up means
-      # inventing env var names that don't exist in the repo yet, and a
-      # `--deploy` run against the dev defaults fails on warnings that are
-      # correct for dev. Add this step once the deployment settings and their
-      # env var contract are real -- see docs/operations/going-live.md.
+      - name: Django deployment checks
+        working-directory: backend
+        # The production hardening in settings.py is gated on DEBUG, so this
+        # only exercises anything with DEBUG=False. The env var contract is
+        # backend/.env.example; the SECRET_KEY is generated per-run and thrown
+        # away (a missing one raises ImproperlyConfigured when DEBUG=False).
+        # --fail-level WARNING is load-bearing: --deploy reports W0xx warnings
+        # and would otherwise exit 0 with the findings buried in the log.
+        # Expect "System check identified no issues" -- if it ever doesn't,
+        # fix the setting, don't relax the fail level.
+        run: |
+          export SECRET_KEY="$(python -c 'import secrets; print(secrets.token_urlsafe(64))')"
+          python manage.py check --deploy --fail-level WARNING
+        env:
+          DEBUG: "False"
+          ALLOWED_HOSTS: example.com
 
   web:
     name: Web (frontend)
@@ -86,6 +96,19 @@ jobs:
         # zero tests. Do not "simplify" this line.
         # Expect harmless React Router v7 future-flag deprecation warnings.
         run: npm test -- --watchAll=false
+        env:
+          CI: true
+
+      - name: Production build
+        working-directory: frontend
+        # CRA's production build is stricter than its test transform, so a
+        # build-only breakage (unused import, bad env reference) is invisible to
+        # `npm test` and would otherwise surface at deploy time. Under CI=true
+        # react-scripts treats build warnings as errors -- that is the point of
+        # this step, so fix the warning rather than unsetting CI.
+        # REACT_APP_API_BASE_URL is deliberately unset: the client falls back to
+        # its dev host resolution, and this step is checking compilation only.
+        run: npm run build
         env:
           CI: true
 
