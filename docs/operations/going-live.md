@@ -7,34 +7,38 @@ a shipped web app + a store-approved mobile app.
 > cites the file and line it was found in. Nothing here is speculative, and
 > nothing is marked done that wasn't read back out of the tree.
 
-Re-audited **2026-08-01** against HEAD `3849294`, after the run of commits that
-closed most of section 2 (list scoping, shared cache, password reset, the
-closed-seat clients and `abandon`, Sentry, CI, OTA, web polling, web metadata,
-and the removal of `move_checker`). Line numbers in `views.py`,
-`serializers.py` and `settings.py` all moved and were re-read for this pass.
+Re-audited **2026-08-02** against HEAD `a5bd752`, after six further commits closed
+the last of the substantial code work: match-list scoping, the password-reset
+client UI at both ends, the `abandon` control on both clients, and the
+generalisation of the higher-die rule with a port into both JS engines. Line
+numbers in `views.py` moved and were re-read for this pass; `settings.py`,
+`serializers.py` and `models.py` are untouched since the previous audit, so their
+citations below still hold as written.
 
 ## Current state
 
 The original audit found 11 hard blockers. **All of them are closed**, and so is
-most of what the last two passes added. The backend is env-driven, containerised,
-throttled, cache-configurable and Sentry-ready; it passes Django's own deployment
-checks cleanly and CI now enforces that; both clients can be pointed at a real
-API by configuration; both clients now poll, and both explain a seat closed by
-account deletion; password reset exists end to end on the server; legal drafts
-exist.
+nearly everything the later passes added. The backend is env-driven,
+containerised, throttled, cache-configurable and Sentry-ready; it passes Django's
+own deployment checks cleanly and CI enforces that; both clients can be pointed
+at a real API by configuration; both poll; both explain a seat closed by account
+deletion *and* offer the way out of it; password reset now works end to end from
+inside the apps; the rules engine matches the official higher-die rule in all
+three copies; legal drafts exist.
 
-What remains splits three ways. **Decisions and credentials only the owner can
-supply** ([section 1](#1-blocked-on-the-owner)) — including three new ones: the
-code now *reads* `REDIS_URL`, `SENTRY_DSN` and the `EMAIL_*` vars, but none of
-them is set anywhere, so the shared throttle cache, error reporting and outbound
-mail are all wired-but-dormant. **Real code gaps** ([section 2](#2-still-open-in-code)),
-of which two matter: `GET /api/matches/` is still the enumeration hole that
-`GET /api/games/` no longer is ([2.1](#21-get-apimatches-is-still-public-and-unscoped)),
-and the password-reset flow has **no client UI at either end**
-([2.4](#24-password-reset-works-server-side-but-no-client-can-use-it)), so a real
-user still cannot recover an account. And **things the server can now do that no
-client asks for** — the `abandon` endpoint has no caller
-([2.5](#25-nothing-calls-the-abandon-endpoint)).
+What remains splits two ways, and only the first is substantial. **Decisions and
+credentials only the owner can supply** ([section 1](#1-blocked-on-the-owner)) —
+now the bulk of the remaining work, and it includes three subsystems that are
+*coded and dormant*: `REDIS_URL`, `SENTRY_DSN` and the `EMAIL_*` vars are all read
+by `settings.py` and set nowhere, so throttle counters are still per-worker, a 500
+still notifies nobody, and reset mail still goes to Django's console backend.
+**Real code gaps** ([section 2](#2-still-open-in-code)) are down to three, none of
+them a bug: a deliberate design trade-off
+([2.1](#21-guest-seats-are-unverifiable-by-design)), the admin path
+([2.2](#22-django-admin-is-publicly-exposed-at-a-predictable-path)), and polish
+([2.3](#23-polish-and-hygiene)). The third category the last pass needed —
+server capabilities no client called — is **empty**: `abandon`, password reset
+and the higher-die rule all have callers now.
 
 Verified in the 2026-07-26 pass, by running it (settings are untouched since),
 and now run on every push by CI ([3.26](#3-done)):
@@ -45,32 +49,37 @@ $ cd backend && DEBUG=False SECRET_KEY=<50-char random> ALLOWED_HOSTS=example.co
 System check identified no issues (0 silenced).
 ```
 
-Six warnings → zero. All three suites are green as of **2026-08-01**:
-**backend 412**, **web 239**, **mobile 125** (776 total), and
+Six warnings → zero. All three suites are green as of **2026-08-02**:
+**backend 441**, **web 312**, **mobile 190** (943 total), and
 [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) runs each on every
-push.
+push. The 167-test growth since the last pass is almost entirely client tests for
+the four items closed below.
 
 Still true, and still good news: **no secrets are committed.** `git status`
 shows no `.env`, and [`.gitignore`](../../.gitignore) covers `db.sqlite3`,
 `venv/`, `.env`, `.env.production`, `secrets.json`, `*.pem` / `*.key`. The
 `.env.example` files are placeholders with empty values.
 
-**Order of operations from here.** The remaining code gaps are narrow, so the
-next step is still infrastructure. (1) Owner provisions Postgres on Railway and
-sets the env vars ([section 1](#1-blocked-on-the-owner); runbook in
+**Order of operations from here.** There is no code work left standing between
+the tree and a deploy, so every remaining step is infrastructure or paperwork.
+(1) Owner provisions Postgres on Railway and sets the env vars
+([section 1](#1-blocked-on-the-owner); runbook in
 [railway-deploy.md](railway-deploy.md)) — and while in that tab, sets
 `REDIS_URL`, `SENTRY_DSN` and the `EMAIL_*` / `FRONTEND_BASE_URL` values, which
 cost nothing extra and switch on three subsystems that are otherwise inert.
+**`FRONTEND_BASE_URL` graduated from theoretical to load-bearing this pass**: the
+web client now actually serves `/reset-password/:uid/:token`, so a wrong value is
+the difference between a working reset and a dead link.
 (2) Deploy, smoke-test, turn on backups. (3) Build web with
 `REACT_APP_API_BASE_URL`, build mobile with `EXPO_PUBLIC_API_URL`, test both off
 the dev LAN. (4) Fill the legal `[TODO]`s, host the policy, submit.
 
-Two items in [section 2](#2-still-open-in-code) are worth doing *before* real
-users arrive rather than after. [2.4](#24-password-reset-works-server-side-but-no-client-can-use-it)
-is a client-only job that turns a finished server feature into a usable one —
-without it, "I forgot my password" is still a support ticket, and store reviewers
-test exactly that path. [2.1](#21-get-apimatches-is-still-public-and-unscoped) is
-half an hour of work of a shape already proven on `Game`.
+The one item in [section 2](#2-still-open-in-code) worth doing *before* real users
+arrive is [2.2](#22-django-admin-is-publicly-exposed-at-a-predictable-path):
+moving `/admin/` off its predictable path is a one-line change that closes the
+largest remaining attack surface. [2.1](#21-guest-seats-are-unverifiable-by-design)
+is a design trade-off, not a defect, and [2.3](#23-polish-and-hygiene) is
+housekeeping.
 
 ---
 
@@ -137,10 +146,10 @@ The mobile client resolves its backend by an explicit precedence chain and
 reported as a configuration error rather than failing as an opaque network
 timeout. The values it needs are blank and marked `OWNER TODO`:
 
-- [`eas.json:33`](../../mobile/eas.json) — `preview.env.EXPO_PUBLIC_API_URL` (staging)
-- [`eas.json:41`](../../mobile/eas.json) — `production.env.EXPO_PUBLIC_API_URL`
-- [`app.json:48`](../../mobile/app.json) — `expo.extra.apiUrl` (fallback)
-- [`eas.json:51`](../../mobile/eas.json) — `submit.production` is `{}`. iOS needs
+- [`eas.json:46`](../../mobile/eas.json) — `preview.env.EXPO_PUBLIC_API_URL` (staging)
+- [`eas.json:54`](../../mobile/eas.json) — `production.env.EXPO_PUBLIC_API_URL`
+- [`app.json:59`](../../mobile/app.json) — `expo.extra.apiUrl` (fallback)
+- [`eas.json:64`](../../mobile/eas.json) — `submit.production` is `{}`. iOS needs
   `appleId`, `ascAppId`, `appleTeamId`; Android needs `serviceAccountKeyPath`
   and `track`.
 
@@ -184,19 +193,22 @@ listings.
 - Enable the managed database's automated backups and **test a restore once**.
   Untested backups are not backups. Nothing in the repo can do this.
 - Choose a strong superuser password and decide how `/admin/` is protected (see
-  [2.3](#23-django-admin-is-publicly-exposed-at-a-predictable-path)).
+  [2.2](#22-django-admin-is-publicly-exposed-at-a-predictable-path)).
 - **Sentry.** The code side is done — `sentry-sdk[django]` is pinned and
   initialised the moment `SENTRY_DSN` is non-empty ([3.25](#3-done)). Create the
   project, paste the DSN. Until then a 500 still notifies nobody.
 - **Redis.** Same shape: `CACHES` switches to `RedisCache` on `REDIS_URL` and the
   `redis` client is pinned ([3.22](#3-done)). Add the platform's Redis plugin and
   reference its URL, or accept per-worker throttle counters.
-- **An outbound mail route.** Password reset is built and tested
-  ([3.23](#3-done)) but ships nothing without `EMAIL_HOST` — with it unset,
-  Django's console backend prints the reset link to the deploy log. Pick any
-  SMTP-speaking provider (SES, Postmark, Resend, Mailgun) and set the `EMAIL_*`
-  vars plus `FRONTEND_BASE_URL`. Note this is only half the fix: no client can
-  *use* the flow yet either ([2.4](#24-password-reset-works-server-side-but-no-client-can-use-it)).
+- **An outbound mail route.** Password reset is built and tested on the server
+  ([3.23](#3-done)) and reachable from both clients ([3.32](#3-done)), but it
+  ships nothing without `EMAIL_HOST` — with it unset, Django's console backend
+  prints the reset link to the deploy log. **This is now the only thing standing
+  between a locked-out user and their account**, since the client half is done.
+  Pick any SMTP-speaking provider (SES, Postmark, Resend, Mailgun), set the
+  `EMAIL_*` vars, and set `FRONTEND_BASE_URL` to the web client's origin — the
+  link is served by the web router and by nothing else, so a wrong value produces
+  mail nobody can act on.
 
 ### 1.7 Link the EAS update channels so OTA actually publishes
 
@@ -223,48 +235,11 @@ store build rather than an OTA.
 
 ## 2. Still open in code
 
-Real remaining work, ranked by severity.
+Three items, and none of them is a bug. What used to live here — match-list
+scoping, the password-reset client, the missing `abandon` caller, the
+bear-off-only higher-die rule — is in [section 3](#3-done) now.
 
-### 2.1 `GET /api/matches/` is still public and unscoped
-
-**This is the unfinished half of today's list-scoping fix, not a new bug.**
-`_list_scope_q` ([`views.py:514–556`](../../backend/game/views.py)) was applied to
-`GameViewSet` only ([`views.py:783–790`](../../backend/game/views.py)).
-`MatchViewSet.get_queryset` is still a bare
-`Match.objects.all()` ([`views.py:624–625`](../../backend/game/views.py)), the
-default permission is `AllowAny`
-([`settings.py:292–295`](../../backend/backgammon/settings.py)), and
-`MatchSerializer` uses `fields = "__all__"`
-([`serializers.py:74–88`](../../backend/game/serializers.py)) — so
-`GET /api/matches/` still hands an anonymous caller `player1_user` /
-`player2_user` ids, both display names, both scores, `target_points`, status and
-timestamps for **every match in the table**. `BareListPagination` bounds a single
-response to 100 rows, but `?page=N` walks the rest at the anon rate (120/min).
-Exactly the exposure that was just closed for `Game`.
-
-**Fix — same shape as the one already proven.** Scope the `list` action, leave
-`retrieve` by id open (a match is reached by link/code the same way a game is).
-Two details differ from the `Game` rule and should be checked rather than copied:
-
-- **There is no lobby clause to write.** `Match.status` has only `active` and
-  `finished` ([`models.py:24–28`](../../backend/game/models.py)) — no `waiting`
-  — so the "public lobby" disjunct that keeps open *games* visible has no match
-  analogue. Advertising happens on `Game`, not `Match`.
-- **The fully-guest clause does carry over.** `Match` has the same
-  `player1_deleted` / `player2_deleted` flags
-  ([`models.py:19–20`](../../backend/game/models.py)), so "both FKs null and
-  neither seat closed" is expressible and draws the same guest-vs-closed
-  distinction `_match_permission_error` already draws.
-
-Cheaper still: **no client calls the list endpoint at all.**
-[`matchApi.js`](../../frontend/src/api/matchApi.js) exposes only
-`fetchMatch(id)` / `createMatch` / `nextGame` / `joinMatch`, and
-[`mobile/src/api/matches.js`](../../mobile/src/api/matches.js) the same four.
-Dropping `ListModelMixin` from `MatchViewSet` would close the hole outright and
-break nothing shipped — worth considering before writing a scoping rule for a
-list nobody reads.
-
-### 2.2 Guest seats are unverifiable by design
+### 2.1 Guest seats are unverifiable by design
 
 A seat with a null user FK **and no closure flag** has no server identity to
 check, so anonymous requests on it are allowed — see the policy docstring at
@@ -275,16 +250,17 @@ deleted account's orphaned seat fell through; that path is now closed
 ([3.20](#3-done)), and what remains is the original, intended hole: a genuine
 guest seat is playable by whoever holds the game id.
 
-The same null-FK-means-guest rule now also shows up in list scoping: the
-"fully-guest" disjunct of `_list_scope_q` ([3.21](#3-done)) keeps hotseat resume
+The same null-FK-means-guest rule is now load-bearing in **both** list-scoping
+rules: the "fully-guest" disjunct of `_list_scope_q` ([3.21](#3-done)) and the
+matching one in `_match_list_scope_q` ([3.31](#3-done)) keep hotseat resume
 working precisely because such rows carry no account-linked identity to scope by.
-Closing this gap would let that clause be tightened too.
+Closing this gap would let both clauses be tightened.
 
 **Fix (larger).** A guest token minted at game creation and stored client-side,
 checked alongside the user FK. Not required for launch; required before anyone
 plays for anything that matters.
 
-### 2.3 Django admin is publicly exposed at a predictable path
+### 2.2 Django admin is publicly exposed at a predictable path
 
 [`backgammon/urls.py:7`](../../backend/backgammon/urls.py) mounts `admin/` with no
 IP allowlist and no 2FA. And note **DRF throttles do not cover it** — the admin
@@ -292,94 +268,34 @@ login is a plain Django view, so the `login` scope
 ([`LoginView`, `views.py:102–111`](../../backend/game/views.py)) protects
 `/api/auth/login/` only. Admin compromise is total compromise.
 
+**This is now the largest remaining attack surface in the tree**, and the only
+section-2 item worth closing before real users arrive.
+
 **Fix.** Move it to a non-obvious path, restrict by IP or put it behind the
 platform's auth proxy, and add `django-axes` (or equivalent) if you want lockout
 on the admin form specifically.
 
-### 2.4 Password reset works server-side, but no client can use it
+### 2.3 Polish and hygiene
 
-**Severity: high for launch. The server half is finished and tested
-([3.23](#3-done)); the client half does not exist at all, so from a user's seat
-nothing has changed — "I forgot my password" is still a support ticket, and
-self-service account deletion (which re-checks the password,
-[`AccountDeleteSerializer`, `serializers.py:202–226`](../../backend/game/serializers.py))
-is still unreachable for anyone who has forgotten it. That is exactly the flow
-store reviewers test.**
-
-Three separate client gaps, all verified by grep across `frontend/src`,
-`mobile/src` and `mobile/app` — the string `email` does not appear in either
-client's source:
-
-- **No `reset-password` route exists.** `build_password_reset_url`
-  ([`views.py:282–296`](../../backend/game/views.py)) mails a link of the shape
-  `{FRONTEND_BASE_URL}/reset-password/{uid}/{token}`, with uid and token as path
-  segments specifically so a client router can bind them as params. Web's router
-  declares `/`, `/login`, `/register`, `/game/:id`, `/profile`
-  ([`App.jsx:45–50`](../../frontend/src/App.jsx)) and nothing else; mobile's
-  file-based routes are `index` / `login` / `profile` / `game/[id]`
-  ([`mobile/app/`](../../mobile/app)). **A user who receives the email lands on a
-  404.**
-- **No "forgot password?" entry point.** Nothing calls
-  `POST /api/auth/password-reset/`, so there is no way to trigger the mail from
-  inside either app.
-- **No way to supply an email in the first place.** `RegisterSerializer.email` is
-  optional ([`serializers.py:240`](../../backend/game/serializers.py)) and
-  `PATCH /api/auth/me/` can set one later
-  ([`MeView`, `views.py:211–214`](../../backend/game/views.py);
-  `UserSerializer.email`, [`serializers.py:103`](../../backend/game/serializers.py)),
-  but neither register form nor either profile screen renders an email field.
-  **Every account created so far and every account created by the shipped clients
-  has an empty `email`, and `PasswordResetRequestView` only matches on a
-  non-blank address** ([`views.py:359`](../../backend/game/views.py)) — so the
-  flow is not merely unreachable, it currently has nobody to reach.
-
-**Fix.** Client-only, in this order: an optional email field on both register
-forms and both profile screens (so accounts *can* be recoverable), a "forgot your
-password?" link that POSTs the address, and a `/reset-password/:uid/:token`
-route — a web `<Route>` plus a mobile deep-link route — that POSTs
-`{uid, token, new_password}` to `.../confirm/` and sends the user to login. The
-API is stable and documented in [api.md](../architecture/api.md); no server work
-is required. Owner-side, the flow additionally needs `EMAIL_HOST` and a correct
-`FRONTEND_BASE_URL` ([1.6](#16-backups-admin-credentials-and-the-three-dormant-subsystems)),
-or the mail is printed to the deploy log with a `localhost:3000` link in it.
-
-### 2.5 Nothing calls the `abandon` endpoint
-
-**Severity: low. The deadlock is now *explained* by both clients and the exit
-*exists* on the server — but no button reaches it.**
-
-`POST /api/games/{id}/abandon/` is implemented, permission-checked and covered by
-`test_abandon.py` ([`views.py:1105–1188`](../../backend/game/views.py) —
-see [3.24](#3-done)). Grepping `frontend/src`, `mobile/src` and `mobile/app` for
-`abandon` returns **no hits outside tests**: neither `gameApi.js` nor
-`mobile/src/api/games.js` wraps it, and no screen offers it.
-
-So the survivor of a deleted-account deadlock now correctly reads "your opponent
-deleted their account — this game can't continue" and stops polling
-([3.24](#3-done)), and then has nowhere to click. The dead game stays `active` in
-their list forever and the match stays open, able to spawn further games that are
-dead on arrival — the exact condition the endpoint's match-finishing branch was
-written to prevent.
-
-**Fix.** An API wrapper on each client and one button in the banner both clients
-already render, refreshing the game from the 200 response. No server work.
-
-### 2.6 The higher-die rule is enforced only during bear-off
-
-`higher_die_required_moves` ([`game_logic.py:201`](../../backend/game/game_logic.py))
-is server-only — no JS port exists in either client — and it is scoped to
-bear-off positions. The official rule is *general*: whenever only one of the two
-dice can be played, it must be the higher one. In a blocked non-bear-off position
-the lower single die is still accepted. See
-[game-logic.md](../architecture/game-logic.md). A rules-literate player will
-report it as a bug.
-
-This is the last survivor of what used to be a three-item "Rules and API surface"
-list: `move_checker` has since been deleted outright ([3.30](#3-done)) and web
-auto-refresh shipped ([3.28](#3-done)).
-
-### 2.7 Polish and hygiene
-
+- **Password reset finishes in a browser on mobile.** The client half shipped
+  ([3.32](#3-done)) but only three quarters of it: mobile can *request* a reset
+  (`requestPasswordReset`, [`mobile/src/api/auth.js:93`](../../mobile/src/api/auth.js),
+  reachable from the login screen's "Forgot password?" mode) and it can *set* an
+  email, but there is **no mobile route for the link itself**. `mobile/app/` holds
+  `_layout` / `index` / `login` / `profile` / `game/[id]` and nothing else, and
+  `build_password_reset_url` ([`views.py:282–296`](../../backend/game/views.py))
+  builds the link from `FRONTEND_BASE_URL` — the **web** origin — so a mobile user
+  who taps it lands in a browser and finishes there. The screen says so out loud
+  ("The link opens in your browser",
+  [`mobile/app/login.jsx:69–72`](../../mobile/app/login.jsx)), which makes it
+  honest rather than broken, and it costs nothing at launch because the reset
+  itself completes and the new password works in the app. **Fix (not a
+  one-liner):** a `mobile/app/reset-password/[uid]/[token].jsx` route, *plus* a
+  way for the mail to address it — either the `backgammon://` scheme already
+  declared at [`app.json:5`](../../mobile/app.json) (which would need a second
+  server-side link setting, since `FRONTEND_BASE_URL` is a single value) or a
+  proper universal-link / app-link setup so the web URL opens the app when it is
+  installed. Neither exists today.
 - **Tracked scratch files.** `git ls-files` still shows
   `mobile/MOBILE_PROGRESS.md` and `mobile/.claude/settings.json`; the former is
   session notes that probably belong outside the repo.
@@ -394,8 +310,9 @@ auto-refresh shipped ([3.28](#3-done)).
   and no domain exists yet. Until they are added a shared game link previews as
   title + description with no image. The exact tags to add, and the 1200×630
   `og.png` they need, are spelled out in an `OWNER TODO` comment in
-  [`frontend/public/index.html`](../../frontend/public/index.html). Same comment
-  notes the missing PNG/ICO favicon fallback and the 192/512px manifest icons.
+  [`frontend/public/index.html`](../../frontend/public/index.html) (still present,
+  re-read this pass). Same comment notes the missing PNG/ICO favicon fallback and
+  the 192/512px manifest icons.
 - **No load testing.** Nobody knows what concurrency this survives. One `k6` or
   `locust` run against the deployed API is cheap insurance.
 - **No matchmaking.** Online play is link/code only, so a store user with no
@@ -443,8 +360,8 @@ each was verified by reading the file, not by trusting a changelog.
    [`urls.py:10`](../../backend/backgammon/urls.py).
 8. **Generic write verbs are gone.** Both viewsets dropped `ModelViewSet` for
    explicit Create/List/Retrieve mixins
-   ([`views.py:604–608`](../../backend/game/views.py),
-   [`views.py:754–759`](../../backend/game/views.py)), so `PUT`/`PATCH`/`DELETE`
+   ([`views.py:652–657`](../../backend/game/views.py),
+   [`views.py:809–814`](../../backend/game/views.py)), so `PUT`/`PATCH`/`DELETE`
    on games and matches are 405 rather than unguarded. Covered by
    `WriteVerbsRemovedTest` in
    [`test_hardening.py`](../../backend/game/tests/test_hardening.py).
@@ -538,7 +455,7 @@ each was verified by reading the file, not by trusting a changelog.
     that is null **and not closed**
     ([`views.py:505–511`](../../backend/game/views.py)), so `next_game` no longer
     opens to anonymous callers. `next_game` copies both flags onto the game it
-    creates ([`views.py:697–698`](../../backend/game/views.py)), or the closure
+    creates ([`views.py:761–762`](../../backend/game/views.py)), or the closure
     would evaporate at the next game boundary. Both flags are **read-only** in
     `GameSerializer` and `MatchSerializer`
     ([`serializers.py:41–52`](../../backend/game/serializers.py),
@@ -553,15 +470,15 @@ each was verified by reading the file, not by trusting a changelog.
     fields stay open. (The original pass also asserted it for `move_checker`;
     that endpoint has since been deleted — [3.30](#3-done) — and the assertion
     went with it.) **Its deliberate cost was the deadlock now handled by
-    [3.24](#3-done), whose remaining client residue is
-    [2.5](#25-nothing-calls-the-abandon-endpoint).**
+    [3.24](#3-done), and that item's client residue is closed too —
+    [3.33](#3-done).**
 
 21. **`GET /api/games/` no longer enumerates the whole table.** `_list_scope_q`
     ([`views.py:514–556`](../../backend/game/views.py)) unions three disjuncts —
     open lobby games with neither seat closed, games either of whose seat FKs is
     the requester, and fully-guest games (both FKs null, neither flagged) — and
     `GameViewSet.get_queryset` applies it **to the `list` action only**
-    ([`views.py:783–790`](../../backend/game/views.py)).
+    ([`views.py:838–845`](../../backend/game/views.py)).
 
     **Read the scope of the fix precisely: it bounds *enumeration*, not
     *access*.** `retrieve` by id is still open to everyone, deliberately —
@@ -571,11 +488,11 @@ each was verified by reading the file, not by trusting a changelog.
     The deliberate cost is on the `list` side too: in a mixed game (one guest
     seat, one registered seat) past `waiting`, the guest can no longer find the
     row in the list and needs the id — nothing better is possible without a guest
-    identity ([2.2](#22-guest-seats-are-unverifiable-by-design)). Tested in
+    identity ([2.1](#21-guest-seats-are-unverifiable-by-design)). Tested in
     [`test_game_list_scoping.py`](../../backend/game/tests/test_game_list_scoping.py).
     The bare-array response shape is unchanged, so both clients' `.map()` still
-    works. **`GET /api/matches/` did not get the same treatment — see
-    [2.1](#21-get-apimatches-is-still-public-and-unscoped).**
+    works. **`GET /api/matches/` has since had the same treatment — see
+    [3.31](#3-done).**
 22. **A shared throttle cache is now configurable — but not provisioned, so the
     per-process fallback is still what runs.** `CACHES` is built by
     `cache_settings(REDIS_URL)`
@@ -614,33 +531,34 @@ each was verified by reading the file, not by trusting a changelog.
     logged for the same reason. Covered by
     [`test_password_reset.py`](../../backend/game/tests/test_password_reset.py).
 
-    > **This is only the server half.** No client renders an email field, offers
-    > a "forgot password?" link, or routes `/reset-password/:uid/:token`, so no
-    > user can complete a reset from either app today — and with `EMAIL_HOST`
-    > unset the mail goes to the console backend. See
-    > [2.4](#24-password-reset-works-server-side-but-no-client-can-use-it) and
-    > [1.6](#16-backups-admin-credentials-and-the-three-dormant-subsystems).
+    > **This was only the server half when it landed.** The client half has since
+    > shipped on both clients — [3.32](#3-done) — so the flow is now reachable
+    > end to end. What is still missing is operational, not code: with
+    > `EMAIL_HOST` unset the mail goes to Django's console backend
+    > ([1.6](#16-backups-admin-credentials-and-the-three-dormant-subsystems)).
 24. **A closed seat is now explained by both clients, and the server offers an
     exit.** The deadlock itself is unchanged and still deliberate (it beats
     inventing a forfeit result — see [3.20](#3-done)); what was missing was
     telling the player and letting them out.
 
     Both clients read `player1_deleted` / `player2_deleted` through parallel
-    helpers — [`frontend/src/utils/seats.js`](../../frontend/src/utils/seats.js)
-    and [`mobile/src/game/gating.js:30–53`](../../mobile/src/game/gating.js) —
-    which name the seat that owes the next action (the *responder* while a double
-    is pending, otherwise `current_turn`, exactly as `respond_to_double` and
-    `abandon` compute it). When it is closed, the turn banner is replaced with
-    "your opponent deleted their account — this game can't continue"
-    ([`GamePage.jsx:96–132`](../../frontend/src/pages/GamePage.jsx),
-    [`app/game/[id].jsx:186–193`](../../mobile/app/game/[id].jsx)), worded from
-    `viewer_seat` so the survivor and a spectator read different sentences, and
-    **both pollers stop** rather than hammering a game nobody can advance
-    ([`frontend/src/hooks/useGame.js:59–91`](../../frontend/src/hooks/useGame.js),
-    [`mobile/src/game/useGame.js:99–146`](../../mobile/src/game/useGame.js)).
+    helpers — [`frontend/src/utils/seats.js:12–42`](../../frontend/src/utils/seats.js)
+    and [`mobile/src/game/gating.js:30–62`](../../mobile/src/game/gating.js), kept
+    identical deliberately — which name the seat that owes the next action (the
+    *responder* while a double is pending, otherwise `current_turn`, exactly as
+    `respond_to_double` and `abandon` compute it). When it is closed, the turn
+    banner is replaced with "your opponent deleted their account — this game can't
+    continue" ([`GamePage.jsx:100–129`](../../frontend/src/pages/GamePage.jsx),
+    [`app/game/[id].jsx:190–196`](../../mobile/app/game/[id].jsx)), and the
+    survivor and a spectator read different sentences — web decides that from the
+    server's `viewer_seat`, mobile from its device-local seat registry, because
+    that is the ownership signal each one has. **Both pollers stop** rather than
+    hammering a game nobody can advance
+    ([`frontend/src/hooks/useGame.js:68–99`](../../frontend/src/hooks/useGame.js),
+    [`mobile/src/game/useGame.js:136–155`](../../mobile/src/game/useGame.js)).
 
     `POST /api/games/{id}/abandon/`
-    ([`views.py:1105–1188`](../../backend/game/views.py)) gives the survivor a
+    ([`views.py:1161–1244`](../../backend/game/views.py)) gives the survivor a
     non-scoring way out: it requires the game to be `active`, the blocked seat to
     be closed, and the caller to satisfy `_seat_permission_error` **for the
     surviving seat**; it then finishes the game with `winner=None`,
@@ -649,7 +567,7 @@ each was verified by reading the file, not by trusting a changelog.
     endless series of games that `next_game` stamps dead on arrival. If both
     seats are closed nobody can abandon, which is correct. Covered by
     [`test_abandon.py`](../../backend/game/tests/test_abandon.py).
-    **No client calls it yet — [2.5](#25-nothing-calls-the-abandon-endpoint).**
+    **Both clients call it now — [3.33](#3-done).**
 25. **Error monitoring is wired — but no DSN is configured, so nothing reports
     today.** `sentry-sdk[django]` is pinned
     ([`requirements.txt`](../../backend/requirements.txt), with `certifi` for its
@@ -693,7 +611,7 @@ each was verified by reading the file, not by trusting a changelog.
     every JS fix still needs a store resubmission. That half needs an EAS
     account — [1.7](#17-link-the-eas-update-channels-so-ota-actually-publishes).
 28. **The web client polls for opponent moves.** `useGame` runs a 3.5s interval
-    ([`frontend/src/hooks/useGame.js:14, 79–91`](../../frontend/src/hooks/useGame.js)),
+    ([`frontend/src/hooks/useGame.js:21, 86–99`](../../frontend/src/hooks/useGame.js)),
     matching mobile. It skips a tick whenever the local player has staged moves
     (a refresh must never clobber a turn in progress), when the game is
     `finished`, when it is deadlocked on a closed seat, and entirely for hotseat
@@ -711,16 +629,139 @@ each was verified by reading the file, not by trusting a changelog.
     absolute URL, no domain has been chosen, and a relative `og:image` produces
     no preview at all while looking done. The exact tags to add later are in an
     `OWNER TODO` comment in the file — see
-    [2.7](#27-polish-and-hygiene).
+    [2.3](#23-polish-and-hygiene).
 30. **`move_checker` is gone.** The endpoint was dead API surface — no client
     ever called it, and both clients drive the staging → `confirm_turn` flow —
     so the DRF action, its web API wrapper and its endpoint-only tests were
     deleted rather than left as attack surface for zero benefit.
     `GameViewSet`'s routed actions are now `roll_dice` / `confirm_turn` / `join`
     / `offer_double` / `respond_to_double` / `abandon`
-    ([`views.py:761–768`](../../backend/game/views.py)), and a grep for
+    ([`views.py:817–822`](../../backend/game/views.py)), and a grep for
     `move_checker` across `backend/`, `frontend/src`, `mobile/src` and
     `mobile/app` returns nothing. Rules coverage was preserved: the tests that
     happened to exercise engine behaviour *through* the endpoint were repointed
     at `confirm_turn` rather than deleted, which is why the backend suite fell
     only from 421 to 412.
+31. **`GET /api/matches/` no longer enumerates the whole table either.** The
+    unfinished half of [3.21](#3-done) is closed: `_match_list_scope_q`
+    ([`views.py:559–604`](../../backend/game/views.py)) is applied by
+    `MatchViewSet.get_queryset` **to the `list` action only**
+    ([`views.py:676–680`](../../backend/game/views.py)), which was a bare
+    `Match.objects.all()` before. The exposure it shuts is the one the `Game`
+    fix shut: `AllowAny` plus `fields = "__all__"`
+    ([`serializers.py:74–88`](../../backend/game/serializers.py)) handed an
+    anonymous caller `player1_user` / `player2_user` ids, both display names,
+    both scores, `target_points`, status and timestamps for every row, 100 at a
+    time via `?page=N`.
+
+    **The rule has two clauses, not three, and the missing one was omitted on
+    purpose.** Fully-guest matches (both FKs null, neither seat closed) stay
+    visible so hotseat resume works; your own matches (either FK is you) stay
+    visible whatever the status. There is **no public-lobby clause**, because a
+    match has no lobby state — `Match.status` is only `active`/`finished`
+    ([`models.py:24–28`](../../backend/game/models.py)), with no `waiting`
+    analogue to `Game.status`. Open matches are advertised through their *first
+    game*, which sits in the games lobby carrying a `match` id, so the lobby
+    already works without listing matches at all. A "`player2_name` is blank"
+    clause was considered and **rejected**: joinability is the only thing it
+    would express, and it would re-expose precisely the registered-player rows
+    this fix closes. `retrieve` by id stays open, exactly as for games — sharing
+    a match by link/code is how an online match is joined and resumed, and both
+    clients fetch a match by id. This bounds *enumeration*, not access. Covered
+    by [`test_match_list_scoping.py`](../../backend/game/tests/test_match_list_scoping.py).
+32. **Password reset is reachable from both clients, and both can supply an
+    email.** The server half ([3.23](#3-done)) had no caller; it has three now.
+
+    - **Email collection.** Both register forms take an optional email
+      ([`RegisterPage.jsx:61–72`](../../frontend/src/pages/RegisterPage.jsx),
+      [`mobile/app/login.jsx:128–145`](../../mobile/app/login.jsx)) and both
+      profile screens can add or change one afterwards
+      ([`EmailSettings.jsx`](../../frontend/src/components/EmailSettings.jsx) via
+      `ProfilePage`, [`EmailSection.jsx`](../../mobile/src/components/EmailSection.jsx)
+      via `mobile/app/profile.jsx`), through `updateEmail`
+      ([`authApi.js:105`](../../frontend/src/api/authApi.js),
+      [`mobile/src/api/auth.js:74`](../../mobile/src/api/auth.js)) →
+      `PATCH /api/auth/me/`. It stays **optional** on purpose: an account with no
+      address simply has no recovery, which is the trade a guest-first app should
+      let people make.
+    - **Requesting a link.** Web has `/forgot-password`
+      ([`ForgotPasswordPage.jsx`](../../frontend/src/pages/ForgotPasswordPage.jsx)),
+      linked from the login form
+      ([`LoginPage.jsx:62`](../../frontend/src/pages/LoginPage.jsx)); mobile has a
+      third mode on its login screen behind "Forgot password?"
+      ([`mobile/app/login.jsx:64–102, 157–161`](../../mobile/app/login.jsx)). Both
+      render the server's fixed reply verbatim and **never branch on found vs not
+      found**, preserving the endpoint's anti-enumeration property.
+    - **Completing it.** Web routes `/reset-password/:uid/:token`
+      ([`App.jsx:53`](../../frontend/src/App.jsx) →
+      [`ResetPasswordPage.jsx`](../../frontend/src/pages/ResetPasswordPage.jsx)),
+      matching `build_password_reset_url` exactly; a rejected token offers a link
+      back to `/forgot-password` rather than a dead end.
+
+    Wrappers are `requestPasswordReset` / `confirmPasswordReset`
+    ([`authApi.js:140, 163`](../../frontend/src/api/authApi.js)) and
+    `requestPasswordReset` ([`mobile/src/api/auth.js:93`](../../mobile/src/api/auth.js)).
+    **Two residues, both in [2.3](#23-polish-and-hygiene):** the emailed link
+    points at `FRONTEND_BASE_URL` — the *web* origin — and mobile has no route for
+    it, so a mobile user finishes the reset in a browser (the screen says so); and
+    nothing leaves the box at all until the owner sets `EMAIL_HOST`
+    ([1.6](#16-backups-admin-credentials-and-the-three-dormant-subsystems)).
+33. **Both clients call `abandon`.** The endpoint shipped with no caller
+    ([3.24](#3-done)); the survivor of a deleted-account deadlock now has a
+    button. Web wraps it as `abandonGame`
+    ([`gameApi.js:61`](../../frontend/src/api/gameApi.js)) and mobile as the same
+    ([`mobile/src/api/games.js:54`](../../mobile/src/api/games.js)), both routed
+    through the game hook so the 200 response replaces local state without a
+    refetch ([`frontend/src/hooks/useGame.js:251`](../../frontend/src/hooks/useGame.js),
+    [`mobile/src/game/useGame.js:333`](../../mobile/src/game/useGame.js)).
+
+    **The control renders for the surviving seat only**, on both clients, via a
+    `canAbandon` predicate ([`frontend/src/utils/seats.js:64`](../../frontend/src/utils/seats.js),
+    [`mobile/src/game/gating.js:117`](../../mobile/src/game/gating.js)) — so a
+    spectator, the closed seat's own viewpoint, and the both-seats-closed case all
+    come back false, and the panel appears only alongside the deadlock banner
+    ([`GamePage.jsx:148`](../../frontend/src/pages/GamePage.jsx),
+    [`mobile/app/game/[id].jsx:219`](../../mobile/app/game/[id].jsx)).
+
+    **The two predicates answer "is that seat yours?" differently, and have to.**
+    Mobile consults its device-local seat registry (`mySeats.includes(surviving)`);
+    web has no such registry, so it uses the server's own answer, the
+    `viewer_seat` field on `GameSerializer`
+    ([`serializers.py:33, 56`](../../backend/game/serializers.py)) — and where the
+    surviving seat is an unverifiable *guest* seat, web offers the button and lets
+    an unauthorised click surface the 403, matching its ungated idiom everywhere
+    else. What *is* shared is the closed-seat derivation beneath both:
+    `isSeatClosed` / `otherSeat` / `blockedSeat` / `isDeadlocked` were rewritten to
+    be identical in the two files, with the header comment in each saying so, since
+    the clients must agree on when a game can no longer move. Affordance either
+    way — the server re-checks every precondition. Covered by
+    `AbandonGameSection.test.jsx`, `seats.test.js`, `gating.test.js` and both
+    `useGame` suites.
+34. **The higher-die rule is general, and both JS engines model it.** Two gaps in
+    one: the rule was scoped to bear-off positions, and no client knew it existed.
+
+    `higher_die_required_moves`
+    ([`game_logic.py:201–245`](../../backend/game/game_logic.py)) now fires
+    **anywhere on the board** — bar entry and ordinary blocked mid-board positions
+    included — whenever a non-double roll has exactly one playable die *and* each
+    die individually has a legal move. Its guard is `max_moves_usable(...) == 1`
+    plus "the low die is playable too", so a position where only the high die
+    works is left alone (there is no choice to restrict) and so is one where only
+    the low die works (nothing to force). The bear-off-specific preferences —
+    exact bear-off first, then oversized — survive as clauses that can only fire
+    while bearing off, since `get_legal_moves` emits `to_point 25` only then.
+    Enforced at `confirm_turn` immediately after the maximal-usage check
+    ([`views.py:1018–1039`](../../backend/game/views.py)), which guarantees
+    exactly one staged move whenever the rule is active, with a 400 naming the
+    die.
+
+    Ported to **both** JS engines as `higherDieRequiredMoves`
+    ([`frontend/src/utils/gameLogic.js:248`](../../frontend/src/utils/gameLogic.js),
+    [`mobile/src/game/logic.js:248`](../../mobile/src/game/logic.js) — the two
+    files stay in sync by rule) and consumed by both `useGame` hooks
+    ([`frontend/src/hooks/useGame.js:151`](../../frontend/src/hooks/useGame.js),
+    [`mobile/src/game/useGame.js:208`](../../mobile/src/game/useGame.js)) to gate
+    Confirm. **This closes the "clients don't model the higher-die rule" gap
+    outright**: a client can no longer stage a turn the server will reject with a
+    400. Covered by [`test_higher_die.py`](../../backend/game/tests/test_higher_die.py)
+    and mirrored describe-blocks in `gameLogic.test.js` and `logic.test.js`.

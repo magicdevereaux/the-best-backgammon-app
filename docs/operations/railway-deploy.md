@@ -13,11 +13,13 @@ that tells you it actually worked.
 > coding session can supply. Everything else is mechanical.
 
 Read [going-live.md](going-live.md) first if you haven't — it is the audit of
-what is and isn't production-ready, and several items there are still open at
-the time of writing (notably [2.1](going-live.md#21-get-apimatches-is-still-public-and-unscoped),
-where `GET /api/matches/` is public and unscoped, so an anonymous caller can page
-through every match row; the equivalent hole on `GET /api/games/` has since been
-closed). This doc covers *deployment mechanics only*.
+what is and isn't production-ready. As of its 2026-08-02 pass the code-side list
+is down to three items, only one of which touches a deploy:
+[2.2](going-live.md#22-django-admin-is-publicly-exposed-at-a-predictable-path),
+`/admin/` sitting at a predictable path with no IP allowlist and no 2FA — decide
+what you're doing about that before you create the superuser in
+[step 5](#5-create-the-superuser). Both list endpoints are scoped now; neither
+enumerates its table. This doc covers *deployment mechanics only*.
 
 ---
 
@@ -182,7 +184,7 @@ the request log line for the exact `Host` value it sent and add that.
 | `REDIS_URL` | `${{Redis.REDIS_URL}}` | **Turns the throttle limits global.** Unset → `LocMemCache`, per worker, wiped every deploy. Add *New → Database → Add Redis* to the project and use the reference form, exactly as with Postgres. See the [throttling caveat](#known-caveats-on-railway). |
 | `SENTRY_DSN` | your project's DSN | **[OWNER]** The only thing standing between a 500 and someone hearing about it. Nothing is sent when it's empty — `sentry_sdk.init()` isn't even called. Pair with `SENTRY_ENVIRONMENT=production` and, optionally, `SENTRY_RELEASE=${{RAILWAY_GIT_COMMIT_SHA}}`. |
 | `EMAIL_HOST` (+ `EMAIL_PORT`, `EMAIL_HOST_USER`, `EMAIL_HOST_PASSWORD`, `EMAIL_USE_TLS`, `DEFAULT_FROM_EMAIL`) | your SMTP provider | **[OWNER]** **Password-reset mail does not leave the box without this.** With `EMAIL_HOST` empty the app uses Django's *console* backend and prints the reset link into the Railway deploy log. Plain SMTP, so SES / Postmark / Resend / Mailgun all work; nothing in the code names a provider. |
-| `FRONTEND_BASE_URL` | `https://backgammon.example.com` | **Set this the moment mail is on.** It is the origin of the link in the reset email (`{FRONTEND_BASE_URL}/reset-password/{uid}/{token}`) and it defaults to `http://localhost:3000` — wrong *silently*, since the mail still sends. It is the **web client's** origin, not the API's. |
+| `FRONTEND_BASE_URL` | `https://backgammon.example.com` | **Set this the moment mail is on.** It is the origin of the link in the reset email (`{FRONTEND_BASE_URL}/reset-password/{uid}/{token}`) and it defaults to `http://localhost:3000` — wrong *silently*, since the mail still sends. It is the **web client's** origin, not the API's: the web router serves that exact path and nothing else does, so a mobile user who requests a reset also finishes it in a browser. Verify it with [smoke test step 5](#first-deploy-smoke-test). |
 
 ### Optional (defaults are sane — omit unless you need to change them)
 
@@ -236,8 +238,9 @@ python manage.py createsuperuser
 Choose a strong password. `/admin/` is publicly exposed at a predictable path
 with no IP allowlist and no 2FA, and **DRF's throttles do not cover it** — the
 admin login is a plain Django view. See
-[going-live.md 2.3](going-live.md#23-django-admin-is-publicly-exposed-at-a-predictable-path)
-before treating this as safe.
+[going-live.md 2.2](going-live.md#22-django-admin-is-publicly-exposed-at-a-predictable-path)
+before treating this as safe; it is the largest remaining attack surface in the
+tree.
 
 ## 6. Custom domain and TLS
 
@@ -282,12 +285,13 @@ with `"database": "error"` means the app is up but `DATABASE_URL` is wrong. A
 **400** means `ALLOWED_HOSTS` doesn't include the host you requested.
 
 **2. Register a user.** Exercises the DB write path, the password validators,
-and the throttle wiring.
+and the throttle wiring. **Include an `email`** — it is optional to the
+serializer but step 5 needs an account that has one.
 
 ```bash
 curl -i -X POST https://api.example.com/api/auth/register/ \
   -H "Content-Type: application/json" \
-  -d '{"username":"smoketest","password":"a-long-unguessable-passphrase"}'
+  -d '{"username":"smoketest","password":"a-long-unguessable-passphrase","email":"you@example.com"}'
 # 201 with access + refresh tokens
 ```
 
@@ -320,16 +324,58 @@ no `player2_name` starts in `waiting` status, and open games are the public
 lobby. **`list` is scoped now** (`_list_scope_q`), so this is not a general
 "dump every row" check any more: pass `Authorization` to see your own games too,
 and don't be alarmed if a two-name hotseat game you create later is *absent*
-from the anonymous response — that is the scoping working.
+from the anonymous response — that is the scoping working. `GET /api/matches/`
+is scoped the same way (`_match_list_scope_q`) and has **no lobby clause at
+all**, so an anonymous read of it returns only fully-guest matches — very often
+an empty array, which is correct rather than broken.
 
-**5. Admin login.** Visit `https://api.example.com/admin/` and log in as the
+**5. Password reset round trip.** Worth doing on the first deploy specifically,
+because both ways this can be misconfigured fail *silently* — the request always
+returns 200 (see below) whether or not mail went anywhere.
+
+```bash
+curl -i -X POST https://api.example.com/api/auth/password-reset/ \
+  -H "Content-Type: application/json" \
+  -d '{"email":"you@example.com"}'
+# 200 {"detail":"If an account with that email address exists, a password reset
+#      link has been sent to it."}
+```
+
+**That body is fixed.** It is byte-identical for a registered address, an
+unregistered one, and a dead SMTP host — deliberately, so the endpoint can't be
+used to enumerate accounts (send failures are caught and logged, never surfaced).
+**A 200 therefore proves nothing on its own.** Go and look:
+
+- **`EMAIL_HOST` unset** → Django's console backend printed the whole message
+  into the Railway deploy log. Find it there and read the link out of it. This is
+  the fastest way to confirm the flow works before you have an SMTP provider.
+- **Check the link's origin.** It is `{FRONTEND_BASE_URL}/reset-password/{uid}/{token}`.
+  If it says `http://localhost:3000`, `FRONTEND_BASE_URL` is unset — the mail will
+  keep sending and keep being useless. It must be the **web client's** origin, not
+  the API's; the web router is the only thing that serves that path.
+- Then finish the cycle with the uid and token from the link:
+
+  ```bash
+  curl -i -X POST https://api.example.com/api/auth/password-reset/confirm/ \
+    -H "Content-Type: application/json" \
+    -d '{"uid":"<uid>","token":"<token>","new_password":"another-long-passphrase"}'
+  # 200 {"detail":"Your password has been reset. You can now log in."}
+  ```
+
+  Log in with the new password to confirm. Note the confirm step **blacklists
+  every outstanding refresh token** for that account, so the tokens from step 2
+  are dead afterwards — if you want to keep using them for steps 6–8, do this
+  step last. Throttles here are `password_reset` **5/hour** and
+  `password_reset_confirm` **20/hour**.
+
+**6. Admin login.** Visit `https://api.example.com/admin/` and log in as the
 superuser. Confirms sessions, secure cookies, and static files (WhiteNoise
 serves the admin CSS — an unstyled admin page means `collectstatic` didn't take).
 
-**6. Confirm the HTTPS redirect.** `curl -I http://api.example.com/api/games/`
+**7. Confirm the HTTPS redirect.** `curl -I http://api.example.com/api/games/`
 should return a `301` to `https://`. `/healthz/` should **not** redirect.
 
-**7. Redeploy and re-check.** Trigger a second deploy and confirm the user from
+**8. Redeploy and re-check.** Trigger a second deploy and confirm the user from
 step 2 can still log in. This is the test that proves you're on Postgres and not
 on an ephemeral SQLite file.
 
@@ -404,9 +450,16 @@ Nothing in this section exists in the repo or in a Railway project. Listed so a
 future session can tell "already handled" from "still open".
 
 - **No Railway project has been created**, and no deploy has run. This runbook
-  has not been executed end to end; it is written from the repo's contents and
-  Railway's documented behaviour, not from a deploy log. Treat the first run as
-  the validation pass and correct anything here that turns out wrong.
+  has not been executed end to end; the Railway-specific half is written from the
+  repo's contents and Railway's documented behaviour, not from a deploy log.
+  Treat the first run as the validation pass and correct anything here that turns
+  out wrong. What *has* been checked, by running the app locally on 2026-08-02
+  and driving it over HTTP: `/healthz/`, the `confirm_turn` higher-die rejection,
+  the closed-seat 403 and the `abandon` exit from it, and the full password-reset
+  cycle including the console-backend mail — so the request/response shapes in
+  the [smoke test](#first-deploy-smoke-test) are observed, not inferred. The
+  platform behaviour around them (health-check host, `$PORT` injection, Postgres,
+  ephemeral disk) is still unverified.
 - **No staging environment.** A single production service is assumed. Railway
   environments would give a staging API for the `preview` EAS profile
   (`mobile/eas.json`), which currently has nowhere to point.
@@ -422,4 +475,4 @@ future session can tell "already handled" from "still open".
   two is in place and gated on `SENTRY_DSN` / `EMAIL_HOST` respectively; both
   are dormant until the owner creates the accounts. See
   [going-live.md 1.6](going-live.md#16-backups-admin-credentials-and-the-three-dormant-subsystems)
-  and [2.7](going-live.md#27-polish-and-hygiene).
+  and [2.3](going-live.md#23-polish-and-hygiene).
