@@ -14,9 +14,10 @@ that tells you it actually worked.
 
 Read [going-live.md](going-live.md) first if you haven't — it is the audit of
 what is and isn't production-ready, and several items there are still open at
-the time of writing (notably [2.1](going-live.md#21-get-apigames-is-still-public-and-unscoped),
-where `GET /api/games/` is public and unscoped, so an anonymous caller can page
-through every game row). This doc covers *deployment mechanics only*.
+the time of writing (notably [2.1](going-live.md#21-get-apimatches-is-still-public-and-unscoped),
+where `GET /api/matches/` is public and unscoped, so an anonymous caller can page
+through every match row; the equivalent hole on `GET /api/games/` has since been
+closed). This doc covers *deployment mechanics only*.
 
 ---
 
@@ -178,14 +179,21 @@ the request log line for the exact `Host` value it sent and add that.
 | `SECURE_HSTS_SECONDS` | `60` | **Set this.** The default is **1 year with `includeSubDomains` and `preload`**, and HSTS is very hard to undo — a browser that caches it will refuse plain HTTP to your whole domain tree for a year. Start at 60, ramp once the domain is settled. |
 | `LOG_LEVEL` | `INFO` | Default. Railway captures stdout; logging is console-only by design. |
 | `WEB_CONCURRENCY` | `3` | Gunicorn workers. Lower it to `2` on a small instance. See the [throttling caveat](#known-caveats-on-railway). |
+| `REDIS_URL` | `${{Redis.REDIS_URL}}` | **Turns the throttle limits global.** Unset → `LocMemCache`, per worker, wiped every deploy. Add *New → Database → Add Redis* to the project and use the reference form, exactly as with Postgres. See the [throttling caveat](#known-caveats-on-railway). |
+| `SENTRY_DSN` | your project's DSN | **[OWNER]** The only thing standing between a 500 and someone hearing about it. Nothing is sent when it's empty — `sentry_sdk.init()` isn't even called. Pair with `SENTRY_ENVIRONMENT=production` and, optionally, `SENTRY_RELEASE=${{RAILWAY_GIT_COMMIT_SHA}}`. |
+| `EMAIL_HOST` (+ `EMAIL_PORT`, `EMAIL_HOST_USER`, `EMAIL_HOST_PASSWORD`, `EMAIL_USE_TLS`, `DEFAULT_FROM_EMAIL`) | your SMTP provider | **[OWNER]** **Password-reset mail does not leave the box without this.** With `EMAIL_HOST` empty the app uses Django's *console* backend and prints the reset link into the Railway deploy log. Plain SMTP, so SES / Postmark / Resend / Mailgun all work; nothing in the code names a provider. |
+| `FRONTEND_BASE_URL` | `https://backgammon.example.com` | **Set this the moment mail is on.** It is the origin of the link in the reset email (`{FRONTEND_BASE_URL}/reset-password/{uid}/{token}`) and it defaults to `http://localhost:3000` — wrong *silently*, since the mail still sends. It is the **web client's** origin, not the API's. |
 
 ### Optional (defaults are sane — omit unless you need to change them)
 
 `DB_CONN_MAX_AGE` (600) · `DB_SSL_REQUIRE` (False) · `SECURE_SSL_REDIRECT`
 (True) · `THROTTLE_RATE_ANON` (120/min) · `THROTTLE_RATE_USER` (240/min) ·
 `THROTTLE_RATE_LOGIN` (10/hour) · `THROTTLE_RATE_REGISTER` (5/hour) ·
-`THROTTLE_RATE_REFRESH` (60/hour) · `GUNICORN_TIMEOUT` (60, read by the
-Dockerfile's `CMD`).
+`THROTTLE_RATE_REFRESH` (60/hour) · `THROTTLE_RATE_PASSWORD_RESET` (5/hour) ·
+`THROTTLE_RATE_PASSWORD_RESET_CONFIRM` (20/hour) · `SENTRY_ENVIRONMENT` ·
+`SENTRY_RELEASE` · `SENTRY_TRACES_SAMPLE_RATE` (0) · `ADMINS` (empty; comma-separated
+`Name <addr>` pairs, and it needs `EMAIL_HOST` to send anything) · `SERVER_EMAIL`
+(root@localhost) · `GUNICORN_TIMEOUT` (60, read by the Dockerfile's `CMD`).
 
 **Do not set `PORT`.** Railway injects it; overriding it means the container
 binds a port nothing routes to.
@@ -228,7 +236,7 @@ python manage.py createsuperuser
 Choose a strong password. `/admin/` is publicly exposed at a predictable path
 with no IP allowlist and no 2FA, and **DRF's throttles do not cover it** — the
 admin login is a plain Django view. See
-[going-live.md 2.4](going-live.md#24-django-admin-is-publicly-exposed-at-a-predictable-path)
+[going-live.md 2.3](going-live.md#23-django-admin-is-publicly-exposed-at-a-predictable-path)
 before treating this as safe.
 
 ## 6. Custom domain and TLS
@@ -307,6 +315,13 @@ Expect a **bare JSON array**, not a `{count, next, previous, results}` envelope
 — `BareListPagination` returns bare arrays deliberately, because both clients
 `.map()` over the response.
 
+The step-3 game shows up here even unauthenticated because a game created with
+no `player2_name` starts in `waiting` status, and open games are the public
+lobby. **`list` is scoped now** (`_list_scope_q`), so this is not a general
+"dump every row" check any more: pass `Authorization` to see your own games too,
+and don't be alarmed if a two-name hotseat game you create later is *absent*
+from the anonymous response — that is the scoping working.
+
 **5. Admin login.** Visit `https://api.example.com/admin/` and log in as the
 superuser. Confirms sessions, secure cookies, and static files (WhiteNoise
 serves the admin CSS — an unstyled admin page means `collectstatic` didn't take).
@@ -357,21 +372,29 @@ network timeout — so set it to the full `https://api.example.com`. Details in
   logging, no local media — so Postgres is the only state that matters. If a
   feature ever adds uploads, it needs object storage (S3/R2), not a container
   path.
-- **Throttle counters are per-process and reset on every deploy.** There is no
-  `CACHES` setting, so DRF falls back to `LocMemCache`. With
-  `WEB_CONCURRENCY=3` the effective limits are ~3× the configured ones
-  (`login` 10/hour behaves like ~30/hour), and raising `numReplicas` multiplies
-  it again. See
-  [going-live.md 2.2](going-live.md#22-throttle-counters-are-per-process).
+- **Throttle counters are per-process and reset on every deploy — *unless you
+  set `REDIS_URL`.*** `CACHES` now switches to `RedisCache` the moment
+  `REDIS_URL` is non-empty and falls back to `LocMemCache` when it isn't. Leave
+  it unset and, with `WEB_CONCURRENCY=3`, the effective limits are ~3× the
+  configured ones (`login` 10/hour behaves like ~30/hour), raising
+  `numReplicas` multiplies it again, and every counter resets on deploy. Add
+  Railway's Redis plugin and reference its URL (step 3) and the limits become
+  global and survive deploys. See
+  [going-live.md 3.22](going-live.md#3-done).
 - **Docker's `HEALTHCHECK` instruction is not what Railway uses.** Railway
   probes `deploy.healthcheckPath` from `railway.json`. The `HEALTHCHECK` line in
   the Dockerfile is for plain `docker run` and other hosts; both point at
   `/healthz/`, so they agree, but only one of them is load-bearing here.
 - **`watchPatterns` suppresses deploys for client- and docs-only commits.** By
   design (see the table above) — redeploy manually if you need one.
-- **A 500 notifies nobody.** No Sentry integration and no `ADMINS`; logs go to
-  Railway's log viewer and that's it. You'd learn about an outage from players.
-  See [going-live.md 2.7](going-live.md#27-no-error-monitoring).
+- **A 500 notifies nobody — *unless you set `SENTRY_DSN`.*** `sentry-sdk[django]`
+  is installed and `sentry_sdk.init()` fires only when a DSN is present, so with
+  the var unset the app reports nowhere and logs go to Railway's log viewer and
+  that's it — you'd learn about an outage from players. Create a Sentry project,
+  paste the DSN into the service's variables (step 3), and errors ship tagged by
+  environment and release. `ADMINS` is the no-account alternative, but it needs
+  `EMAIL_HOST` configured too. See
+  [going-live.md 3.25](going-live.md#3-done).
 
 ---
 
@@ -387,12 +410,16 @@ future session can tell "already handled" from "still open".
 - **No staging environment.** A single production service is assumed. Railway
   environments would give a staging API for the `preview` EAS profile
   (`mobile/eas.json`), which currently has nowhere to point.
-- **No shared cache service.** Redis would fix the per-process throttle
-  counters; nothing in `settings.py` reads a cache URL today, so adding the
-  plugin alone would do nothing.
+- **No Redis service.** `settings.py` *does* read `REDIS_URL` now and switches
+  the cache backend on it, so adding the plugin and referencing its URL is all
+  that is needed — but no plugin exists yet, so throttle counters are still
+  per-worker. This is the one item in this list that is a five-minute fix.
 - **No CI-driven deploy.** [`ci.yml`](../../.github/workflows/ci.yml) runs the
-  three test suites but does not deploy; Railway deploys straight from the
-  tracked branch on push, independently of whether CI passed.
-- **No error monitoring, no load test, no `ADMINS` email.** See
-  [going-live.md 2.7](going-live.md#27-no-error-monitoring) and
-  [2.11](going-live.md#211-polish-and-hygiene).
+  three test suites, `manage.py check --deploy --fail-level WARNING`, and the
+  production web build — but it does not deploy. Railway deploys straight from
+  the tracked branch on push, independently of whether CI passed.
+- **No Sentry project, no mail provider, no load test.** The code for the first
+  two is in place and gated on `SENTRY_DSN` / `EMAIL_HOST` respectively; both
+  are dormant until the owner creates the accounts. See
+  [going-live.md 1.6](going-live.md#16-backups-admin-credentials-and-the-three-dormant-subsystems)
+  and [2.7](going-live.md#27-polish-and-hygiene).
