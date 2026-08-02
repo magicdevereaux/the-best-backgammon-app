@@ -192,88 +192,7 @@ class RollDiceEndpointTest(TestCase):
 
 
 # ---------------------------------------------------------------------------
-# POST /api/games/:id/move_checker/
-# ---------------------------------------------------------------------------
-
-class MoveCheckerEndpointTest(TestCase):
-    """
-    FAIL until model fields, serializer, and move logic in views.py are implemented.
-
-    These tests also document the expected board mutation contract:
-    moving from_point → to_point should update board_state["points"] accordingly.
-
-    Run with:
-        python manage.py test game.tests.test_views.MoveCheckerEndpointTest
-    """
-
-    def setUp(self):
-        self.client = APIClient()
-        # Give p1 a [1] die so a move of 1 step is legal
-        self.game = make_game(dice_values=[1])
-
-    def test_move_checker_returns_200(self):
-        response = self.client.post(
-            f"/api/games/{self.game.pk}/move_checker/",
-            {"from_point": 1, "to_point": 2},
-            format="json",
-        )
-        self.assertEqual(response.status_code, 200)
-
-    def test_move_checker_missing_body_returns_400(self):
-        # views.py already returns 400 for missing fields — this should pass
-        response = self.client.post(
-            f"/api/games/{self.game.pk}/move_checker/",
-            {},
-            format="json",
-        )
-        self.assertEqual(response.status_code, 400)
-
-    def test_move_checker_decrements_source_point(self):
-        """
-        After moving a p1 checker from point 1 to point 2,
-        point 1 (index 0) should have one fewer p1 checker.
-        This fails until move logic is written in the view.
-        """
-        checkers_before = self.game.board_state["points"][0]  # point 1
-        self.client.post(
-            f"/api/games/{self.game.pk}/move_checker/",
-            {"from_point": 1, "to_point": 2},
-            format="json",
-        )
-        self.game.refresh_from_db()
-        checkers_after = self.game.board_state["points"][0]
-        self.assertEqual(checkers_after, checkers_before - 1)
-
-    def test_move_checker_increments_destination_point(self):
-        """
-        After moving a p1 checker from point 1 to point 2,
-        point 2 (index 1) should have one more p1 checker.
-        """
-        checkers_before = self.game.board_state["points"][1]  # point 2
-        self.client.post(
-            f"/api/games/{self.game.pk}/move_checker/",
-            {"from_point": 1, "to_point": 2},
-            format="json",
-        )
-        self.game.refresh_from_db()
-        checkers_after = self.game.board_state["points"][1]
-        self.assertEqual(checkers_after, checkers_before + 1)
-
-    def test_move_checker_consumes_the_used_die(self):
-        """
-        After using die value 1, it should no longer appear in dice_values.
-        """
-        self.client.post(
-            f"/api/games/{self.game.pk}/move_checker/",
-            {"from_point": 1, "to_point": 2},
-            format="json",
-        )
-        self.game.refresh_from_db()
-        self.assertEqual(self.game.dice_values, [])
-
-
-# ---------------------------------------------------------------------------
-# POST /api/games/:id/move_checker/  — legality, hitting, bar, bear-off, win
+# Move legality through confirm_turn — hitting, bar, bear-off
 # ---------------------------------------------------------------------------
 
 def empty_board():
@@ -284,15 +203,15 @@ def empty_board():
     }
 
 
-class MoveCheckerValidationTest(TestCase):
+class MoveValidationTest(TestCase):
     def setUp(self):
         self.client = APIClient()
 
     def test_move_with_wrong_distance_returns_400(self):
         game = make_game(dice_values=[2])  # only a 2 available
         response = self.client.post(
-            f"/api/games/{game.pk}/move_checker/",
-            {"from_point": 1, "to_point": 2},  # requires a 1
+            f"/api/games/{game.pk}/confirm_turn/",
+            {"moves": [{"from_point": 1, "to_point": 2}]},  # requires a 1
             format="json",
         )
         self.assertEqual(response.status_code, 400)
@@ -302,8 +221,8 @@ class MoveCheckerValidationTest(TestCase):
         board["points"][1] = -2  # point 2 held by two p2 checkers
         game = make_game(dice_values=[1], board_state=board)
         response = self.client.post(
-            f"/api/games/{game.pk}/move_checker/",
-            {"from_point": 1, "to_point": 2},
+            f"/api/games/{game.pk}/confirm_turn/",
+            {"moves": [{"from_point": 1, "to_point": 2}]},
             format="json",
         )
         self.assertEqual(response.status_code, 400)
@@ -311,8 +230,8 @@ class MoveCheckerValidationTest(TestCase):
     def test_move_with_no_checker_at_source_returns_400(self):
         game = make_game(dice_values=[3])  # point 4 (index 3) is empty
         response = self.client.post(
-            f"/api/games/{game.pk}/move_checker/",
-            {"from_point": 4, "to_point": 7},
+            f"/api/games/{game.pk}/confirm_turn/",
+            {"moves": [{"from_point": 4, "to_point": 7}]},
             format="json",
         )
         self.assertEqual(response.status_code, 400)
@@ -329,8 +248,8 @@ class HittingBlotTest(TestCase):
         game = make_game(dice_values=[1], board_state=board)
 
         response = self.client.post(
-            f"/api/games/{game.pk}/move_checker/",
-            {"from_point": 1, "to_point": 2},
+            f"/api/games/{game.pk}/confirm_turn/",
+            {"moves": [{"from_point": 1, "to_point": 2}]},
             format="json",
         )
         self.assertEqual(response.status_code, 200)
@@ -351,8 +270,8 @@ class BarEntryTest(TestCase):
         game = make_game(dice_values=[3], board_state=board)
 
         response = self.client.post(
-            f"/api/games/{game.pk}/move_checker/",
-            {"from_point": 12, "to_point": 15},
+            f"/api/games/{game.pk}/confirm_turn/",
+            {"moves": [{"from_point": 12, "to_point": 15}]},
             format="json",
         )
         self.assertEqual(response.status_code, 400)
@@ -363,8 +282,8 @@ class BarEntryTest(TestCase):
         game = make_game(dice_values=[3], board_state=board)
 
         response = self.client.post(
-            f"/api/games/{game.pk}/move_checker/",
-            {"from_point": 0, "to_point": 3},
+            f"/api/games/{game.pk}/confirm_turn/",
+            {"moves": [{"from_point": 0, "to_point": 3}]},
             format="json",
         )
         self.assertEqual(response.status_code, 200)
@@ -380,8 +299,8 @@ class BarEntryTest(TestCase):
         game = make_game(dice_values=[3], board_state=board)
 
         response = self.client.post(
-            f"/api/games/{game.pk}/move_checker/",
-            {"from_point": 0, "to_point": 3},
+            f"/api/games/{game.pk}/confirm_turn/",
+            {"moves": [{"from_point": 0, "to_point": 3}]},
             format="json",
         )
         self.assertEqual(response.status_code, 400)
@@ -397,8 +316,8 @@ class BearOffTest(TestCase):
         game = make_game(dice_values=[1], board_state=board)
 
         response = self.client.post(
-            f"/api/games/{game.pk}/move_checker/",
-            {"from_point": 24, "to_point": 25},
+            f"/api/games/{game.pk}/confirm_turn/",
+            {"moves": [{"from_point": 24, "to_point": 25}]},
             format="json",
         )
         self.assertEqual(response.status_code, 200)
@@ -412,67 +331,11 @@ class BearOffTest(TestCase):
         game = make_game(dice_values=[6], board_state=board)
 
         response = self.client.post(
-            f"/api/games/{game.pk}/move_checker/",
-            {"from_point": 19, "to_point": 25},
+            f"/api/games/{game.pk}/confirm_turn/",
+            {"moves": [{"from_point": 19, "to_point": 25}]},
             format="json",
         )
         self.assertEqual(response.status_code, 400)
-
-
-class WinConditionTest(TestCase):
-    def setUp(self):
-        self.client = APIClient()
-
-    def test_bearing_off_last_checker_finishes_the_game(self):
-        board = empty_board()
-        board["points"][23] = 1
-        board["off"]["p1"] = 14
-        game = make_game(dice_values=[1], board_state=board)
-
-        response = self.client.post(
-            f"/api/games/{game.pk}/move_checker/",
-            {"from_point": 24, "to_point": 25},
-            format="json",
-        )
-        self.assertEqual(response.status_code, 200)
-
-        game.refresh_from_db()
-        self.assertEqual(game.status, "finished")
-        self.assertEqual(game.winner, "p1")
-        self.assertEqual(game.board_state["off"]["p1"], 15)
-
-
-class TurnSwitchingTest(TestCase):
-    def setUp(self):
-        self.client = APIClient()
-
-    def test_turn_switches_when_dice_exhausted(self):
-        game = make_game(dice_values=[1], current_turn="p1")
-
-        response = self.client.post(
-            f"/api/games/{game.pk}/move_checker/",
-            {"from_point": 1, "to_point": 2},
-            format="json",
-        )
-        self.assertEqual(response.status_code, 200)
-
-        game.refresh_from_db()
-        self.assertEqual(game.current_turn, "p2")
-        self.assertEqual(game.dice_values, [])
-
-    def test_turn_stays_when_dice_and_moves_remain(self):
-        game = make_game(dice_values=[1, 2], current_turn="p1")
-
-        response = self.client.post(
-            f"/api/games/{game.pk}/move_checker/",
-            {"from_point": 1, "to_point": 2},
-            format="json",
-        )
-        self.assertEqual(response.status_code, 200)
-
-        game.refresh_from_db()
-        self.assertEqual(game.current_turn, "p1")
-        self.assertEqual(game.dice_values, [2])
 
 
 # ---------------------------------------------------------------------------

@@ -427,18 +427,11 @@ class DeletedSeatIsClosedTest(TestCase):
         self.assertEqual(game.current_turn, "p1")
         self.assertEqual(game.board_state, get_initial_board_state())
 
-    def test_anonymous_cannot_move_or_double_on_a_deleted_seat(self):
-        game = self._live_game(current_turn="p1", dice_values=[1, 2])
+    def test_anonymous_cannot_double_on_a_deleted_seat(self):
+        game = self._live_game(current_turn="p1", dice_values=[])
         self._delete_alice()
         anon = APIClient()
 
-        move = anon.post(
-            f"/api/games/{game.id}/move_checker/",
-            {"from_point": 1, "to_point": 2}, format="json",
-        )
-        self.assertEqual(move.status_code, 403)
-
-        Game.objects.filter(id=game.id).update(dice_values=[])
         double = anon.post(f"/api/games/{game.id}/offer_double/")
         self.assertEqual(double.status_code, 403)
 

@@ -420,7 +420,7 @@ def _apply_single_move(board, player, dice, from_point, to_point):
 def _seat_permission_error(game, user, seat=None):
     """
     Server-side seat/turn enforcement for gameplay actions (roll_dice,
-    move_checker, confirm_turn, cube actions). Returns an error message if the
+    confirm_turn, cube actions). Returns an error message if the
     requester may not act for `seat` (default: game.current_turn — the seat a
     double responder acts for is passed explicitly), or None if allowed.
 
@@ -760,7 +760,6 @@ class GameViewSet(
     """
     List / retrieve / create only, plus the custom actions:
       POST /api/games/{id}/roll_dice/
-      POST /api/games/{id}/move_checker/
       POST /api/games/{id}/confirm_turn/
       POST /api/games/{id}/join/
       POST /api/games/{id}/offer_double/
@@ -879,65 +878,6 @@ class GameViewSet(
             )
 
         game.dice_values = roll_dice()
-        game.save()
-
-        serializer = self.get_serializer(game)
-        return Response(serializer.data)
-
-    @action(detail=True, methods=["post"], url_path="move_checker")
-    def move_checker(self, request, pk=None):
-        """
-        Move a checker for the current player.
-
-        Expected body: { "from_point": int, "to_point": int }
-        Points are 1-indexed (1-24); use 0 for bar entry, 25 for bear-off.
-        """
-        game = self.get_object()
-
-        perm_error = _seat_permission_error(game, request.user)
-        if perm_error:
-            return Response({"error": perm_error}, status=status.HTTP_403_FORBIDDEN)
-
-        if game.double_offered_by:
-            return Response(
-                {"error": "A double has been offered. The opponent must accept or drop first."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        from_point = request.data.get("from_point")
-        to_point = request.data.get("to_point")
-
-        if from_point is None or to_point is None:
-            return Response(
-                {"error": "from_point and to_point are required."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        if game.status != "active":
-            return Response(
-                {"error": "Game is not active."}, status=status.HTTP_400_BAD_REQUEST
-            )
-
-        player = game.current_turn
-        board = game.board_state
-        dice = list(game.dice_values)
-
-        try:
-            dice = _apply_single_move(board, player, dice, from_point, to_point)
-        except ValueError as exc:
-            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-
-        game.board_state = board
-
-        winner = check_winner(board)
-        if winner:
-            _finish_game(game, board, winner)
-        elif not dice or not get_legal_moves(board, player, dice):
-            game.current_turn = opponent(player)
-            game.dice_values = []
-        else:
-            game.dice_values = dice
-
         game.save()
 
         serializer = self.get_serializer(game)

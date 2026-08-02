@@ -29,13 +29,6 @@ export async function rollDice(id) {
   return request(`${BASE}${id}/roll_dice/`, { method: "POST" });
 }
 
-export async function moveChecker(id, fromPoint, toPoint) {
-  return request(`${BASE}${id}/move_checker/`, {
-    method: "POST",
-    body: JSON.stringify({ from_point: fromPoint, to_point: toPoint }),
-  });
-}
-
 export async function confirmTurn(id, moves) {
   return request(`${BASE}${id}/confirm_turn/`, {
     method: "POST",

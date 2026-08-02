@@ -1,6 +1,6 @@
 """
 Server-side seat/turn enforcement on the gameplay actions
-(roll_dice / move_checker / confirm_turn).
+(roll_dice / confirm_turn).
 
 Policy under test (see _seat_permission_error in views.py):
   - A seat owned by a registered user may only be played by that user.
@@ -77,16 +77,6 @@ class OwnedSeatEnforcementTest(SeatSecurityBase):
         self.assertEqual(game.current_turn, "p1")
         self.assertEqual(game.dice_values, [1, 2])
         self.assertEqual(game.board_state, get_initial_board_state())
-
-    def test_non_participant_cannot_move_checker(self):
-        game = self._game(dice_values=[1])
-        self.as_user(self.mallory)
-        res = self.client.post(
-            f"/api/games/{game.pk}/move_checker/",
-            {"from_point": 1, "to_point": 2},
-            format="json",
-        )
-        self.assertEqual(res.status_code, 403)
 
     def test_anonymous_cannot_act_on_owned_seat(self):
         game = self._game()

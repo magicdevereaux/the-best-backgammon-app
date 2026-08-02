@@ -1,4 +1,4 @@
-import { fetchGames, fetchGame, createGame, rollDice, moveChecker, confirmTurn, offerDouble, respondToDouble } from '../gameApi';
+import { fetchGames, fetchGame, createGame, rollDice, confirmTurn, offerDouble, respondToDouble } from '../gameApi';
 
 /*
  * All tests here FAIL until you implement the functions in gameApi.js.
@@ -155,41 +155,6 @@ describe('rollDice(id)', () => {
     const updated = { id: 1, dice_values: [3, 5] };
     fetch.mockReturnValueOnce(mockResponse(updated));
     const result = await rollDice(1);
-    expect(result).toEqual(updated);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// moveChecker
-// ---------------------------------------------------------------------------
-
-describe('moveChecker(id, fromPoint, toPoint)', () => {
-  test('makes a POST request', async () => {
-    fetch.mockReturnValueOnce(mockResponse({}));
-    await moveChecker(1, 6, 8);
-    const [, options] = fetch.mock.calls[0];
-    expect(options.method.toUpperCase()).toBe('POST');
-  });
-
-  test('hits the move_checker endpoint for the given id', async () => {
-    fetch.mockReturnValueOnce(mockResponse({}));
-    await moveChecker(5, 6, 8);
-    const [url] = fetch.mock.calls[0];
-    expect(url).toMatch(/5/);
-    expect(url).toMatch(/move_checker/);
-  });
-
-  test('sends from_point and to_point in the body', async () => {
-    fetch.mockReturnValueOnce(mockResponse({}));
-    await moveChecker(1, 6, 8);
-    const [, options] = fetch.mock.calls[0];
-    expect(JSON.parse(options.body)).toEqual({ from_point: 6, to_point: 8 });
-  });
-
-  test('returns the updated game object', async () => {
-    const updated = { id: 1, board_state: {} };
-    fetch.mockReturnValueOnce(mockResponse(updated));
-    const result = await moveChecker(1, 1, 2);
     expect(result).toEqual(updated);
   });
 });
