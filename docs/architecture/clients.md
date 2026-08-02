@@ -287,7 +287,7 @@ two different layers is exactly the shape that goes stale.
 |-------|----------|--------|
 | Web logic | `src/utils/__tests__/gameLogic.test.js` (37) | `opponent`, `getLegalMoves`, `getCombinedMoves`, `applyMove`, `canBearOff`, `maxMovesUsable`, `checkWinner` |
 | Web hook | `src/hooks/__tests__/useGame.test.js` (14) | staging, combined-move expansion, reset, confirm payload, `mustUseMoreDice` |
-| Web API | `src/api/__tests__/gameApi.test.js` (28) | every endpoint wrapper incl. the legacy `moveChecker` |
+| Web API | `src/api/__tests__/gameApi.test.js` (24) | every endpoint wrapper — URL, method, body and error path |
 | Web API | `src/api/__tests__/{apiClient,authApi}.test.js` (7 + 18) | bearer injection, 401→refresh→retry, token storage |
 | Web UI | `src/components/__tests__/Board.test.jsx` (31) | 24 points, checker placement, bar/off, click-to-move, destination highlighting |
 | Web UI | `src/components/__tests__/{Dice,DoublingCube,GameControls}.test.jsx` (5 + 7 + 21) | die faces, cube/Crawford states, roll/reset/confirm enablement, maximal-dice affordance |

@@ -87,15 +87,15 @@ Client tests mock `fetch`; mobile uses the in-memory SecureStore mock in
 ## Security note (current limitations)
 
 `AllowAny` remains the default DRF permission (guest play requires it), but the
-player actions (`roll_dice` / `move_checker` / `confirm_turn` and the cube actions
-`offer_double` / `respond_to_double`) **do enforce seat/turn ownership**
+player actions (`roll_dice` / `confirm_turn`, the cube actions
+`offer_double` / `respond_to_double`, and `abandon`) **do enforce seat/turn ownership**
 server-side: `_seat_permission_error` in
 [`views.py`](../../backend/game/views.py) rejects with **403** any request where the
 acting seat is owned by a registered user and the requester isn't that user
 (including the opponent acting out of turn), and rejects other logged-in accounts
 acting on a guest seat. The acting seat is `current_turn` except for
 `respond_to_double`, which checks the offerer's *opponent* (so a player can't
-answer their own double). See
+answer their own double), and `abandon`, which checks the surviving seat. See
 [overview.md](overview.md#whose-turn-is-it-seat-ownership) for the full policy
 table.
 

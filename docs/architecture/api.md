@@ -70,7 +70,6 @@ Related: [auth.md](auth.md) (token lifecycle), [data-model.md](data-model.md)
 | `PUT`/`PATCH`/`DELETE` | `/api/games/{id}/` | **not routed** — 405 |
 | `POST` | `/api/games/{id}/join/` | optional |
 | `POST` | `/api/games/{id}/roll_dice/` | seat-enforced |
-| `POST` | `/api/games/{id}/move_checker/` | seat-enforced (legacy) |
 | `POST` | `/api/games/{id}/confirm_turn/` | seat-enforced |
 | `POST` | `/api/games/{id}/offer_double/` | seat-enforced |
 | `POST` | `/api/games/{id}/respond_to_double/` | seat-enforced (responder seat) |
@@ -437,38 +436,10 @@ roll is recorded **even when it leaves no legal move** — the client then calls
 | 400 | `"Dice have already been rolled for this turn."` (`dice_values` non-empty) |
 | 404 | unknown id |
 
-### `POST /api/games/{id}/move_checker/` (legacy)
-
-**No client uses this** — both clients stage moves locally and commit via
-`confirm_turn`. It still exists, is tested, and applies exactly one move.
-
-| Field | Type | Required |
-|-------|------|----------|
-| `from_point` | int, 1–24 (`0` = enter from the bar) | yes |
-| `to_point` | int, 1–24 (`25` = bear off) | yes |
-
-Applies the move, then: if the position is a win, finishes the game; else if no
-dice or no legal moves remain, passes the turn and clears the dice; else stores
-the remaining dice. When a bear-off matches several dice, the **smallest**
-matching die is consumed, keeping larger dice free for later oversized bear-offs.
-
-**200** → the updated game.
-
-| Status | Trigger |
-|--------|---------|
-| 403 | seat enforcement |
-| 400 | pending double |
-| 400 | `"from_point and to_point are required."` |
-| 400 | `"Game is not active."` |
-| 400 | `"Illegal move."` — not in `get_legal_moves` (includes the "no dice rolled" case) |
-
-Note the check order: a missing `from_point`/`to_point` is rejected *before* the
-game-active check. Unlike `confirm_turn`, this endpoint enforces **neither**
-maximal dice usage nor the higher-die rule.
-
 ### `POST /api/games/{id}/confirm_turn/`
 
-The live path. Commits a whole staged turn atomically and passes it on.
+**The only way to move a checker.** Commits a whole staged turn atomically and
+passes it on.
 
 ```json
 { "moves": [ { "from_point": 1, "to_point": 3 }, { "from_point": 3, "to_point": 8 } ] }
@@ -478,6 +449,11 @@ The live path. Commits a whole staged turn atomically and passes it on.
 clients expand a combined multi-die drag into sequential single hops before
 sending; the server has no notion of a combined move
 ([ADR-001](../decisions/adr-001-combined-moves.md)).
+
+Each hop goes through `_apply_single_move`, which re-derives `get_legal_moves`
+and rejects anything not in it. When a bear-off matches several dice, the
+**smallest** matching die is consumed, keeping larger dice free for later
+oversized bear-offs.
 
 Moves are applied to a deep copy; **if any check fails nothing is saved** and
 the pre-turn `board_state`, `dice_values`, and `current_turn` are intact
@@ -523,8 +499,7 @@ Outside bear-off the official general rule is **not** enforced — see
 ### `POST /api/games/{id}/offer_double/`
 
 No body. Sets `double_offered_by` to the current-turn seat. While that is set,
-`roll_dice`, `move_checker`, and `confirm_turn` all return 400 until the offer is
-answered.
+`roll_dice` and `confirm_turn` both return 400 until the offer is answered.
 
 **200** → the updated game.
 
@@ -715,11 +690,11 @@ Sets the match's `player2_user`/`player2_name` and promotes the match's first
 ## Seat enforcement
 
 `_seat_permission_error` in [`views.py`](../../backend/game/views.py) guards the
-five gameplay actions (`roll_dice`, `move_checker`, `confirm_turn`,
-`offer_double`, `respond_to_double`) and, with an explicit seat, `abandon`. It
-checks the seat being acted for — `game.current_turn` by default, the explicit
-responder seat for `respond_to_double`, or the **surviving** seat for `abandon`.
-On rejection: **403** with `{"error": "<message>"}`.
+five actions that mutate a game: `roll_dice`, `confirm_turn`, `offer_double`,
+`respond_to_double` and `abandon`. It checks the seat being acted for —
+`game.current_turn` by default, the explicit responder seat for
+`respond_to_double`, or the **surviving** seat for `abandon`. On rejection:
+**403** with `{"error": "<message>"}`.
 
 | Seat FK | Requester | Result |
 |---------|-----------|--------|

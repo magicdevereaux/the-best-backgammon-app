@@ -74,9 +74,9 @@ and rejects anything illegal), enforces maximal dice usage, then either passes t
 turn or finishes the game. The whole request is atomic — one illegal move rejects the
 entire turn and saves nothing.
 
-> There is also a `move_checker` endpoint that applies a single move immediately.
-> **No client uses it** — both drive the staging/`confirm_turn` path. Treat it as
-> legacy.
+> **`confirm_turn` is the only endpoint that moves a checker.** There is no
+> move-at-a-time route: a turn reaches the server as one list or not at all, so
+> the atomicity above is a property of the API, not just of the clients.
 
 ## Combined (multi-die) moves — a client-side DFS
 
@@ -189,9 +189,8 @@ unanswered offer), and `crawford_game`. The flow is endpoint-driven in
 - **`offer_double`** — legal on your turn *before rolling*, when the cube is
   centered or yours, outside the Crawford game, below 64, and with no offer already
   pending. Seat-enforced against `current_turn` like the gameplay actions (403).
-  Sets `double_offered_by`; while set, `roll_dice` / `move_checker` /
-  `confirm_turn` and a second `offer_double` are all blocked (400) until the
-  opponent answers.
+  Sets `double_offered_by`; while set, `roll_dice` / `confirm_turn` and a second
+  `offer_double` are all blocked (400) until the opponent answers.
 - **`respond_to_double`** (`{"accept": bool}`) — answered by the *offerer's
   opponent* (seat-enforced with the same 403 pattern as gameplay actions; the
   responder is not the current-turn player, so the permission check takes an

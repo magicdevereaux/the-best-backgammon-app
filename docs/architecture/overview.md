@@ -98,8 +98,8 @@ realtime channel. The flow:
 ### Whose turn is it? (seat ownership)
 
 The backend **enforces** seat/turn ownership on every player action — `roll_dice`,
-`move_checker`, `confirm_turn`, and the cube actions `offer_double` /
-`respond_to_double` — via `_seat_permission_error` in
+`confirm_turn`, the cube actions `offer_double` / `respond_to_double`, and
+`abandon` — via `_seat_permission_error` in
 [`views.py`](../../backend/game/views.py). Enforcement is only as strong as the
 `player1_user` / `player2_user` FKs — a **guest seat (null FK) has no server
 identity to verify**. The policy:
@@ -118,7 +118,8 @@ surface it via their normal action-error path.
 
 The check normally runs against `game.current_turn`, but it takes an explicit
 seat where the actor isn't the current player: `respond_to_double` checks the
-**offerer's opponent**, so the offerer can't answer their own double.
+**offerer's opponent**, so the offerer can't answer their own double, and
+`abandon` checks the **surviving** seat (the closed one is the blocked player).
 
 > **Residual gap:** a logged-in attacker can log *out* and act on a guest seat
 > anonymously — a guest seat is inherently unverifiable without a guest-token
