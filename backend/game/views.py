@@ -5,6 +5,7 @@ from django.conf import settings
 from django.contrib.auth.models import User
 from django.contrib.auth.tokens import default_token_generator
 from django.core.mail import send_mail
+from django.db import transaction
 from django.db.models import Q
 from django.utils.encoding import force_bytes
 from django.utils.http import urlsafe_base64_encode
@@ -93,6 +94,44 @@ class OptionalScopedRateThrottle(ScopedRateThrottle):
 
     def get_rate(self):
         return api_settings.DEFAULT_THROTTLE_RATES.get(getattr(self, "scope", None))
+
+
+class RowLockingMixin:
+    """
+    Gives a viewset ``_locked_object()`` — the detail action's target row,
+    re-read with ``SELECT … FOR UPDATE``.
+
+    **Why every mutating action needs it.** Each one is a read-modify-write:
+    read the game, check some guards against it, compute a new board/score,
+    write the whole row back with ``save()``. Two requests that read before
+    either writes both pass the guards, and the second ``save()`` overwrites
+    the first — a double-tapped Confirm, a retried POST or two browser tabs is
+    all it takes. SQLite made this *narrow* rather than impossible: it
+    serializes writers, but readers run concurrently, so the read-then-write
+    gap is real there too. Postgres with several gunicorn workers widens it to
+    the whole request.
+
+    The shape is the same everywhere::
+
+        with transaction.atomic():
+            obj = self._locked_object()
+            ...guards, mutation, save...
+
+    Note the guards run **after** the lock, against the freshly-read row. A
+    guard evaluated before the lock proves nothing — the row can change between
+    the check and the write, which is exactly the bug. Locking first also means
+    the existing guards need no re-ordering: they simply become the recheck.
+
+    ``get_object()`` still runs first, so 404 / lookup behaviour is unchanged;
+    the second query re-reads that same row under the lock. ``select_for_update``
+    is a no-op on SQLite (``has_select_for_update`` is False, and the whole
+    database takes one write lock anyway), so this costs dev and the test suite
+    one extra primary-key SELECT and nothing else.
+    """
+
+    def _locked_object(self):
+        obj = self.get_object()
+        return self.get_queryset().model.objects.select_for_update().get(pk=obj.pk)
 
 
 # ---------------------------------------------------------------------------
@@ -259,10 +298,16 @@ class MeView(generics.RetrieveUpdateDestroyAPIView):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        _blacklist_refresh_tokens(user)
-        _purge_unjoined_lobby_entries(user)
-        _close_deleted_account_seats(user)
-        user.delete()
+        # One transaction for the four writes. They are not independent: the
+        # seat flags are the only thing keeping an orphaned seat from reading
+        # as an anonymously-playable guest seat, so a deletion that committed
+        # `user.delete()` without them would silently open every game this
+        # account was in. All four land, or none do.
+        with transaction.atomic():
+            _blacklist_refresh_tokens(user)
+            _purge_unjoined_lobby_entries(user)
+            _close_deleted_account_seats(user)
+            user.delete()
 
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -620,6 +665,14 @@ def _apply_game_result(game, winner, win_type, points):
     board wins (_finish_game) and doubling-cube drops, where the game ends by
     concession with no board-derived win type.
     Does NOT call game.save() — the caller is responsible.
+
+    **Must be called from inside the caller's transaction, with the game row
+    already locked** (confirm_turn and respond_to_double both do). The score
+    update below is a read-modify-write and ``match.save()`` rewrites every
+    column, so the match row is locked here too — see the comment on that line.
+    The helper deliberately opens no ``atomic()`` of its own: a nested block
+    would only add a pointless savepoint, and a helper that locked outside its
+    caller's transaction would be a deadlock source.
     """
     pts = points
 
@@ -631,7 +684,13 @@ def _apply_game_result(game, winner, win_type, points):
     game.double_offered_by = None
 
     if game.match_id:
-        match = game.match
+        # Locked, not `game.match`: the score is incremented in Python and
+        # written back as a whole row, so a concurrent writer on the same match
+        # (a sibling game's abandon, a second confirm) could otherwise resurrect
+        # a stale score. Lock order is game → match, matching `abandon`; the
+        # only action that takes the match lock first is `next_game`, which
+        # never goes on to lock a game row, so the two cannot deadlock.
+        match = Match.objects.select_for_update().get(pk=game.match_id)
         if winner == "p1":
             match.player1_score += pts
             if match.player1_score >= match.target_points:
@@ -650,6 +709,7 @@ def _apply_game_result(game, winner, win_type, points):
 # ---------------------------------------------------------------------------
 
 class MatchViewSet(
+    RowLockingMixin,
     mixins.CreateModelMixin,
     mixins.ListModelMixin,
     mixins.RetrieveModelMixin,
@@ -697,107 +757,150 @@ class MatchViewSet(
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        match = serializer.save(
-            player1_user=user,
-            player1_name=player1_name,
-            player2_name=player2_name,
-        )
+        # Two inserts, one transaction: a match whose first game failed to
+        # write would be permanently unplayable (next_game refuses to run on a
+        # match that has never had a finished game) and would sit in the lobby
+        # advertising nothing.
+        with transaction.atomic():
+            match = serializer.save(
+                player1_user=user,
+                player1_name=player1_name,
+                player2_name=player2_name,
+            )
 
-        # Create the first game of this match
-        game_status = "active" if player2_name else "waiting"
-        Game.objects.create(
-            match=match,
-            player1_user=match.player1_user,
-            player2_user=match.player2_user,
-            player1_name=match.player1_name,
-            player2_name=match.player2_name,
-            board_state=get_initial_board_state(),
-            current_turn="p1",
-            dice_values=[],
-            status=game_status,
-        )
+            # Create the first game of this match
+            game_status = "active" if player2_name else "waiting"
+            Game.objects.create(
+                match=match,
+                player1_user=match.player1_user,
+                player2_user=match.player2_user,
+                player1_name=match.player1_name,
+                player2_name=match.player2_name,
+                board_state=get_initial_board_state(),
+                current_turn="p1",
+                dice_values=[],
+                status=game_status,
+            )
 
         return Response(self.get_serializer(match).data, status=status.HTTP_201_CREATED)
 
     @action(detail=True, methods=["post"], url_path="next_game")
     def next_game(self, request, pk=None):
-        """Start the next game in the match after the previous one has finished."""
-        match = self.get_object()
+        """
+        Start the next game in the match after the previous one has finished.
 
-        perm_error = _match_permission_error(match, request.user)
-        if perm_error:
-            return Response({"error": perm_error}, status=status.HTTP_403_FORBIDDEN)
+        The riskiest action in the app to run twice: unlike the gameplay
+        actions, whose damage is a lost update, a raced ``next_game`` *inserts*
+        a second game and there is no unique constraint to stop it. A match
+        with two active games is permanently broken — every later ``next_game``
+        then trips the in-progress guard, and both clients fetch "the" current
+        game and disagree about which one it is. So the match row is locked for
+        the whole action and the "a game is already in progress" guard is
+        evaluated under that lock: the second of two simultaneous submissions
+        blocks on the lock, then reads the game the first one just inserted and
+        is refused with the ordinary 400. Nothing about the responses changes —
+        the guard simply stops being skippable.
+        """
+        with transaction.atomic():
+            match = self._locked_object()
 
-        if match.status == "finished":
-            return Response(
-                {"error": "Match is already finished."}, status=status.HTTP_400_BAD_REQUEST
+            perm_error = _match_permission_error(match, request.user)
+            if perm_error:
+                return Response({"error": perm_error}, status=status.HTTP_403_FORBIDDEN)
+
+            if match.status == "finished":
+                return Response(
+                    {"error": "Match is already finished."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            # Re-checked under the lock — this is the duplicate-game guard.
+            if match.games.filter(status__in=["active", "waiting"]).exists():
+                return Response(
+                    {"error": "A game is already in progress."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            last_game = match.games.filter(status="finished").first()
+            next_turn = last_game.winner if last_game else "p1"
+
+            # Crawford rule: the first game after either player reaches match
+            # point (target − 1) is played with the doubling cube disabled.
+            # Exactly one such game per match — afterwards doubling resumes.
+            at_match_point = (match.target_points - 1) in (
+                match.player1_score, match.player2_score
             )
+            crawford_played = match.games.filter(crawford_game=True).exists()
 
-        if match.games.filter(status__in=["active", "waiting"]).exists():
-            return Response(
-                {"error": "A game is already in progress."}, status=status.HTTP_400_BAD_REQUEST
+            game = Game.objects.create(
+                match=match,
+                player1_user=match.player1_user,
+                player2_user=match.player2_user,
+                player1_name=match.player1_name,
+                player2_name=match.player2_name,
+                # Carry seat closure forward, or the surviving opponent could
+                # advance the match into a fresh game whose orphaned seat looks
+                # like a guest seat again.
+                player1_deleted=match.player1_deleted,
+                player2_deleted=match.player2_deleted,
+                board_state=get_initial_board_state(),
+                current_turn=next_turn,
+                dice_values=[],
+                status="active",
+                crawford_game=at_match_point and not crawford_played,
             )
-
-        last_game = match.games.filter(status="finished").first()
-        next_turn = last_game.winner if last_game else "p1"
-
-        # Crawford rule: the first game after either player reaches match point
-        # (target − 1) is played with the doubling cube disabled. Exactly one
-        # such game per match — afterwards doubling resumes.
-        at_match_point = (match.target_points - 1) in (
-            match.player1_score, match.player2_score
-        )
-        crawford_played = match.games.filter(crawford_game=True).exists()
-
-        game = Game.objects.create(
-            match=match,
-            player1_user=match.player1_user,
-            player2_user=match.player2_user,
-            player1_name=match.player1_name,
-            player2_name=match.player2_name,
-            # Carry seat closure forward, or the surviving opponent could
-            # advance the match into a fresh game whose orphaned seat looks
-            # like a guest seat again.
-            player1_deleted=match.player1_deleted,
-            player2_deleted=match.player2_deleted,
-            board_state=get_initial_board_state(),
-            current_turn=next_turn,
-            dice_values=[],
-            status="active",
-            crawford_game=at_match_point and not crawford_played,
-        )
 
         return Response(GameSerializer(game).data, status=status.HTTP_201_CREATED)
 
     @action(detail=True, methods=["post"], url_path="join")
     def join(self, request, pk=None):
-        """Join a match as player 2 (for online match links)."""
-        match = self.get_object()
+        """
+        Join a match as player 2 (for online match links).
 
-        if match.player2_name:
-            return Response(
-                {"error": "Match already has two players."}, status=status.HTTP_400_BAD_REQUEST
+        The empty-``player2_name`` check is the "seat still free" test, so it
+        has to be read under the match lock — two people opening the same link
+        at once would otherwise both pass it and the second would silently
+        overwrite the first, who has already been told they are in. The waiting
+        game is locked too, since it is written from the same decision.
+
+        Lock order here is match → game, the reverse of the gameplay actions.
+        That is safe because the two orders can never overlap: this action only
+        runs on a match with no second player, whose game is therefore still
+        ``waiting``, while the game → match order is only taken by an action
+        finishing an ``active`` game.
+        """
+        with transaction.atomic():
+            match = self._locked_object()
+
+            if match.player2_name:
+                return Response(
+                    {"error": "Match already has two players."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            user = request.user if request.user.is_authenticated else None
+            player2_name = request.data.get("player2_name") or (
+                user.username if user else None
             )
 
-        user = request.user if request.user.is_authenticated else None
-        player2_name = request.data.get("player2_name") or (user.username if user else None)
+            if not player2_name:
+                return Response(
+                    {"error": "player2_name is required for guest join."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
-        if not player2_name:
-            return Response(
-                {"error": "player2_name is required for guest join."},
-                status=status.HTTP_400_BAD_REQUEST,
+            match.player2_user = user
+            match.player2_name = player2_name
+            match.save()
+
+            waiting_game = (
+                match.games.select_for_update().filter(status="waiting").first()
             )
-
-        match.player2_user = user
-        match.player2_name = player2_name
-        match.save()
-
-        waiting_game = match.games.filter(status="waiting").first()
-        if waiting_game:
-            waiting_game.player2_user = user
-            waiting_game.player2_name = player2_name
-            waiting_game.status = "active"
-            waiting_game.save()
+            if waiting_game:
+                waiting_game.player2_user = user
+                waiting_game.player2_name = player2_name
+                waiting_game.status = "active"
+                waiting_game.save()
 
         return Response(self.get_serializer(match).data)
 
@@ -807,6 +910,7 @@ class MatchViewSet(
 # ---------------------------------------------------------------------------
 
 class GameViewSet(
+    RowLockingMixin,
     mixins.CreateModelMixin,
     mixins.ListModelMixin,
     mixins.RetrieveModelMixin,
@@ -874,30 +978,39 @@ class GameViewSet(
 
         Authenticated users use their username automatically.
         Guests must supply { "player2_name": "..." }.
+
+        The ``status == "waiting"`` check is what claims the seat, so it is read
+        under the row lock: a lobby game two people click at the same moment
+        would otherwise hand both of them a 200, with the second write quietly
+        evicting the first player from a game they think they joined.
         """
-        game = self.get_object()
+        with transaction.atomic():
+            game = self._locked_object()
 
-        if game.status != "waiting":
-            return Response(
-                {"error": "Game is not open to join."}, status=status.HTTP_400_BAD_REQUEST
+            if game.status != "waiting":
+                return Response(
+                    {"error": "Game is not open to join."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            user = request.user if request.user.is_authenticated else None
+            player2_name = request.data.get("player2_name") or (
+                user.username if user else None
             )
 
-        user = request.user if request.user.is_authenticated else None
-        player2_name = request.data.get("player2_name") or (user.username if user else None)
+            if not player2_name:
+                return Response(
+                    {"error": "player2_name is required when joining as a guest."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
-        if not player2_name:
-            return Response(
-                {"error": "player2_name is required when joining as a guest."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            game.player2_user = user
+            game.player2_name = player2_name
+            game.status = "active"
+            game.save()
 
-        game.player2_user = user
-        game.player2_name = player2_name
-        game.status = "active"
-        game.save()
-
-        serializer = self.get_serializer(game)
-        return Response(serializer.data)
+            serializer = self.get_serializer(game)
+            return Response(serializer.data)
 
     @action(detail=True, methods=["post"], url_path="roll_dice")
     def roll_dice(self, request, pk=None):
@@ -908,35 +1021,41 @@ class GameViewSet(
         with no legal moves at all. In that case the player sees the roll,
         finds no destinations highlighted, and calls confirm_turn with no
         moves to pass the turn to the opponent.
+
+        The ``dice_values`` guard is the anti-reroll rule, and it only holds if
+        it is read under the lock: two rolls in flight together would otherwise
+        both see an empty ``dice_values`` and the loser's roll would be the one
+        the player is stuck with.
         """
-        game = self.get_object()
+        with transaction.atomic():
+            game = self._locked_object()
 
-        perm_error = _seat_permission_error(game, request.user)
-        if perm_error:
-            return Response({"error": perm_error}, status=status.HTTP_403_FORBIDDEN)
+            perm_error = _seat_permission_error(game, request.user)
+            if perm_error:
+                return Response({"error": perm_error}, status=status.HTTP_403_FORBIDDEN)
 
-        if game.status != "active":
-            return Response(
-                {"error": "Game is not active."}, status=status.HTTP_400_BAD_REQUEST
-            )
+            if game.status != "active":
+                return Response(
+                    {"error": "Game is not active."}, status=status.HTTP_400_BAD_REQUEST
+                )
 
-        if game.double_offered_by:
-            return Response(
-                {"error": "A double has been offered. The opponent must accept or drop first."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            if game.double_offered_by:
+                return Response(
+                    {"error": "A double has been offered. The opponent must accept or drop first."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
-        if game.dice_values:
-            return Response(
-                {"error": "Dice have already been rolled for this turn."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            if game.dice_values:
+                return Response(
+                    {"error": "Dice have already been rolled for this turn."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
-        game.dice_values = roll_dice()
-        game.save()
+            game.dice_values = roll_dice()
+            game.save()
 
-        serializer = self.get_serializer(game)
-        return Response(serializer.data)
+            serializer = self.get_serializer(game)
+            return Response(serializer.data)
 
     @action(detail=True, methods=["post"], url_path="confirm_turn")
     def confirm_turn(self, request, pk=None):
@@ -951,106 +1070,119 @@ class GameViewSet(
         confirmation is rejected (e.g. only one die played when both could be).
         On success the turn passes to the opponent (or the game finishes if the
         last checker is borne off).
+
+        This is the action most likely to arrive twice — a double-tapped
+        Confirm, an impatient retry, two open tabs — and the whole body is a
+        read-modify-write over the board, so it runs with the game row locked.
+        The replay is then rejected by the guards rather than applied on top of
+        itself: committing clears ``dice_values`` and flips ``current_turn``, so
+        the second request reads the *post*-turn row and fails "No dice rolled
+        for this turn." (or the seat check, from the opponent's side). Reading
+        those fields before the lock is what would let the same moves be applied
+        to the already-advanced board.
         """
-        game = self.get_object()
+        with transaction.atomic():
+            game = self._locked_object()
 
-        perm_error = _seat_permission_error(game, request.user)
-        if perm_error:
-            return Response({"error": perm_error}, status=status.HTTP_403_FORBIDDEN)
+            perm_error = _seat_permission_error(game, request.user)
+            if perm_error:
+                return Response({"error": perm_error}, status=status.HTTP_403_FORBIDDEN)
 
-        if game.status != "active":
-            return Response(
-                {"error": "Game is not active."}, status=status.HTTP_400_BAD_REQUEST
-            )
-
-        if game.double_offered_by:
-            return Response(
-                {"error": "A double has been offered. The opponent must accept or drop first."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        if not game.dice_values:
-            return Response(
-                {"error": "No dice rolled for this turn."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        moves = request.data.get("moves", [])
-        if not isinstance(moves, list):
-            return Response(
-                {"error": "moves must be a list."}, status=status.HTTP_400_BAD_REQUEST
-            )
-
-        player = game.current_turn
-        board = copy.deepcopy(game.board_state)
-        dice = list(game.dice_values)
-
-        for move in moves:
-            from_point = move.get("from_point")
-            to_point = move.get("to_point")
-            if from_point is None or to_point is None:
+            if game.status != "active":
                 return Response(
-                    {"error": "Each move requires from_point and to_point."},
+                    {"error": "Game is not active."}, status=status.HTTP_400_BAD_REQUEST
+                )
+
+            if game.double_offered_by:
+                return Response(
+                    {"error": "A double has been offered. The opponent must accept or drop first."},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
-            try:
-                dice = _apply_single_move(board, player, dice, from_point, to_point)
-            except ValueError as exc:
-                return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Enforce maximal dice usage: the player must consume as many dice as is
-        # legally possible. If a longer sequence exists than the one they staged,
-        # reject the turn so they can't pass up a forced move. (game.board_state
-        # is still the pre-turn position here — the loop mutated only `board`.)
-        dice_used = len(game.dice_values) - len(dice)
-        max_usable = max_moves_usable(game.board_state, player, list(game.dice_values))
-        if dice_used < max_usable:
-            return Response(
-                {
-                    "error": (
-                        "You must use as many dice as possible. "
-                        "A legal move remains for an unused die."
+            if not game.dice_values:
+                return Response(
+                    {"error": "No dice rolled for this turn."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            moves = request.data.get("moves", [])
+            if not isinstance(moves, list):
+                return Response(
+                    {"error": "moves must be a list."}, status=status.HTTP_400_BAD_REQUEST
+                )
+
+            player = game.current_turn
+            board = copy.deepcopy(game.board_state)
+            dice = list(game.dice_values)
+
+            for move in moves:
+                from_point = move.get("from_point")
+                to_point = move.get("to_point")
+                if from_point is None or to_point is None:
+                    return Response(
+                        {"error": "Each move requires from_point and to_point."},
+                        status=status.HTTP_400_BAD_REQUEST,
                     )
-                },
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+                try:
+                    dice = _apply_single_move(board, player, dice, from_point, to_point)
+                except ValueError as exc:
+                    return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Higher-die rule: when only one die can be played but either die
-        # individually has a legal move, the higher die must be the one played.
-        # Applies anywhere on the board (bar entry, mid-board, bear-off). The
-        # maximal-usage check above guarantees exactly one staged move whenever
-        # this rule is active (max_usable == 1).
-        required = higher_die_required_moves(
-            game.board_state, player, list(game.dice_values)
-        )
-        if required is not None:
-            allowed = {(m[0], m[1]) for m in required}
-            staged = (moves[0].get("from_point"), moves[0].get("to_point"))
-            if staged not in allowed:
-                high = next(iter(required))[2]
+            # Enforce maximal dice usage: the player must consume as many dice as is
+            # legally possible. If a longer sequence exists than the one they staged,
+            # reject the turn so they can't pass up a forced move. (game.board_state
+            # is still the pre-turn position here — the loop mutated only `board`.)
+            dice_used = len(game.dice_values) - len(dice)
+            max_usable = max_moves_usable(game.board_state, player, list(game.dice_values))
+            if dice_used < max_usable:
                 return Response(
                     {
                         "error": (
-                            f"When only one die can be played, you must play "
-                            f"the higher die ({high})."
+                            "You must use as many dice as possible. "
+                            "A legal move remains for an unused die."
                         )
                     },
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-        game.board_state = board
+            # Higher-die rule: when only one die can be played but either die
+            # individually has a legal move, the higher die must be the one played.
+            # Applies anywhere on the board (bar entry, mid-board, bear-off). The
+            # maximal-usage check above guarantees exactly one staged move whenever
+            # this rule is active (max_usable == 1).
+            required = higher_die_required_moves(
+                game.board_state, player, list(game.dice_values)
+            )
+            if required is not None:
+                allowed = {(m[0], m[1]) for m in required}
+                staged = (moves[0].get("from_point"), moves[0].get("to_point"))
+                if staged not in allowed:
+                    high = next(iter(required))[2]
+                    return Response(
+                        {
+                            "error": (
+                                f"When only one die can be played, you must play "
+                                f"the higher die ({high})."
+                            )
+                        },
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
 
-        winner = check_winner(board)
-        if winner:
-            _finish_game(game, board, winner)
-        else:
-            game.current_turn = opponent(player)
-            game.dice_values = []
+            game.board_state = board
 
-        game.save()
+            winner = check_winner(board)
+            if winner:
+                # Scores the match too, on the locked match row — see
+                # _apply_game_result.
+                _finish_game(game, board, winner)
+            else:
+                game.current_turn = opponent(player)
+                game.dice_values = []
 
-        serializer = self.get_serializer(game)
-        return Response(serializer.data)
+            game.save()
+
+            serializer = self.get_serializer(game)
+            return Response(serializer.data)
 
     @action(detail=True, methods=["post"], url_path="offer_double")
     def offer_double(self, request, pk=None):
@@ -1059,54 +1191,61 @@ class GameViewSet(
         when you own the cube or it's centered, outside the Crawford game, and
         below the cube's 64 cap. Sets a pending offer the opponent must answer
         (via respond_to_double) before play can continue.
+
+        Locked because the offer has to be mutually exclusive with a roll: the
+        "before rolling" and "no offer pending" guards are read from the same
+        row this action writes, so a double racing a roll_dice would otherwise
+        produce a game that is both rolled and awaiting an answer — a state
+        neither client knows how to render.
         """
-        game = self.get_object()
+        with transaction.atomic():
+            game = self._locked_object()
 
-        perm_error = _seat_permission_error(game, request.user)
-        if perm_error:
-            return Response({"error": perm_error}, status=status.HTTP_403_FORBIDDEN)
+            perm_error = _seat_permission_error(game, request.user)
+            if perm_error:
+                return Response({"error": perm_error}, status=status.HTTP_403_FORBIDDEN)
 
-        if game.status != "active":
-            return Response(
-                {"error": "Game is not active."}, status=status.HTTP_400_BAD_REQUEST
-            )
+            if game.status != "active":
+                return Response(
+                    {"error": "Game is not active."}, status=status.HTTP_400_BAD_REQUEST
+                )
 
-        if game.crawford_game:
-            return Response(
-                {"error": "The doubling cube is disabled during the Crawford game."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            if game.crawford_game:
+                return Response(
+                    {"error": "The doubling cube is disabled during the Crawford game."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
-        if game.double_offered_by:
-            return Response(
-                {"error": "A double has already been offered."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            if game.double_offered_by:
+                return Response(
+                    {"error": "A double has already been offered."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
-        if game.dice_values:
-            return Response(
-                {"error": "You can only double before rolling."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            if game.dice_values:
+                return Response(
+                    {"error": "You can only double before rolling."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
-        player = game.current_turn
-        if game.cube_owner is not None and game.cube_owner != player:
-            return Response(
-                {"error": "Your opponent owns the cube — only they may double."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            player = game.current_turn
+            if game.cube_owner is not None and game.cube_owner != player:
+                return Response(
+                    {"error": "Your opponent owns the cube — only they may double."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
-        if game.cube_value >= 64:
-            return Response(
-                {"error": "The cube is already at its maximum value (64)."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            if game.cube_value >= 64:
+                return Response(
+                    {"error": "The cube is already at its maximum value (64)."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
-        game.double_offered_by = player
-        game.save()
+            game.double_offered_by = player
+            game.save()
 
-        serializer = self.get_serializer(game)
-        return Response(serializer.data)
+            serializer = self.get_serializer(game)
+            return Response(serializer.data)
 
     @action(detail=True, methods=["post"], url_path="respond_to_double")
     def respond_to_double(self, request, pk=None):
@@ -1117,46 +1256,55 @@ class GameViewSet(
         Accept: the cube doubles and passes to the acceptor; the offerer then
         rolls as normal. Drop: the responder concedes immediately and the
         offerer scores the *current* (pre-double) cube value.
+
+        Both branches must happen exactly once, and neither is idempotent: a
+        replayed accept would double the cube twice, and a replayed drop would
+        award the match points twice. The ``double_offered_by`` guard is what
+        prevents that, so it is read with the row locked — answering clears the
+        field, so a second request reads the cleared row and gets the ordinary
+        "No double has been offered." 400.
         """
-        game = self.get_object()
+        with transaction.atomic():
+            game = self._locked_object()
 
-        if game.status != "active":
-            return Response(
-                {"error": "Game is not active."}, status=status.HTTP_400_BAD_REQUEST
-            )
+            if game.status != "active":
+                return Response(
+                    {"error": "Game is not active."}, status=status.HTTP_400_BAD_REQUEST
+                )
 
-        if not game.double_offered_by:
-            return Response(
-                {"error": "No double has been offered."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            if not game.double_offered_by:
+                return Response(
+                    {"error": "No double has been offered."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
-        responder = opponent(game.double_offered_by)
-        perm_error = _seat_permission_error(game, request.user, seat=responder)
-        if perm_error:
-            return Response({"error": perm_error}, status=status.HTTP_403_FORBIDDEN)
+            responder = opponent(game.double_offered_by)
+            perm_error = _seat_permission_error(game, request.user, seat=responder)
+            if perm_error:
+                return Response({"error": perm_error}, status=status.HTTP_403_FORBIDDEN)
 
-        accept = request.data.get("accept")
-        if not isinstance(accept, bool):
-            return Response(
-                {"error": "accept must be true or false."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            accept = request.data.get("accept")
+            if not isinstance(accept, bool):
+                return Response(
+                    {"error": "accept must be true or false."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
-        if accept:
-            game.cube_value *= 2
-            game.cube_owner = responder
-            game.double_offered_by = None
-        else:
-            # Dropping concedes the game at the pre-double stakes.
-            _apply_game_result(
-                game, game.double_offered_by, "drop", game.cube_value
-            )
+            if accept:
+                game.cube_value *= 2
+                game.cube_owner = responder
+                game.double_offered_by = None
+            else:
+                # Dropping concedes the game at the pre-double stakes. Scores
+                # the match on its locked row — see _apply_game_result.
+                _apply_game_result(
+                    game, game.double_offered_by, "drop", game.cube_value
+                )
 
-        game.save()
+            game.save()
 
-        serializer = self.get_serializer(game)
-        return Response(serializer.data)
+            serializer = self.get_serializer(game)
+            return Response(serializer.data)
 
     @action(detail=True, methods=["post"], url_path="abandon")
     def abandon(self, request, pk=None):
@@ -1193,52 +1341,63 @@ class GameViewSet(
         score change), because ``next_game`` copies the seat-closure flags onto
         the game it creates: leaving the match open would let the survivor mint
         an endless series of games that are dead on arrival.
+
+        Locked, and the game and match writes share one transaction: finishing
+        the game without finishing the match is the exact half-state this
+        endpoint exists to prevent, since the survivor could then mint another
+        dead game from it.
         """
-        game = self.get_object()
+        with transaction.atomic():
+            game = self._locked_object()
 
-        if game.status == "finished":
-            return Response(
-                {"error": "Game is already finished."}, status=status.HTTP_400_BAD_REQUEST
+            if game.status == "finished":
+                return Response(
+                    {"error": "Game is already finished."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if game.status != "active":
+                return Response(
+                    {"error": "Game is not active."}, status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # Whose action is the game waiting on? A pending double blocks all play
+            # until the offerer's opponent answers it.
+            blocked = (
+                opponent(game.double_offered_by) if game.double_offered_by else game.current_turn
             )
-        if game.status != "active":
-            return Response(
-                {"error": "Game is not active."}, status=status.HTTP_400_BAD_REQUEST
-            )
+            blocked_closed = game.player1_deleted if blocked == "p1" else game.player2_deleted
+            if not blocked_closed:
+                return Response(
+                    {
+                        "error": "This game is not abandoned — the player to act "
+                                 "still has an open seat."
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
-        # Whose action is the game waiting on? A pending double blocks all play
-        # until the offerer's opponent answers it.
-        blocked = (
-            opponent(game.double_offered_by) if game.double_offered_by else game.current_turn
-        )
-        blocked_closed = game.player1_deleted if blocked == "p1" else game.player2_deleted
-        if not blocked_closed:
-            return Response(
-                {
-                    "error": "This game is not abandoned — the player to act "
-                             "still has an open seat."
-                },
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            survivor = opponent(blocked)
+            perm_error = _seat_permission_error(game, request.user, seat=survivor)
+            if perm_error:
+                return Response({"error": perm_error}, status=status.HTTP_403_FORBIDDEN)
 
-        survivor = opponent(blocked)
-        perm_error = _seat_permission_error(game, request.user, seat=survivor)
-        if perm_error:
-            return Response({"error": perm_error}, status=status.HTTP_403_FORBIDDEN)
+            game.status = "finished"
+            game.winner = None
+            game.win_type = "abandoned"
+            game.points_value = 0
+            game.dice_values = []
+            game.double_offered_by = None
+            game.save()
 
-        game.status = "finished"
-        game.winner = None
-        game.win_type = "abandoned"
-        game.points_value = 0
-        game.dice_values = []
-        game.double_offered_by = None
-        game.save()
+            if game.match_id:
+                # Locked in the same game → match order _apply_game_result uses.
+                # `match.save()` rewrites every column including the scores, so
+                # an unlocked read here could write back a score a sibling
+                # game's confirm_turn had just incremented.
+                match = Match.objects.select_for_update().get(pk=game.match_id)
+                # No winner, no score change — only the match's ability to spawn
+                # another dead game is revoked.
+                match.status = "finished"
+                match.save()
 
-        if game.match_id:
-            match = game.match
-            # No winner, no score change — only the match's ability to spawn
-            # another dead game is revoked.
-            match.status = "finished"
-            match.save()
-
-        serializer = self.get_serializer(game)
-        return Response(serializer.data)
+            serializer = self.get_serializer(game)
+            return Response(serializer.data)

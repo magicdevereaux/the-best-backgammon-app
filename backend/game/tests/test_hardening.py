@@ -1,7 +1,7 @@
 """
 Security-hardening tests: the holes closed before hosting this app publicly.
 
-Covers five fixes, one class group each:
+Covers six fixes, one class group each:
 
   1. PUT / PATCH / DELETE are off the routed surface for games and matches
      (they used to be live and unguarded on a plain ModelViewSet).
@@ -10,6 +10,7 @@ Covers five fixes, one class group each:
   4. List endpoints are paginated — while still returning a bare JSON array,
      because both clients consume them as arrays.
   5. Login, register and refresh carry scoped rate limits.
+  6. The admin mount point is env-driven (ADMIN_URL), defaulting to "admin".
 
 Throttle rates are disabled for the test suite in settings, so the throttling
 tests re-enable them with @override_settings. That only works because
@@ -17,12 +18,20 @@ tests re-enable them with @override_settings. That only works because
 of the import-time class attribute DRF's SimpleRateThrottle uses.
 """
 import copy
+import importlib
+import os
+from contextlib import contextmanager
+from unittest import mock
 
 from django.conf import settings
 from django.contrib.auth.models import User
 from django.core.cache import cache
 from django.test import TestCase, override_settings
+from django.urls import clear_url_caches
 from rest_framework.test import APIClient
+
+import backgammon.urls as root_urlconf
+from backgammon.settings import env_url_path
 
 from game.game_logic import get_initial_board_state
 from game.models import Game, Match
@@ -569,3 +578,75 @@ class RefreshUnthrottledByDefaultInTestsTest(TestCase):
             )
             self.assertEqual(res.status_code, 200)
             token = res.json()["refresh"]
+
+
+# ---------------------------------------------------------------------------
+# 6. Configurable admin URL
+# ---------------------------------------------------------------------------
+
+@contextmanager
+def admin_mounted_at(value):
+    """
+    Rebuild the root URLconf with a different ADMIN_URL for the block's body.
+
+    `backgammon.urls` reads `settings.ADMIN_URL` at import time, so overriding
+    the setting alone changes nothing — the module has to be reloaded, and the
+    resolver's caches cleared, both on the way in and on the way out.
+    """
+    try:
+        with override_settings(ADMIN_URL=value):
+            clear_url_caches()
+            importlib.reload(root_urlconf)
+            yield
+    finally:
+        clear_url_caches()
+        importlib.reload(root_urlconf)
+
+
+class AdminUrlConfigTest(TestCase):
+    """ADMIN_URL moves the admin without breaking the no-.env-needed default."""
+
+    def test_default_is_admin_so_dev_needs_no_env_file(self):
+        self.assertEqual(settings.ADMIN_URL, "admin")
+
+    def test_default_admin_path_still_resolves(self):
+        # Anonymous GET /admin/ redirects to the admin login rather than 404ing.
+        res = self.client.get("/admin/")
+        self.assertEqual(res.status_code, 302)
+        self.assertIn("/admin/login/", res["Location"])
+
+    def test_overridden_value_is_honoured(self):
+        with admin_mounted_at("ops-9c1f"):
+            res = self.client.get("/ops-9c1f/")
+            self.assertEqual(res.status_code, 302)
+            self.assertIn("/ops-9c1f/login/", res["Location"])
+
+    def test_overridden_value_unmounts_the_default_path(self):
+        with admin_mounted_at("ops-9c1f"):
+            self.assertEqual(self.client.get("/admin/").status_code, 404)
+
+    def test_default_path_is_restored_after_the_override(self):
+        with admin_mounted_at("ops-9c1f"):
+            pass
+        self.assertEqual(self.client.get("/admin/").status_code, 302)
+
+    def test_slashes_are_stripped_from_the_env_value(self):
+        for raw in ("/ops/", "ops/", "/ops", "  ops  "):
+            with self.subTest(raw=raw), mock.patch.dict(
+                os.environ, {"ADMIN_URL": raw}
+            ):
+                self.assertEqual(env_url_path("ADMIN_URL", "admin"), "ops")
+
+    def test_blank_or_slash_only_value_falls_back_to_the_default(self):
+        # A blank or slash-only value must never mount the admin at the site
+        # root, which is what an unguarded "".strip("/") would produce.
+        for raw in ("", "   ", "/", "///"):
+            with self.subTest(raw=raw), mock.patch.dict(
+                os.environ, {"ADMIN_URL": raw}
+            ):
+                self.assertEqual(env_url_path("ADMIN_URL", "admin"), "admin")
+
+    def test_unset_value_falls_back_to_the_default(self):
+        with mock.patch.dict(os.environ):
+            os.environ.pop("ADMIN_URL", None)
+            self.assertEqual(env_url_path("ADMIN_URL", "admin"), "admin")

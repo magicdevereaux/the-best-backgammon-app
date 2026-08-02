@@ -48,6 +48,21 @@ def env_list(name, default):
     return [item.strip() for item in raw.split(",") if item.strip()]
 
 
+def env_url_path(name, default):
+    """
+    Read an env var meant to be a URL path segment, normalised for Django.
+
+    Leading/trailing slashes are stripped so ``/secret/`` , ``secret/`` and
+    ``secret`` all yield ``secret``; the URLconf appends the single trailing
+    slash it needs. An empty/whitespace value falls back to the default, so an
+    unset (or blank) variable can never mount the admin at the site root.
+    """
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    return raw.strip().strip("/") or default
+
+
 def parse_admin(entry):
     """
     Turn one ADMINS entry into Django's (name, email) pair.
@@ -160,6 +175,13 @@ MIDDLEWARE = [
 ]
 
 ROOT_URLCONF = "backgammon.urls"
+
+# Path the Django admin is mounted at, without slashes. Default "admin" keeps
+# the historical /admin/ URL, so local dev still needs no .env file. Setting it
+# to something unguessable is obscurity, not security — it stops automated
+# /admin/ scanners from finding the login form, and does nothing against anyone
+# who already knows the path. See backend/.env.example.
+ADMIN_URL = env_url_path("ADMIN_URL", "admin")
 
 TEMPLATES = [
     {
