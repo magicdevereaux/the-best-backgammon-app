@@ -129,12 +129,13 @@ Board is `points[24]` (index = point − 1), plus `bar` and `off` counts per pla
 - **Maximal dice usage is enforced server-side** in `confirm_turn` via
   `max_moves_usable` (a recursive search over move orders), and mirrored on the
   clients purely as a Confirm-button affordance. The server is authoritative.
-- **`move_checker` endpoint exists but no client uses it.** Both clients drive the
-  staging → `confirm_turn` flow. It still has API wrappers and tests; treat it as
-  legacy, not the live path.
-- **Seat/turn ownership is enforced server-side** on **six** actions —
-  `roll_dice` / `move_checker` / `confirm_turn` / `offer_double` /
-  `respond_to_double` / `abandon`. `_seat_permission_error` in
+- **`move_checker` is gone.** It applied a single move immediately and no client
+  used it; both clients drive the staging → `confirm_turn` flow, which is now the
+  only path that mutates a board. Nine tests that used it merely as a convenient
+  one-shot rules harness were repointed at `confirm_turn` rather than deleted.
+- **Seat/turn ownership is enforced server-side** on **five** actions —
+  `roll_dice` / `confirm_turn` / `offer_double` / `respond_to_double` /
+  `abandon`. `_seat_permission_error` in
   [`views.py`](backend/game/views.py) returns **403** when the current-turn seat is
   owned by a registered user and the requester isn't that user, and when another
   logged-in account touches a guest seat. It normally checks `current_turn`, but

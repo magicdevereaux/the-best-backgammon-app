@@ -248,7 +248,6 @@ seat-permission rules — lives in
 | DELETE | `/api/auth/me/` | Delete your account (requires your password) |
 | POST | `/api/games/{id}/join/` | Join a waiting game |
 | POST | `/api/games/{id}/roll_dice/` | Roll dice for current turn |
-| POST | `/api/games/{id}/move_checker/` | Apply one move (legacy — no client uses it) |
 | POST | `/api/games/{id}/confirm_turn/` | Commit staged moves; an empty list passes the turn, but only when no legal move exists (otherwise 400) |
 | POST | `/api/games/{id}/offer_double/` | Offer to double the stakes (before rolling) |
 | POST | `/api/games/{id}/respond_to_double/` | Accept (`{"accept": true}`) or drop a pending double |
