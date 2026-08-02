@@ -132,8 +132,19 @@ class UserSerializer(serializers.ModelSerializer):
 
     def _stats(self, obj):
         if not hasattr(obj, "_serializer_stats_cache"):
-            p1 = Game.objects.filter(player1_user=obj, status="finished")
-            p2 = Game.objects.filter(player2_user=obj, status="finished")
+            # Abandoned games are excluded from every stat. They are finished
+            # but were never played to a result: `abandon` deliberately awards
+            # no winner and no points, so counting one would put it in the
+            # survivor's *loss* column via `total - wins` — inventing exactly
+            # the result the endpoint refuses to invent. Leaving it out of
+            # `total` too keeps wins + losses == total_games, which is what
+            # win_percentage assumes.
+            p1 = Game.objects.filter(player1_user=obj, status="finished").exclude(
+                win_type="abandoned"
+            )
+            p2 = Game.objects.filter(player2_user=obj, status="finished").exclude(
+                win_type="abandoned"
+            )
 
             total = p1.count() + p2.count()
 

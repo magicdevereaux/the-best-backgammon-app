@@ -398,6 +398,23 @@ class UserStatsTest(TestCase):
         self.assertAlmostEqual(data["win_percentage"], 66.7)
         self.assertAlmostEqual(data["gammon_rate"], 50.0)
 
+    def test_stats_ignore_abandoned_games(self):
+        # An abandoned game is finished but was never played to a result, so it
+        # must not reach any stat. Counting it would land in `losses` via
+        # `total - wins` and hand the survivor a defeat nobody inflicted —
+        # the very result `abandon` refuses to invent.
+        make_finished_game("p1", "normal", 1, p1_user=self.user)  # win
+        make_finished_game("p2", "normal", 1, p1_user=self.user)  # loss
+        make_finished_game(None, "abandoned", 0, p1_user=self.user)
+
+        res = self.client.get("/api/auth/me/")
+        data = res.json()
+        self.assertEqual(data["total_games"], 2)
+        self.assertEqual(data["wins"], 1)
+        self.assertEqual(data["losses"], 1)  # not 2
+        self.assertEqual(data["total_points_lost"], 1)
+        self.assertAlmostEqual(data["win_percentage"], 50.0)
+
     def test_stats_counts_backgammons_as_p2(self):
         make_finished_game("p2", "backgammon", 3, p2_user=self.user)
         make_finished_game("p1", "normal", 1, p2_user=self.user)  # loss as p2

@@ -138,7 +138,12 @@ single-use.
 **200** → `id`, `username`, `email` (`""` when never set), plus stats **computed
 on read** (never stored): `wins`, `losses`, `total_games`, `total_gammons`,
 `total_backgammons`, `total_points_won`, `total_points_lost`, `win_percentage`,
-`gammon_rate`. Only `status="finished"` games count, across both seats.
+`gammon_rate`. Only `status="finished"` games count, across both seats —
+**except abandoned ones, which are excluded from every stat.** An abandoned game
+finished without being played to a result, so counting it would reach `losses`
+through `total − wins` and charge the survivor with a defeat nobody inflicted.
+Excluding it from `total_games` too keeps `wins + losses == total_games`, which
+`win_percentage` assumes.
 
 **401** when the header is missing or the token is invalid/expired.
 
