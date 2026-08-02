@@ -18,15 +18,18 @@ export function isSeatClosed(game, seat) {
       : false;
 }
 
+export function otherSeat(seat) {
+  return seat === "p1" ? "p2" : seat === "p2" ? "p1" : null;
+}
+
 // The seat that owes the next action. Normally that's current_turn. A pending
 // double is the exception: it blocks all play until the *responder* (the
 // offerer's opponent) answers, so that seat is the one that has to be open.
 export function blockedSeat(game) {
   if (!game) return null;
-  if (game.double_offered_by) {
-    return game.double_offered_by === "p1" ? "p2" : "p1";
-  }
-  return game.current_turn;
+  return game.double_offered_by
+    ? otherSeat(game.double_offered_by)
+    : game.current_turn ?? null;
 }
 
 // A game is deadlocked when the seat that has to act next has been closed: the
@@ -43,7 +46,7 @@ export function isDeadlocked(game) {
 // closed: there is then no survivor to act for and the server refuses everyone.
 export function survivingSeat(game) {
   if (!isDeadlocked(game)) return null;
-  const survivor = blockedSeat(game) === "p1" ? "p2" : "p1";
+  const survivor = otherSeat(blockedSeat(game));
   return isSeatClosed(game, survivor) ? null : survivor;
 }
 
