@@ -556,6 +556,54 @@ def _list_scope_q(user):
     return scope
 
 
+def _match_list_scope_q(user):
+    """
+    The rows ``GET /api/matches/`` may show `user` (anonymous or not).
+
+    Same bug and same fix as ``_list_scope_q``: the list was
+    ``Match.objects.all()`` on an ``AllowAny`` view whose serializer exposes
+    both seat user ids and both display names, so an anonymous caller could
+    page the whole match table. The rule is the *match* analogue of the games
+    rule, and it is deliberately one clause shorter:
+
+      1. **Fully-guest matches** — *both* seat FKs null and *neither* seat
+         closed. Guest/hotseat resume depends on finding your match with no
+         account to scope by, and such a row carries no PII: no user ids, no
+         names tied to accounts. Requiring both ``player*_deleted`` False keeps
+         a seat orphaned by account deletion (null FK + flag) out of this rule,
+         exactly as ``_list_scope_q`` and ``_match_permission_error`` do.
+      2. **Your own matches** — either seat's user FK is the requester,
+         whichever seat and whatever the status, so registered players keep
+         their full match history. Anonymous requesters have no identity, so
+         this rule contributes nothing for them.
+
+    **There is no public-lobby clause, because a match has no lobby state.**
+    ``Game.status`` has a ``"waiting"`` value whose entire purpose is to
+    advertise an open seat to strangers; ``Match.status`` is only
+    ``active``/``finished`` (see ``Match`` in models.py) and has no such value.
+    Joinability is instead implied by an empty ``player2_name``, and open
+    matches are advertised through their *first game*, which sits in the
+    ``waiting`` lobby carrying a ``match`` id — so the lobby already works
+    without listing matches at all. Inventing a "player2_name is blank" clause
+    here would re-expose exactly the registered-player rows this fix is closing,
+    for no flow that needs them.
+
+    Scoping applies to ``list`` only. ``retrieve`` by id stays open to everyone,
+    just as it does for games: link/code sharing is how an online match is
+    joined and resumed, and both clients fetch a match by id. This bounds
+    *enumeration* of the table, not access to a match you have the id for.
+    """
+    scope = Q(
+        player1_user__isnull=True,
+        player2_user__isnull=True,
+        player1_deleted=False,
+        player2_deleted=False,
+    )
+    if user is not None and user.is_authenticated:
+        scope |= Q(player1_user=user) | Q(player2_user=user)
+    return scope
+
+
 def _finish_game(game, board, winner):
     """
     Finish a game won on the board: classify the win from the final position
@@ -616,13 +664,20 @@ class MatchViewSet(
     permission check at all, letting anyone rewrite a score or delete a match.
     Nothing in either client uses them, so they are off the routed surface
     entirely (405) rather than guarded.
+
+    ``list`` is scoped to the requester by ``_match_list_scope_q``; ``retrieve``
+    and the detail actions deliberately are not (sharing a match by id/link is
+    how an online match is joined and resumed).
     """
 
     serializer_class = MatchSerializer
     pagination_class = BareListPagination
 
     def get_queryset(self):
-        return Match.objects.all()
+        qs = Match.objects.all()
+        if self.action == "list":
+            qs = qs.filter(_match_list_scope_q(self.request.user))
+        return qs
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
