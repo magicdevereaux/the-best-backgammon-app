@@ -38,6 +38,34 @@ export function isDeadlocked(game) {
   return isSeatClosed(game, blockedSeat(game));
 }
 
+// The seat that survives a deadlock — the one `POST /api/games/{id}/abandon/`
+// acts for. Null when the game isn't deadlocked at all, or when *both* seats are
+// closed: there is then no survivor to act for and the server refuses everyone.
+export function survivingSeat(game) {
+  if (!isDeadlocked(game)) return null;
+  const survivor = blockedSeat(game) === "p1" ? "p2" : "p1";
+  return isSeatClosed(game, survivor) ? null : survivor;
+}
+
+// Whether to offer this viewer the abandon control. Mirrors the server's seat
+// check applied to the *surviving* seat (see docs/architecture/api.md):
+//
+//   - a registered survivor seat is only playable by its owner, and `viewer_seat`
+//     is the server's own answer to "is that you?" — so require the match. The
+//     closed seat always has a null FK, so a bystander's `viewer_seat` is null
+//     and the button stays hidden from them.
+//   - a *guest* survivor seat is unverifiable server-side and anonymous-playable
+//     by design, so nothing here can decide it. The button is offered, matching
+//     the web client's ungated idiom elsewhere: an unauthorised click surfaces
+//     the server's 403.
+export function canAbandon(game) {
+  const seat = survivingSeat(game);
+  if (!seat) return false;
+  const ownerId = seat === "p1" ? game.player1_user : game.player2_user;
+  if (ownerId != null) return game.viewer_seat === seat;
+  return true;
+}
+
 // True when the game's other seat lives on some other device, which is the only
 // case where polling can ever return something new. Unlike mobile, the web
 // client keeps no device-local seat registry, so this is derived purely from the

@@ -8,6 +8,7 @@ export default function RegisterPage() {
   const navigate = useNavigate();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [email, setEmail] = useState("");
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
 
@@ -16,7 +17,7 @@ export default function RegisterPage() {
     setError(null);
     setLoading(true);
     try {
-      const user = await register(username, password);
+      const user = await register(username, password, email);
       updateUser(user);
       navigate("/");
     } catch (err) {
@@ -53,6 +54,24 @@ export default function RegisterPage() {
               required
             />
           </label>
+        </div>
+        {/* Optional on purpose: an address is the only route to password
+            recovery, but requiring one would shut out players who just want to
+            play. Say what it buys instead of insisting. */}
+        <div style={{ marginBottom: "0.75rem" }}>
+          <label>
+            Email (optional)<br />
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              autoComplete="email"
+            />
+          </label>
+          <p style={{ color: "var(--text-secondary)", fontSize: "0.8rem", margin: "0.25rem 0 0" }}>
+            Only used to reset your password. Without one, a forgotten password
+            can't be recovered. You can add it later from your profile.
+          </p>
         </div>
         {error && <p style={{ color: "var(--error)" }}>{error}</p>}
         <button type="submit" disabled={loading}>

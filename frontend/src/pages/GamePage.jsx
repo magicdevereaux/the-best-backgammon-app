@@ -6,6 +6,7 @@ import GameControls from "../components/GameControls";
 import DoublingCube from "../components/DoublingCube";
 import GameOverScreen from "../components/GameOverScreen";
 import MatchScore from "../components/MatchScore";
+import AbandonGamePanel from "../components/AbandonGamePanel";
 import { useGame } from "../hooks/useGame";
 import { blockedSeat } from "../utils/seats";
 import { useAuth } from "../context/AuthContext";
@@ -32,7 +33,7 @@ export default function GamePage() {
     pendingMoves, legalMoves, mustUseMoreDice,
     stageMove, resetTurn, confirmTurn,
     offerDouble, respondToDouble, canOfferDouble,
-    deadlocked, reload,
+    deadlocked, abandonGame, canAbandon, reload,
   } = useGame(id, user?.id);
 
   const [guestJoinName, setGuestJoinName] = useState("");
@@ -142,8 +143,12 @@ export default function GamePage() {
 
       <Dice diceValues={stagedDice} />
 
-      {/* Every action on a closed seat 403s, so a deadlocked game offers no
-          controls at all — the board stays visible, read-only. */}
+      {/* The one thing still possible on a deadlocked board, and only for the
+          player who can act for the surviving seat — see utils/seats.canAbandon. */}
+      {deadlocked && canAbandon && <AbandonGamePanel onAbandon={abandonGame} />}
+
+      {/* Every other action on a closed seat 403s, so a deadlocked game offers
+          no play controls at all — the board stays visible, read-only. */}
       {!deadlocked && (
         <>
           <DoublingCube

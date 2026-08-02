@@ -46,3 +46,18 @@ export async function respondToDouble(id, accept) {
     body: JSON.stringify({ accept }),
   });
 }
+
+/**
+ * Close out a game deadlocked by a closed seat (the player who owes the next
+ * action deleted their account, so the server 403s that seat for everyone).
+ *
+ * Not a resign: the game finishes with `winner: null`, `win_type: "abandoned"`,
+ * `points_value: 0` and no change to the match score. The server refuses it
+ * unless the deadlock is real — 400 "This game is not abandoned — the player to
+ * act still has an open seat." — and unless the caller may act for the
+ * surviving seat (403). Both come back as `{ error }`, which `request` already
+ * turns into the thrown message.
+ */
+export async function abandonGame(id) {
+  return request(`${BASE}${id}/abandon/`, { method: "POST" });
+}

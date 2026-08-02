@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { fetchMe } from "../api/authApi";
 import { useAuth } from "../context/AuthContext";
 import DeleteAccountPanel from "../components/DeleteAccountPanel";
+import EmailSettings from "../components/EmailSettings";
 
 function StatRow({ label, value }) {
   return (
@@ -53,6 +54,10 @@ export default function ProfilePage() {
           <StatRow label="Total points lost" value={stats.total_points_lost} />
         </tbody>
       </table>
+
+      {/* Mounted only after the stats load (the page returns early while
+          loading), so the field starts from the server's value. */}
+      <EmailSettings initialEmail={stats.email} onSaved={setStats} />
 
       <DeleteAccountPanel
         onDeleted={() => {

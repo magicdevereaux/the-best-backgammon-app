@@ -9,6 +9,9 @@ import {
   fetchMe,
   logout,
   deleteAccount,
+  updateEmail,
+  requestPasswordReset,
+  confirmPasswordReset,
 } from "../authApi";
 
 /*
@@ -112,6 +115,177 @@ describe("register(username, password)", () => {
     );
     await expect(register("alice", "securepass123")).rejects.toThrow();
     expect(getAccessToken()).toBeNull();
+  });
+
+  test("sends an email address when one is supplied", async () => {
+    fetch.mockReturnValueOnce(mockResponse({ user: {}, access: "a", refresh: "r" }, { status: 201 }));
+    await register("alice", "securepass123", "alice@example.com");
+    const [, options] = fetch.mock.calls[0];
+    expect(JSON.parse(options.body)).toEqual({
+      username: "alice",
+      password: "securepass123",
+      email: "alice@example.com",
+    });
+  });
+
+  test("omits the email key entirely when the field was left blank", async () => {
+    // "" is not the same as absent: the field is optional, so the server should
+    // simply not see it.
+    fetch.mockReturnValueOnce(mockResponse({ user: {}, access: "a", refresh: "r" }, { status: 201 }));
+    await register("alice", "securepass123", "   ");
+    const [, options] = fetch.mock.calls[0];
+    expect(JSON.parse(options.body)).toEqual({ username: "alice", password: "securepass123" });
+  });
+
+  test("surfaces the server's email validation error", async () => {
+    fetch.mockReturnValueOnce(
+      mockResponse({ email: ["Enter a valid email address."] }, { ok: false, status: 400 })
+    );
+    await expect(register("alice", "securepass123", "nope")).rejects.toThrow(
+      "Enter a valid email address."
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// updateEmail
+// ---------------------------------------------------------------------------
+
+describe("updateEmail(email)", () => {
+  test("PATCHes /me/ with the bearer token and the address", async () => {
+    setTokens("acc", "ref");
+    fetch.mockReturnValueOnce(mockResponse({ username: "alice", email: "a@example.com" }));
+
+    const user = await updateEmail("a@example.com");
+
+    expect(user).toEqual({ username: "alice", email: "a@example.com" });
+    const [url, options] = fetch.mock.calls[0];
+    expect(url).toMatch(/me\/$/);
+    expect(options.method).toBe("PATCH");
+    expect(options.headers.Authorization).toBe("Bearer acc");
+    expect(JSON.parse(options.body)).toEqual({ email: "a@example.com" });
+  });
+
+  test("sends an empty string to clear the address", async () => {
+    setTokens("acc", "ref");
+    fetch.mockReturnValueOnce(mockResponse({ username: "alice", email: "" }));
+    await updateEmail("");
+    const [, options] = fetch.mock.calls[0];
+    expect(JSON.parse(options.body)).toEqual({ email: "" });
+  });
+
+  test("surfaces the server's field error on a malformed address", async () => {
+    setTokens("acc", "ref");
+    fetch.mockReturnValueOnce(
+      mockResponse({ email: ["Enter a valid email address."] }, { ok: false, status: 400 })
+    );
+    await expect(updateEmail("nope")).rejects.toThrow("Enter a valid email address.");
+  });
+
+  test("falls back to a generic message when the body says nothing useful", async () => {
+    setTokens("acc", "ref");
+    fetch.mockReturnValueOnce(mockResponse(null, { ok: false, status: 500 }));
+    await expect(updateEmail("a@example.com")).rejects.toThrow(
+      "Could not save your email address."
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// requestPasswordReset
+// ---------------------------------------------------------------------------
+
+describe("requestPasswordReset(email)", () => {
+  const FLAT_200 = {
+    detail:
+      "If an account with that email address exists, a password reset link has been sent to it.",
+  };
+
+  test("POSTs the address to the password-reset endpoint", async () => {
+    fetch.mockReturnValueOnce(mockResponse(FLAT_200));
+    await requestPasswordReset("  alice@example.com  ");
+    const [url, options] = fetch.mock.calls[0];
+    expect(url).toMatch(/password-reset\/$/);
+    expect(options.method).toBe("POST");
+    expect(JSON.parse(options.body)).toEqual({ email: "alice@example.com" });
+  });
+
+  test("resolves the same way for a hit and a miss — no membership oracle", async () => {
+    // Both calls get the server's identical 200; nothing about either result
+    // may differ, or the caller could tell an account exists.
+    fetch.mockReturnValueOnce(mockResponse(FLAT_200));
+    const hit = await requestPasswordReset("alice@example.com");
+    fetch.mockReturnValueOnce(mockResponse(FLAT_200));
+    const miss = await requestPasswordReset("nobody@example.com");
+    expect(hit).toEqual(miss);
+    expect(hit).toBeUndefined();
+  });
+
+  test("rejects with the field error on a malformed address", async () => {
+    fetch.mockReturnValueOnce(
+      mockResponse({ email: ["Enter a valid email address."] }, { ok: false, status: 400 })
+    );
+    await expect(requestPasswordReset("nope")).rejects.toThrow("Enter a valid email address.");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// confirmPasswordReset
+// ---------------------------------------------------------------------------
+
+describe("confirmPasswordReset(uid, token, newPassword)", () => {
+  test("POSTs uid, token and new_password to the confirm endpoint", async () => {
+    fetch.mockReturnValueOnce(
+      mockResponse({ detail: "Your password has been reset. You can now log in." })
+    );
+    await confirmPasswordReset("MQ", "abc-def", "securepass123");
+    const [url, options] = fetch.mock.calls[0];
+    expect(url).toMatch(/password-reset\/confirm\/$/);
+    expect(options.method).toBe("POST");
+    expect(JSON.parse(options.body)).toEqual({
+      uid: "MQ",
+      token: "abc-def",
+      new_password: "securepass123",
+    });
+  });
+
+  test("surfaces the bad-link error, which arrives as a bare string", async () => {
+    fetch.mockReturnValueOnce(
+      mockResponse(
+        { token: "This password reset link is invalid or has expired." },
+        { ok: false, status: 400 }
+      )
+    );
+    await expect(confirmPasswordReset("MQ", "bad", "securepass123")).rejects.toThrow(
+      "This password reset link is invalid or has expired."
+    );
+  });
+
+  test("surfaces an AUTH_PASSWORD_VALIDATORS rejection", async () => {
+    fetch.mockReturnValueOnce(
+      mockResponse(
+        { new_password: ["This password is too common."] },
+        { ok: false, status: 400 }
+      )
+    );
+    await expect(confirmPasswordReset("MQ", "abc", "password")).rejects.toThrow(
+      "This password is too common."
+    );
+  });
+
+  test("prefers the link error when both come back — the link is checked first", async () => {
+    fetch.mockReturnValueOnce(
+      mockResponse(
+        {
+          token: "This password reset link is invalid or has expired.",
+          new_password: ["This password is too short."],
+        },
+        { ok: false, status: 400 }
+      )
+    );
+    await expect(confirmPasswordReset("MQ", "bad", "x")).rejects.toThrow(
+      "This password reset link is invalid or has expired."
+    );
   });
 });
 

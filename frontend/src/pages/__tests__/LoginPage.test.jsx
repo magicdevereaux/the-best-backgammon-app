@@ -63,19 +63,56 @@ describe("LoginPage", () => {
     expect(await screen.findByText("Invalid username or password.")).toBeInTheDocument();
     expect(mockNavigate).not.toHaveBeenCalled();
   });
+
+  test("offers a route into the password reset flow", async () => {
+    renderPage(<LoginPage />);
+    const link = screen.getByRole("link", { name: /forgot your password/i });
+    expect(link).toHaveAttribute("href", "/forgot-password");
+  });
 });
 
 describe("RegisterPage", () => {
-  test("registers and navigates home on success", async () => {
+  test("registers without an email and navigates home on success", async () => {
+    // Email is optional by design — leaving it blank must still register.
     authApi.register.mockResolvedValue({ username: "bob", wins: 0, losses: 0 });
     renderPage(<RegisterPage />);
 
     await userEvent.type(screen.getByLabelText(/username/i), "bob");
-    await userEvent.type(screen.getByLabelText(/password/i), "securepass123");
+    await userEvent.type(screen.getByLabelText(/^password/i), "securepass123");
     await userEvent.click(screen.getByRole("button", { name: /register/i }));
 
-    await waitFor(() => expect(authApi.register).toHaveBeenCalledWith("bob", "securepass123"));
+    await waitFor(() => expect(authApi.register).toHaveBeenCalledWith("bob", "securepass123", ""));
     await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith("/"));
+  });
+
+  test("the email field is present, optional, and passed through when filled", async () => {
+    authApi.register.mockResolvedValue({ username: "bob", wins: 0, losses: 0 });
+    renderPage(<RegisterPage />);
+
+    const email = screen.getByLabelText(/email/i);
+    expect(email).not.toBeRequired();
+
+    await userEvent.type(screen.getByLabelText(/username/i), "bob");
+    await userEvent.type(screen.getByLabelText(/^password/i), "securepass123");
+    await userEvent.type(email, "bob@example.com");
+    await userEvent.click(screen.getByRole("button", { name: /register/i }));
+
+    await waitFor(() =>
+      expect(authApi.register).toHaveBeenCalledWith("bob", "securepass123", "bob@example.com")
+    );
+  });
+
+  test("surfaces the server's email validation error", async () => {
+    authApi.register.mockRejectedValue(new Error("Enter a valid email address."));
+    renderPage(<RegisterPage />);
+
+    await userEvent.type(screen.getByLabelText(/username/i), "bob");
+    await userEvent.type(screen.getByLabelText(/^password/i), "securepass123");
+    await userEvent.type(screen.getByLabelText(/email/i), "bob@example.com");
+    await userEvent.click(screen.getByRole("button", { name: /register/i }));
+
+    expect(await screen.findByText("Enter a valid email address.")).toBeInTheDocument();
+    expect(mockNavigate).not.toHaveBeenCalled();
   });
 
   test("surfaces a duplicate-username error from the server", async () => {

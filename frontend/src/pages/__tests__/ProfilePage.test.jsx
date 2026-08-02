@@ -31,8 +31,8 @@ const STATS = {
   total_points_won: 4, total_points_lost: 1,
 };
 
-async function renderProfile() {
-  authApi.fetchMe.mockResolvedValue(STATS);
+async function renderProfile(overrides = {}) {
+  authApi.fetchMe.mockResolvedValue({ ...STATS, ...overrides });
   render(
     <MemoryRouter>
       <AuthProvider>
@@ -60,6 +60,58 @@ describe("ProfilePage", () => {
     await renderProfile();
     expect(screen.getByText("66.7%")).toBeInTheDocument();
     expect(screen.getByText("Danger zone")).toBeInTheDocument();
+  });
+});
+
+/*
+ * The email panel: the only route to password recovery for an account created
+ * without an address (email is optional at registration, so most are).
+ */
+describe("ProfilePage email settings", () => {
+  test("shows the account's current address", async () => {
+    await renderProfile({ email: "alice@example.com" });
+    expect(screen.getByLabelText(/email address/i)).toHaveValue("alice@example.com");
+  });
+
+  test("starts empty for an account that never set one", async () => {
+    await renderProfile(); // STATS has no email key at all
+    expect(screen.getByLabelText(/email address/i)).toHaveValue("");
+  });
+
+  test("PATCHes a newly typed address and confirms it saved", async () => {
+    authApi.updateEmail.mockResolvedValue({ ...STATS, email: "alice@example.com" });
+    await renderProfile();
+
+    await userEvent.type(screen.getByLabelText(/email address/i), "alice@example.com");
+    await userEvent.click(screen.getByRole("button", { name: /save email/i }));
+
+    await waitFor(() =>
+      expect(authApi.updateEmail).toHaveBeenCalledWith("alice@example.com")
+    );
+    expect(await screen.findByText(/email address saved/i)).toBeInTheDocument();
+  });
+
+  test("clearing the field removes the address", async () => {
+    authApi.updateEmail.mockResolvedValue({ ...STATS, email: "" });
+    await renderProfile({ email: "alice@example.com" });
+
+    await userEvent.clear(screen.getByLabelText(/email address/i));
+    await userEvent.click(screen.getByRole("button", { name: /save email/i }));
+
+    await waitFor(() => expect(authApi.updateEmail).toHaveBeenCalledWith(""));
+    expect(await screen.findByText(/email address removed/i)).toBeInTheDocument();
+  });
+
+  test("surfaces the server's validation error and keeps what was typed", async () => {
+    authApi.updateEmail.mockRejectedValue(new Error("Enter a valid email address."));
+    await renderProfile();
+
+    await userEvent.type(screen.getByLabelText(/email address/i), "not-an-address");
+    await userEvent.click(screen.getByRole("button", { name: /save email/i }));
+
+    expect(await screen.findByText("Enter a valid email address.")).toBeInTheDocument();
+    expect(screen.getByLabelText(/email address/i)).toHaveValue("not-an-address");
+    expect(screen.queryByText(/email address saved/i)).not.toBeInTheDocument();
   });
 });
 

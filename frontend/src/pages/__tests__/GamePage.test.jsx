@@ -1,5 +1,6 @@
 import React from "react";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
 import GamePage from "../GamePage";
@@ -136,5 +137,131 @@ describe("GamePage turn banner", () => {
     matchApi.fetchMatch.mockResolvedValue(null);
     await renderGame({ status: "finished", winner: "p1", player2_deleted: true, current_turn: "p2" });
     expect(screen.queryByText(/deleted their account/i)).not.toBeInTheDocument();
+  });
+});
+
+/*
+ * The abandon control: the only action left on a deadlocked board, offered only
+ * to the player who can act for the surviving seat. Everything else on such a
+ * game 403s, and the endpoint itself refuses a game that is not genuinely stuck.
+ */
+describe("GamePage abandon control", () => {
+  // p2 deleted their account and owes the turn; the server nulls the FK and
+  // flags the seat. p1 (alice, user 1) is the survivor.
+  const DEADLOCKED = {
+    current_turn: "p2",
+    player2_user: null,
+    player2_deleted: true,
+  };
+
+  const abandonButton = () => screen.queryByRole("button", { name: /close out this game/i });
+
+  test("is hidden on a healthy game", async () => {
+    await renderGame();
+    expect(abandonButton()).not.toBeInTheDocument();
+  });
+
+  test("is hidden from a viewer who does not hold the surviving seat", async () => {
+    // No viewer_seat: the server doesn't recognise this requester as the
+    // registered survivor, so offering the button would only earn a 403.
+    await renderGame(DEADLOCKED);
+    expect(screen.getByText(/deleted their account/i)).toBeInTheDocument();
+    expect(abandonButton()).not.toBeInTheDocument();
+  });
+
+  test("is shown to the survivor of a deadlocked game", async () => {
+    await renderGame({ ...DEADLOCKED, viewer_seat: "p1" });
+    expect(abandonButton()).toBeInTheDocument();
+  });
+
+  test("is hidden when both seats are closed — nobody may act", async () => {
+    await renderGame({
+      ...DEADLOCKED,
+      player1_user: null,
+      player1_deleted: true,
+      viewer_seat: null,
+    });
+    expect(abandonButton()).not.toBeInTheDocument();
+  });
+
+  test("words itself as closing out, not resigning, and needs a second yes", async () => {
+    matchApi.fetchMatch.mockResolvedValue(null);
+    gameApi.abandonGame.mockResolvedValue({
+      ...BASE, ...DEADLOCKED, status: "finished", winner: null, win_type: "abandoned",
+    });
+    await renderGame({ ...DEADLOCKED, viewer_seat: "p1" });
+
+    expect(screen.getByText(/no winner and no points for either player/i)).toBeInTheDocument();
+    expect(screen.queryByText(/resign/i)).not.toBeInTheDocument();
+
+    await userEvent.click(abandonButton());
+    expect(
+      screen.getByText(/end this game with no winner and no score change/i)
+    ).toBeInTheDocument();
+    expect(gameApi.abandonGame).not.toHaveBeenCalled();
+
+    await userEvent.click(screen.getByRole("button", { name: /yes, close it out/i }));
+    await waitFor(() => expect(gameApi.abandonGame).toHaveBeenCalledWith("1"));
+  });
+
+  test("cancelling the confirmation calls nothing", async () => {
+    await renderGame({ ...DEADLOCKED, viewer_seat: "p1" });
+    await userEvent.click(abandonButton());
+    await userEvent.click(screen.getByRole("button", { name: /^cancel$/i }));
+
+    expect(gameApi.abandonGame).not.toHaveBeenCalled();
+    expect(abandonButton()).toBeInTheDocument();
+  });
+
+  test("the abandoned game comes back finished, with the control gone", async () => {
+    gameApi.abandonGame.mockResolvedValue({
+      ...BASE,
+      ...DEADLOCKED,
+      viewer_seat: "p1",
+      status: "finished",
+      winner: null,
+      win_type: "abandoned",
+      points_value: 0,
+    });
+    matchApi.fetchMatch.mockResolvedValue(null);
+    await renderGame({ ...DEADLOCKED, viewer_seat: "p1" });
+
+    await userEvent.click(abandonButton());
+    await userEvent.click(screen.getByRole("button", { name: /yes, close it out/i }));
+
+    await waitFor(() => expect(abandonButton()).not.toBeInTheDocument());
+    expect(screen.queryByText(/deleted their account/i)).not.toBeInTheDocument();
+  });
+
+  test("surfaces a 403 from the server through the page's error line", async () => {
+    gameApi.abandonGame.mockRejectedValue(
+      new Error("This player deleted their account — their seat is closed.")
+    );
+    await renderGame({ ...DEADLOCKED, viewer_seat: "p1" });
+
+    await userEvent.click(abandonButton());
+    await userEvent.click(screen.getByRole("button", { name: /yes, close it out/i }));
+
+    expect(
+      await screen.findByText("This player deleted their account — their seat is closed.")
+    ).toBeInTheDocument();
+    // The game is untouched, so the control is still there to retry.
+    expect(abandonButton()).toBeInTheDocument();
+  });
+
+  test("surfaces the 'not abandoned' 400 without changing the board", async () => {
+    gameApi.abandonGame.mockRejectedValue(
+      new Error("This game is not abandoned — the player to act still has an open seat.")
+    );
+    await renderGame({ ...DEADLOCKED, viewer_seat: "p1" });
+
+    await userEvent.click(abandonButton());
+    await userEvent.click(screen.getByRole("button", { name: /yes, close it out/i }));
+
+    expect(
+      await screen.findByText(
+        "This game is not abandoned — the player to act still has an open seat."
+      )
+    ).toBeInTheDocument();
   });
 });

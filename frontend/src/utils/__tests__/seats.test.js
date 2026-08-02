@@ -1,4 +1,11 @@
-import { isSeatClosed, blockedSeat, isDeadlocked, isOnlineGame } from "../seats";
+import {
+  isSeatClosed,
+  blockedSeat,
+  isDeadlocked,
+  isOnlineGame,
+  survivingSeat,
+  canAbandon,
+} from "../seats";
 
 /*
  * The deadlock cases here mirror mobile/src/game/__tests__/gating.test.js —
@@ -83,6 +90,87 @@ describe("isDeadlocked", () => {
     // Both seats are on this device, but the server still 403s the closed one.
     const g = { status: "active", current_turn: "p2", player2_deleted: true };
     expect(isDeadlocked(g)).toBe(true);
+  });
+});
+
+describe("survivingSeat", () => {
+  // A deadlocked game: p2 deleted their account and owes the next action, so
+  // the server nulled their FK and flagged the seat.
+  const deadlocked = {
+    status: "active",
+    current_turn: "p2",
+    player1_user: 1,
+    player2_user: null,
+    player2_deleted: true,
+  };
+
+  test("is the seat opposite the closed one", () => {
+    expect(survivingSeat(deadlocked)).toBe("p1");
+    expect(
+      survivingSeat({
+        ...deadlocked,
+        current_turn: "p1",
+        player1_user: null,
+        player1_deleted: true,
+        player2_user: 2,
+        player2_deleted: false,
+      })
+    ).toBe("p2");
+  });
+
+  test("follows the responder seat while a double is pending", () => {
+    // p2 (closed) owes the answer, so p1 — the offerer — is the survivor.
+    const g = { ...deadlocked, current_turn: "p1", double_offered_by: "p1" };
+    expect(survivingSeat(g)).toBe("p1");
+  });
+
+  test("is null when the game is not deadlocked", () => {
+    expect(survivingSeat({ ...deadlocked, current_turn: "p1" })).toBeNull();
+    expect(survivingSeat(null)).toBeNull();
+  });
+
+  test("is null when both seats are closed — there is no survivor to act for", () => {
+    const g = { ...deadlocked, player1_user: null, player1_deleted: true };
+    expect(survivingSeat(g)).toBeNull();
+  });
+});
+
+describe("canAbandon", () => {
+  const deadlocked = {
+    status: "active",
+    current_turn: "p2",
+    player1_user: 1,
+    player2_user: null,
+    player2_deleted: true,
+  };
+
+  test("false whenever the game is not deadlocked", () => {
+    expect(canAbandon({ ...deadlocked, current_turn: "p1" })).toBe(false);
+    expect(canAbandon({ ...deadlocked, status: "finished" })).toBe(false);
+    expect(canAbandon(null)).toBe(false);
+  });
+
+  test("a registered survivor may abandon only when viewer_seat says it's them", () => {
+    expect(canAbandon({ ...deadlocked, viewer_seat: "p1" })).toBe(true);
+  });
+
+  test("a bystander on a registered survivor seat may not", () => {
+    // viewer_seat is the server's own answer; anyone who isn't the survivor
+    // gets null (the closed seat's FK is null, so it can never be claimed).
+    expect(canAbandon({ ...deadlocked, viewer_seat: null })).toBe(false);
+    expect(canAbandon(deadlocked)).toBe(false);
+    expect(canAbandon({ ...deadlocked, viewer_seat: "p2" })).toBe(false);
+  });
+
+  test("a guest survivor seat is offered the control — the server judges it", () => {
+    // Null FK on the surviving seat: unverifiable server-side and
+    // anonymous-playable by design, so nothing local can decide it.
+    expect(canAbandon({ ...deadlocked, player1_user: null, viewer_seat: null })).toBe(true);
+  });
+
+  test("false when both seats are closed", () => {
+    const g = { ...deadlocked, player1_user: null, player1_deleted: true, viewer_seat: null };
+    expect(canAbandon(g)).toBe(false);
   });
 });
 

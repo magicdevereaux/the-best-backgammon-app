@@ -12,6 +12,11 @@ export default function GameOverScreen({ game, match, onNextGame, onNewMatch, on
   const pts = game.points_value ?? 1;
   const label = WIN_TYPE_LABEL[game.win_type] ?? "wins!";
 
+  // An abandoned game is the one finished state with no winner at all: it was
+  // deadlocked by a closed seat and closed out unscored. Falling through to the
+  // normal heading would announce a winner the server never named.
+  const abandoned = game.win_type === "abandoned" || game.winner == null;
+
   return (
     <div
       style={{
@@ -37,17 +42,29 @@ export default function GameOverScreen({ game, match, onNextGame, onNewMatch, on
           boxShadow: "0 8px 32px rgba(0,0,0,0.55)",
         }}
       >
-        <h2 style={{ marginTop: 0, color: "var(--gold)" }}>
-          {winnerName} {label}
-        </h2>
-        <p style={{ fontSize: "1.1rem", color: "var(--text-secondary)" }}>
-          {pts === 1
-            ? "1 point awarded"
-            : `${pts} points awarded`}
-          {game.win_type === "gammon" && " — gammon (opponent has borne off nothing)"}
-          {game.win_type === "backgammon" &&
-            " — backgammon (opponent still has a checker on the bar or in your home board)"}
-        </p>
+        {abandoned ? (
+          <>
+            <h2 style={{ marginTop: 0, color: "var(--gold)" }}>Game closed out</h2>
+            <p style={{ fontSize: "1.1rem", color: "var(--text-secondary)" }}>
+              This game ended with no winner. No points were awarded and the
+              match score is unchanged.
+            </p>
+          </>
+        ) : (
+          <>
+            <h2 style={{ marginTop: 0, color: "var(--gold)" }}>
+              {winnerName} {label}
+            </h2>
+            <p style={{ fontSize: "1.1rem", color: "var(--text-secondary)" }}>
+              {pts === 1
+                ? "1 point awarded"
+                : `${pts} points awarded`}
+              {game.win_type === "gammon" && " — gammon (opponent has borne off nothing)"}
+              {game.win_type === "backgammon" &&
+                " — backgammon (opponent still has a checker on the bar or in your home board)"}
+            </p>
+          </>
+        )}
 
         {match && (
           <div

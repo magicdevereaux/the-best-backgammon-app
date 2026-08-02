@@ -5,9 +5,10 @@ import {
   confirmTurn as apiConfirmTurn,
   offerDouble as apiOfferDouble,
   respondToDouble as apiRespondToDouble,
+  abandonGame as apiAbandonGame,
 } from "../api/gameApi";
 import { getLegalMoves, getCombinedMoves, applyMove, maxMovesUsable } from "../utils/gameLogic";
-import { isDeadlocked, isOnlineGame } from "../utils/seats";
+import { canAbandon, isDeadlocked, isOnlineGame } from "../utils/seats";
 
 // How often to re-fetch the game to pick up the opponent's moves. Matches the
 // mobile client's cadence (mobile/src/game/useGame.js).
@@ -216,6 +217,19 @@ export function useGame(gameId, viewerUserId) {
     [gameId]
   );
 
+  // Close out a game that can never move again. The 400 ("not abandoned") and
+  // 403 (not the survivor) both arrive as ordinary `{ error }` bodies, so they
+  // land in `actionError` alongside every other rejected action.
+  const abandonGame = useCallback(async () => {
+    try {
+      setActionError(null);
+      const updated = await apiAbandonGame(gameId);
+      setGame(updated);
+    } catch (err) {
+      setActionError(err.message);
+    }
+  }, [gameId]);
+
   // Doubling is legal on your turn before rolling, with the cube centered or
   // yours, outside the Crawford game and below the 64 cap. The server
   // enforces all of this — this mirrors it for button visibility.
@@ -247,6 +261,8 @@ export function useGame(gameId, viewerUserId) {
     respondToDouble,
     canOfferDouble,
     deadlocked,
+    abandonGame,
+    canAbandon: canAbandon(game),
     reload,
   };
 }
