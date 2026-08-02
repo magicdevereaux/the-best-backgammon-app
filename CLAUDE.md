@@ -47,6 +47,14 @@ It is ported to JS twice — [`frontend/src/utils/gameLogic.js`](frontend/src/ut
 and [`mobile/src/game/logic.js`](mobile/src/game/logic.js). **These three files must
 stay in sync**; change one and mirror the others.
 
+There is a **second, smaller sync obligation**: the closed-seat deadlock
+predicates `isSeatClosed` / `isDeadlocked` / `blockedSeat` exist in both
+[`mobile/src/game/gating.js`](mobile/src/game/gating.js) and
+[`frontend/src/utils/seats.js`](frontend/src/utils/seats.js) — the web copy is a
+verbatim port carrying a stay-in-sync header comment. They must agree with each
+other *and* with the server's `abandon` action, which derives the blocked seat
+the same way. Change one, change all three.
+
 ## Configuration (all env-driven, dev needs none)
 
 **Nothing needs configuring for local dev** — every var has a working default and
@@ -77,11 +85,11 @@ Deploy target is **Railway** — runbook and its traps in
 
 | Suite | Count | Command (cwd) |
 |-------|-------|---------------|
-| Backend | **314** | `python manage.py test game` (`backend/`, in-memory DB) |
-| Web | **207** | `CI=true npm test -- --watchAll=false` (`frontend/`) |
-| Mobile | **114** | `CI=true npx jest` (`mobile/`) |
+| Backend | **421** | `python manage.py test game` (`backend/`, in-memory DB) |
+| Web | **243** | `CI=true npm test -- --watchAll=false` (`frontend/`) |
+| Mobile | **125** | `CI=true npx jest` (`mobile/`) |
 
-All three suites were **green as of 2026-07-31** (314 / 207 / 114, 635 total, zero
+All three suites were **green as of 2026-08-01** (421 / 243 / 125, 789 total, zero
 failures). If you see a failure, it is yours — the baseline is clean.
 
 > **Throttling is disabled under test** (`"test" in sys.argv` in
@@ -124,9 +132,9 @@ Board is `points[24]` (index = point − 1), plus `bar` and `off` counts per pla
 - **`move_checker` endpoint exists but no client uses it.** Both clients drive the
   staging → `confirm_turn` flow. It still has API wrappers and tests; treat it as
   legacy, not the live path.
-- **Seat/turn ownership is enforced server-side** on **five** actions —
+- **Seat/turn ownership is enforced server-side** on **six** actions —
   `roll_dice` / `move_checker` / `confirm_turn` / `offer_double` /
-  `respond_to_double`. `_seat_permission_error` in
+  `respond_to_double` / `abandon`. `_seat_permission_error` in
   [`views.py`](backend/game/views.py) returns **403** when the current-turn seat is
   owned by a registered user and the requester isn't that user, and when another
   logged-in account touches a guest seat. It normally checks `current_turn`, but
@@ -137,10 +145,16 @@ Board is `points[24]` (index = point − 1), plus `bar` and `off` counts per pla
   [`gating.js`](mobile/src/game/gating.js) + a device-local seat registry; the
   **web UI does not gate** (unauthorized clicks surface the server's 403).
   Note `next_game` is **not** covered — see Known gaps.
-- **Web online play is doubly degraded**: no auto-refresh *and* no client-side
-  gating. A web player must reload manually to see an opponent's move or a
-  pending double, and discovers an out-of-turn action only as a 403 error.
-  Mobile has both polling and gating. Treat web online play as the weaker path.
+- **Both clients now poll ~3.5s**, web included
+  ([`useGame.js`](frontend/src/hooks/useGame.js),
+  [`mobile/src/game/useGame.js`](mobile/src/game/useGame.js)). A tick is skipped
+  while moves are staged, when the game is finished or deadlocked, and for local
+  games. Web still **does not gate controls** the way mobile does, so an
+  out-of-turn action there surfaces as the server's 403 — that half of the old
+  "doubly degraded" warning stands. Web also has no seat registry, so
+  `isOnlineGame` in [`seats.js`](frontend/src/utils/seats.js) infers online-ness
+  from the payload and deliberately errs toward *not* polling; a logged-in player
+  whose opponent joined as a guest is indistinguishable from hotseat.
 - **Confirming zero pending moves is the pass mechanism** (`confirm_turn` with an
   empty list). It is accepted *only* when `max_moves_usable == 0` — otherwise
   400. Mobile relabels the button "Pass Turn" when appropriate; web does not.
@@ -161,22 +175,30 @@ Board is `points[24]` (index = point − 1), plus `bar` and `off` counts per pla
 > [going-live.md](docs/operations/going-live.md). The list below is what a coding
 > session needs to keep in mind day to day.
 
-- **`GET /api/games/` is still unauthenticated and unscoped.** Pagination now
-  bounds each response, but an anonymous caller can page through every game row
-  (board state, player names, user ids). Scoping the list to open games or the
-  requester's own would break guest hotseat resume, so it was left open
-  deliberately — see [going-live.md](docs/operations/going-live.md).
-- **A closed seat deadlocks its game, and no client says so.** Account deletion
-  now sets `player1_deleted`/`player2_deleted` on `Game` and `Match`, and seat
-  enforcement 403s that seat for *everyone* — including the surviving opponent,
-  who would otherwise be able to play both sides. The deliberate consequence: an
-  in-progress game **cannot proceed** once it is the closed seat's turn. That
-  beats auto-forfeit, which would award points nobody won and corrupt match
-  scores. What's missing is the product half — neither client reads the flags to
-  say "your opponent deleted their account", and there is no abandon/resign
-  endpoint for the survivor.
-- **Throttle counters are per-process.** No `CACHES` entry, so DRF falls back to
-  `LocMemCache` and limits are per-gunicorn-worker, not global.
+- **`GET /api/games/` bounds enumeration, not access.** The `list` action is now
+  scoped by `_list_scope_q` in [`views.py`](backend/game/views.py) to open lobby
+  games + the requester's own + fully-guest games (that last clause is what keeps
+  guest hotseat resume working without an account, and such rows carry no PII).
+  But **`retrieve` by id is still open to everyone** — link sharing is how online
+  games are joined at all — so anyone holding a game id can still read its full
+  state. Deliberate; the scoping stops the anonymous walk of the whole table.
+- **A closed seat deadlocks its game — now explained, with an exit.** Account
+  deletion sets `player1_deleted`/`player2_deleted` on `Game` and `Match`, and
+  seat enforcement 403s that seat for *everyone*, including the surviving
+  opponent, who would otherwise play both sides. The game genuinely cannot
+  proceed; that still beats auto-forfeit, which would award points nobody won and
+  corrupt match scores. Both clients now read the flags, replace the turn banner
+  with an explanation, and stop polling, and
+  **`POST /api/games/{id}/abandon/`** gives the survivor a non-scoring exit
+  (`win_type="abandoned"`, no winner, no score change). It also finishes the
+  match, because `next_game` copies the closure flags and would otherwise mint an
+  endless series of dead-on-arrival games. Note the blocked seat is `current_turn`
+  *except* with a double pending, where it is the responder.
+- **Throttle counters are per-process *unless* `REDIS_URL` is set.** `CACHES` is
+  env-driven: a set `REDIS_URL` selects `RedisCache` and makes limits global,
+  unset falls back to `LocMemCache`, which is per-gunicorn-worker and wiped on
+  restart. With the default 3 workers and no Redis, `login` 10/hour behaves like
+  ~30/hour. Nothing is provisioned yet, so today the fallback is what runs.
 - **Clients don't model the higher-die rule**, so a client can happily stage a
   bear-off turn that the server then rejects with 400.
 - **Higher-die rule enforced only during bear-off.** `higher_die_required_moves`
@@ -219,8 +241,14 @@ These are intended but **do not exist in the code today** — don't assume them:
   build time (mirroring `howl`), but nothing is deployed and no build pipeline for
   the web client exists.
 - **WebSockets / real-time push.** There is no Channels/ASGI setup. Opponent moves
-  are synced by **mobile polling** (~3.5s in [`mobile/src/game/useGame.js`](mobile/src/game/useGame.js));
-  the **web client has no auto-refresh** (manual reload). A socket layer is future work.
+  are synced by **polling on both clients** (~3.5s), not pushed. A socket layer is
+  future work.
+- **Any client UI for password reset.** The backend flow is complete
+  (`POST /api/auth/password-reset/` and `.../confirm/`, optional email on
+  accounts), but **neither client implements the
+  `{FRONTEND_BASE_URL}/reset-password/{uid}/{token}` route**, so a user cannot
+  actually complete a reset from the app yet. The email sends; the link lands
+  nowhere.
 - **Automated matchmaking.** No auto-pairing queue, ranking/ELO, or "quick play vs
   a random opponent." Online pairing is always player-initiated via link/code or the
   open-games list. See [overview.md](docs/architecture/overview.md#online-multiplayer).
