@@ -85,11 +85,11 @@ Deploy target is **Railway** — runbook and its traps in
 
 | Suite | Count | Command (cwd) |
 |-------|-------|---------------|
-| Backend | **421** | `python manage.py test game` (`backend/`, in-memory DB) |
-| Web | **243** | `CI=true npm test -- --watchAll=false` (`frontend/`) |
-| Mobile | **125** | `CI=true npx jest` (`mobile/`) |
+| Backend | **441** | `python manage.py test game` (`backend/`, in-memory DB) |
+| Web | **312** | `CI=true npm test -- --watchAll=false` (`frontend/`) |
+| Mobile | **190** | `CI=true npx jest` (`mobile/`) |
 
-All three suites were **green as of 2026-08-01** (421 / 243 / 125, 789 total, zero
+All three suites were **green as of 2026-08-02** (441 / 312 / 190, 943 total, zero
 failures). If you see a failure, it is yours — the baseline is clean.
 
 > **Throttling is disabled under test** (`"test" in sys.argv` in
@@ -193,21 +193,21 @@ Board is `points[24]` (index = point − 1), plus `bar` and `off` counts per pla
   **`POST /api/games/{id}/abandon/`** gives the survivor a non-scoring exit
   (`win_type="abandoned"`, no winner, no score change). It also finishes the
   match, because `next_game` copies the closure flags and would otherwise mint an
-  endless series of dead-on-arrival games. **No client calls `abandon` yet** —
-  grep both clients and it appears only in tests — so today the survivor sees the
-  explanation but still has no button. The exit is server-side only. Note the blocked seat is `current_turn`
-  *except* with a double pending, where it is the responder.
+  endless series of dead-on-arrival games. Both clients offer the control to the
+  surviving seat only. Note the blocked seat is `current_turn` *except* with a
+  double pending, where it is the responder — all three of `gating.js`,
+  `seats.js` and the server's `abandon` derive it the same way.
 - **Throttle counters are per-process *unless* `REDIS_URL` is set.** `CACHES` is
   env-driven: a set `REDIS_URL` selects `RedisCache` and makes limits global,
   unset falls back to `LocMemCache`, which is per-gunicorn-worker and wiped on
   restart. With the default 3 workers and no Redis, `login` 10/hour behaves like
   ~30/hour. Nothing is provisioned yet, so today the fallback is what runs.
-- **Clients don't model the higher-die rule**, so a client can happily stage a
-  bear-off turn that the server then rejects with 400.
-- **Higher-die rule enforced only during bear-off.** `higher_die_required_moves`
-  (server-only, no JS port) forces the higher die at `confirm_turn` when exactly
-  one die is playable while bearing off. The official rule is *general* — in
-  blocked non-bear-off positions the lower single die is still accepted. See
+- **The higher-die rule is now general and modelled everywhere.**
+  `higher_die_required_moves` fires at `confirm_turn` in any position — mid-board
+  and bar-entry included, not just bear-off — whenever exactly one die is usable
+  and both are individually playable. It is ported to both JS engines as
+  `higherDieRequiredMoves`, so the clients gate Confirm on it instead of staging
+  turns the server would 400. The server remains authoritative. See
   [game-logic.md](docs/architecture/game-logic.md).
 - **App store submission pending.** EAS build/submit profiles are configured
   (`mobile/eas.json`, bundle id `com.magicdevereaux.backgammon`) but no store
@@ -246,14 +246,11 @@ These are intended but **do not exist in the code today** — don't assume them:
 - **WebSockets / real-time push.** There is no Channels/ASGI setup. Opponent moves
   are synced by **polling on both clients** (~3.5s), not pushed. A socket layer is
   future work.
-- **Any client UI for password reset — and any way to *have* an email.** The
-  backend flow is complete (`POST /api/auth/password-reset/` and `.../confirm/`,
-  optional email on accounts), but the string `email` does not appear anywhere in
-  either client's source: no register field, no profile field. So every account
-  the shipped clients can create has a blank email, and the reset view only
-  matches non-blank addresses. The flow has **nobody to reach**, which is a wider
-  gap than the missing `{FRONTEND_BASE_URL}/reset-password/{uid}/{token}` route.
-  Collecting the address is the first half of that work.
+- **A mobile deep link for the reset email.** Password reset is built end to end:
+  both clients collect an optional email and can request a reset, and the web
+  client serves `/forgot-password` and `/reset-password/:uid/:token`. But the
+  emailed link is built from `FRONTEND_BASE_URL`, i.e. the **web** client, and
+  there is no app deep link — so a mobile user finishes the reset in a browser.
 - **Automated matchmaking.** No auto-pairing queue, ranking/ELO, or "quick play vs
   a random opponent." Online pairing is always player-initiated via link/code or the
   open-games list. See [overview.md](docs/architecture/overview.md#online-multiplayer).
