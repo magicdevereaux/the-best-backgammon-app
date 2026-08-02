@@ -193,7 +193,9 @@ Board is `points[24]` (index = point − 1), plus `bar` and `off` counts per pla
   **`POST /api/games/{id}/abandon/`** gives the survivor a non-scoring exit
   (`win_type="abandoned"`, no winner, no score change). It also finishes the
   match, because `next_game` copies the closure flags and would otherwise mint an
-  endless series of dead-on-arrival games. Note the blocked seat is `current_turn`
+  endless series of dead-on-arrival games. **No client calls `abandon` yet** —
+  grep both clients and it appears only in tests — so today the survivor sees the
+  explanation but still has no button. The exit is server-side only. Note the blocked seat is `current_turn`
   *except* with a double pending, where it is the responder.
 - **Throttle counters are per-process *unless* `REDIS_URL` is set.** `CACHES` is
   env-driven: a set `REDIS_URL` selects `RedisCache` and makes limits global,
@@ -244,12 +246,14 @@ These are intended but **do not exist in the code today** — don't assume them:
 - **WebSockets / real-time push.** There is no Channels/ASGI setup. Opponent moves
   are synced by **polling on both clients** (~3.5s), not pushed. A socket layer is
   future work.
-- **Any client UI for password reset.** The backend flow is complete
-  (`POST /api/auth/password-reset/` and `.../confirm/`, optional email on
-  accounts), but **neither client implements the
-  `{FRONTEND_BASE_URL}/reset-password/{uid}/{token}` route**, so a user cannot
-  actually complete a reset from the app yet. The email sends; the link lands
-  nowhere.
+- **Any client UI for password reset — and any way to *have* an email.** The
+  backend flow is complete (`POST /api/auth/password-reset/` and `.../confirm/`,
+  optional email on accounts), but the string `email` does not appear anywhere in
+  either client's source: no register field, no profile field. So every account
+  the shipped clients can create has a blank email, and the reset view only
+  matches non-blank addresses. The flow has **nobody to reach**, which is a wider
+  gap than the missing `{FRONTEND_BASE_URL}/reset-password/{uid}/{token}` route.
+  Collecting the address is the first half of that work.
 - **Automated matchmaking.** No auto-pairing queue, ranking/ELO, or "quick play vs
   a random opponent." Online pairing is always player-initiated via link/code or the
   open-games list. See [overview.md](docs/architecture/overview.md#online-multiplayer).
