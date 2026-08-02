@@ -58,6 +58,10 @@ server sessions** involved in the API auth path.
 | `POST /api/auth/login/` | `{ access, refresh }` (SimpleJWT `TokenObtainPairView`) |
 | `POST /api/auth/refresh/` | `{ access }` |
 | `GET /api/auth/me/` | current user + computed stats |
+| `PATCH /api/auth/me/` | set/clear the account's email (the recovery address) |
+| `DELETE /api/auth/me/` | delete the account (password re-check; seats close) |
+| `POST /api/auth/password-reset/` | mails a reset link; flat body either way |
+| `POST /api/auth/password-reset/confirm/` | `{uid, token, new_password}` → new password |
 
 Token lifetimes: **access 1 hour, refresh 7 days**
 ([`settings.py`](../../backend/backgammon/settings.py)). Storage differs by client:
@@ -144,24 +148,55 @@ controls rather than eating 403s):
 turn ownership in its UI** — its board is interactive for whoever's turn it is, and
 an unauthorized click is caught by the server's 403.
 
+### Deadlock derivation (shared by both clients)
+
+One slice of that logic *is* mirrored on the web. `isSeatClosed` / `otherSeat` /
+`blockedSeat` / `isDeadlocked` exist twice —
+[`mobile/src/game/gating.js`](../../mobile/src/game/gating.js) and
+[`frontend/src/utils/seats.js`](../../frontend/src/utils/seats.js) — as a
+**must-stay-in-sync pair** (today they are character-for-character identical). The
+server's `abandon` action derives the blocked seat the same way: `current_turn`,
+except when `double_offered_by` is set, where it is the offerer's opponent. All three
+have to agree on when a game can no longer move.
+
+Both clients use it to show "your opponent deleted their account — this game can't
+continue", to stop polling (nobody is coming), and to offer the abandon control to
+the surviving seat only (`canAbandon` in each file). Mobile's gating layer *proper*
+— which seats this device may touch — is still deliberately not ported.
+
 ## Move sync
 
-- **Mobile** polls `GET /api/games/{id}/` on a timer (~3.5s) while a game is active
-  and the screen is focused, swapping in state only when `updated_at` changes
-  ([`mobile/src/game/useGame.js`](../../mobile/src/game/useGame.js)).
-- **Web** does **not** auto-poll; the game reloads on navigation or an explicit
-  action. Opponent moves appear on the next reload.
+**Both clients now poll** `GET /api/games/{id}/` on a ~3.5 s timer, swapping in state
+only when `updated_at` changes, so a stream of identical responses causes no
+re-render:
 
-The same asymmetry applies to a **pending double**: an offer sets
-`double_offered_by` and blocks play until answered, so the opponent sees the
-accept/drop prompt on mobile's next poll, but only after a manual reload on web.
+- **Mobile** ([`mobile/src/game/useGame.js`](../../mobile/src/game/useGame.js)) polls
+  while the game is active, the screen is focused (`useFocusEffect`) and the app is
+  foregrounded (`AppState`).
+- **Web** ([`frontend/src/hooks/useGame.js`](../../frontend/src/hooks/useGame.js))
+  polls only when `isOnlineGame(game, viewerUserId)` says the other seat lives on
+  another device — a hotseat board can only be changed here, so polling it would be
+  pure churn. That predicate is web-only: it substitutes for the device-local seat
+  registry the web client doesn't have, and its blind spot is a logged-in player
+  whose opponent joined as a *guest* (a payload identical to a hotseat game), which
+  falls to the conservative side and doesn't poll.
+
+Both skip a tick while the local player has staged moves (a refresh must never
+clobber a turn in progress), when the game is `finished`, and when it is deadlocked
+on a closed seat. Web also has an explicit `reload()`; mobile adds pull-to-refresh.
+
+The same applies to a **pending double**: an offer sets `double_offered_by` and
+blocks play until answered, so the opponent sees the accept/drop prompt on the next
+poll of either client.
 
 ## Planned / Not Yet Implemented
 
-- **PostgreSQL (production).** Current config is SQLite only. Postgres is the
-  intended production database but no driver/config exists yet.
-- **WebSockets / realtime.** No Channels/ASGI layer. Sync today is mobile polling +
-  web manual reload. Realtime push (and replacing the poller) is future work.
+- **PostgreSQL in use.** The wiring exists — `dj-database-url` reads `DATABASE_URL`
+  and `psycopg2-binary` is pinned — but every environment today still resolves to
+  the dev SQLite file, and the migrations have only ever been applied against
+  SQLite. Verify them on an empty Postgres before cutting over.
+- **WebSockets / realtime.** No Channels/ASGI layer. Sync today is HTTP polling on
+  both clients. Realtime push (and retiring the pollers) is future work.
 - **Automated matchmaking.** Online play today is manual: create + share a
   link/code, or join from the open-games list. There is no matchmaking queue or
   `/api/matchmaking/` endpoint that auto-pairs two waiting players, no ranking/ELO,
@@ -173,6 +208,8 @@ accept/drop prompt on mobile's next poll, but only after a manual reload on web.
 - **Guest seat identity.** Guest seats are enforced only against *other logged-in
   accounts*; anonymous requests on a guest seat can't be verified. A guest
   token/session concept would close this.
-- **Web turn-ownership gating and polling** to match the mobile experience (the
-  server already rejects unauthorized web actions with 403; the web UI just
-  doesn't hide the controls).
+- **Web turn-ownership gating.** Web now polls like mobile, but it still renders
+  every control for whoever is sitting at the browser: there is no web counterpart
+  to mobile's `computeGating` / `seatRegistry` (only the closed-seat predicates are
+  shared). The server already rejects unauthorized web actions with 403; the web UI
+  just doesn't hide the controls.

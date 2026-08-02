@@ -3,9 +3,11 @@
 The persisted schema, as defined in [`backend/game/models.py`](../../backend/game/models.py)
 and managed by Django migrations in `backend/game/migrations/`.
 
-> **Current database is SQLite** (dev, `backend/db.sqlite3`). PostgreSQL is the
-> intended production target but is **not** configured — see
-> [Planned / Not Yet Implemented](#planned--not-yet-implemented).
+> **Every environment today resolves to SQLite** (`backend/db.sqlite3`). PostgreSQL
+> is *wired* — `DATABASES` is built by `dj_database_url.config()` from
+> `DATABASE_URL`, and `psycopg2-binary` is pinned in `requirements.txt` — but no
+> environment sets that variable yet, so the migrations have only ever been applied
+> against SQLite. See [Planned / Not Yet Implemented](#planned--not-yet-implemented).
 
 ## What is (and isn't) a model
 
@@ -56,13 +58,13 @@ A single game to bearing off all 15 checkers. Can be standalone or part of a `Ma
 | `dice_values` | **JSONField** (list) | remaining dice this turn; `[]` between turns |
 | `status` | Char | `waiting` / `active` / `finished` |
 | `winner` | Char, nullable | `"p1"` / `"p2"` |
-| `win_type` | Char, nullable | `normal` / `gammon` / `backgammon` / `drop` (conceded double) |
-| `points_value` | PositiveInt, nullable | points the win was worth — `win_points × cube_value` for board wins, the pre-double cube value for drops |
+| `win_type` | Char, nullable | `normal` / `gammon` / `backgammon` / `drop` (conceded double) / `abandoned` (deadlocked game closed out — no winner) |
+| `points_value` | PositiveInt, nullable | points the win was worth — `win_points × cube_value` for board wins, the pre-double cube value for drops, **`0`** when abandoned |
 | `cube_value` | PositiveInt | doubling cube: 1 (default) → 64 |
 | `cube_owner` | Char, nullable | seat `"p1"`/`"p2"`; null = centered. A seat, **not** a user FK — guests have no User row |
 | `double_offered_by` | Char, nullable | seat of a pending, unanswered double offer; blocks gameplay while set |
 | `crawford_game` | Bool | cube disabled for this game (first game after a player reaches match point) |
-| `created_at`, `updated_at` | DateTime | `updated_at` drives mobile's poll-diffing |
+| `created_at`, `updated_at` | DateTime | `updated_at` drives both clients' poll-diffing |
 
 Both models order by `["-created_at", "-id"]`. The four cube fields were added by
 migration `0003_game_crawford_game_game_cube_owner_game_cube_value_and_more`;
@@ -76,18 +78,23 @@ to `False`, i.e. no seat is closed.
 ```
 create ──► waiting ──(opponent joins)──► active ──(15 borne off)──► finished
    │                                            │                      │
-   │                                            └──(double dropped)────┤
+   │                                            ├──(double dropped)────┤
+   │                                            └──(abandoned)─────────┤
    └── hotseat (both names given at creation)                          │
        starts active                                                   ▼
                                           win_type / points_value / winner set;
                                           dice_values + double_offered_by cleared;
                                           Match score updated if part of a match
+                                          (abandonment writes no score at all)
 ```
 
-A game can therefore finish **without** anyone bearing off 15 checkers: declining
-a double ends it immediately with `win_type="drop"` (see
-[game-logic.md](game-logic.md#doubling-cube)). Both paths run through
-`_apply_game_result` in [`views.py`](../../backend/game/views.py).
+A game can therefore finish **without** anyone bearing off 15 checkers, by two
+different routes: declining a double ends it immediately with `win_type="drop"` (see
+[game-logic.md](game-logic.md#doubling-cube)), and
+[`abandon`](api.md#post-apigamesidabandon) closes out a game deadlocked by a closed
+seat with `winner=null`, `win_type="abandoned"`, `points_value=0` and no change to
+the match score. All three paths run through `_apply_game_result` in
+[`views.py`](../../backend/game/views.py).
 
 `board_state` is initialized by `get_initial_board_state()` to the standard opening
 position. Each committed turn overwrites `board_state` and clears/refills
@@ -131,13 +138,26 @@ Consequences, all in [`views.py`](../../backend/game/views.py):
   account" instead of leaving the opponent waiting on a turn that never comes.
 
 **A closed seat deadlocks an in-progress game; it does not forfeit it.** Nothing
-sets `winner`, `win_type`, `points_value`, or `status="finished"`, and no match
-score moves — the game simply can never be advanced again. This is deliberate:
+sets `winner`, `win_type`, `points_value`, or `status="finished"` on its own, and no
+match score moves — the game simply can never be advanced again. This is deliberate:
 the opponent's record is preserved exactly as played rather than being credited
-with a win they didn't earn, and there is no resign/forfeit endpoint to invoke
-(see [api.md](api.md#planned--not-yet-implemented)). Only *unstarted* rows are
-removed on deletion — `_purge_unjoined_lobby_entries` deletes the account's
-`waiting` games and never-joined matches, which nobody else has played.
+with a win they didn't earn. Only *unstarted* rows are removed on deletion —
+`_purge_unjoined_lobby_entries` deletes the account's `waiting` games and
+never-joined matches, which nobody else has played.
+
+The survivor's escape hatch is [`POST /api/games/{id}/abandon/`](api.md#post-apigamesidabandon),
+and it is **not a resign**: it writes `status="finished"`, `winner=null`,
+`win_type="abandoned"`, `points_value=0`, leaves the match score untouched, and sets
+the match `status="finished"` so `next_game` can't mint an endless series of games
+dead on arrival. No points are invented for anybody. Both clients surface the
+deadlock and offer the control to the surviving seat only
+(`isDeadlocked`/`canAbandon`, see
+[clients.md](clients.md#closed-seats-the-one-predicate-both-clients-share)).
+
+> **One knock-on to know about:** an abandoned game is `status="finished"` with
+> `winner=null`, and `UserSerializer` derives `losses` as `total_games − wins` — so
+> the row lands in the survivor's **loss** column (worth 0 points). See
+> [Stats derivation](#stats-derivation).
 
 Pinned by [`test_account_deletion.py`](../../backend/game/tests/test_account_deletion.py).
 
@@ -167,10 +187,19 @@ cube-multiplied**, so stats reflect cube stakes automatically. A `drop` win coun
 as a win (and its points) but never as a gammon/backgammon, since those counts
 filter on `win_type`.
 
+Abandonment interaction: `wins` counts rows where `winner` matches the seat, and
+`losses` is derived as `total_games − wins` rather than counted directly. An
+**abandoned** game has no winner at all, so it inflates `total_games` and falls into
+`losses` for the surviving player — a 0-point loss, since `points_value` is `0`.
+Nothing filters `win_type="abandoned"` out.
+
 ## Planned / Not Yet Implemented
 
-- **PostgreSQL in production.** Only SQLite is configured today; no Postgres
-  engine, driver, or connection settings exist.
+- **PostgreSQL actually in use.** The wiring is there (`dj-database-url` reading
+  `DATABASE_URL`, `psycopg2-binary` pinned), but nothing sets `DATABASE_URL`, so
+  every environment resolves to the dev SQLite file and the migrations have never
+  been applied against Postgres. Verify them on an empty database before cutting
+  over.
 - **A persisted `Seat`/participant model.** Seat ownership is derived from the user
   FKs at request time (which is also how server-side turn enforcement works); there
   is no dedicated table, and guest seats therefore carry no identity at all.

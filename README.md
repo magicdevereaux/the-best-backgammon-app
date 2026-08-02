@@ -15,9 +15,11 @@ gammon/backgammon detection. Both clients talk to the same backend.
 - **Doubling cube** — offer/accept/drop before rolling, cube ownership, redoubles to 64, points multiplied by cube value, Crawford rule in match play
 - **Game over screen** — shows win type, points awarded, and running match score
 - **User accounts** — register/login, JWT auth, win/loss and stats tracking, and self-serve account deletion (your games are anonymised, not destroyed, so opponents keep their history)
+- **Password recovery** — add an email address at signup or later on your profile, then reset a forgotten password by emailed link
 - **Profile page** — lifetime stats: games, wins, losses, gammons, backgammons, points won/lost, win %, gammon rate
-- **Online play** — create an online game, share a deep link, join by code, open-games list
+- **Online play** — create an online game, share a deep link, join by code, open-games list, with both clients polling for the opponent's moves
 - **Turn-ownership security** — the server rejects gameplay actions (403) from anyone who doesn't own the current seat; online, the mobile app also gates its UI so a device only acts on the seat it owns and only on its turn (read-only "waiting"/"spectating" views otherwise)
+- **Graceful exit from a dead game** — if your opponent deletes their account mid-game, both apps say so and offer to close the game out unscored rather than leaving you stuck
 - **Mobile app** — native SVG board, tap-to-roll, per-move undo, pull-to-refresh, opponent move sync
 
 ## Project structure
@@ -50,7 +52,7 @@ This README is the setup and feature tour. Deeper reference lives in
 
 ## Project status
 
-Feature-complete for local and link-based online play, with **635 passing tests**
+Feature-complete for local and link-based online play, with **943 passing tests**
 and CI running all three suites on every push.
 
 The app is now **deployable but not deployed** — the target is **Railway**, with
@@ -168,7 +170,7 @@ auto-incrementing version).
 
 ## Running tests
 
-### Backend (314 tests)
+### Backend (441 tests)
 
 ```bash
 cd backend
@@ -178,27 +180,30 @@ python manage.py test game.tests
 
 The runner uses an in-memory database, so you don't need to reset the dev DB.
 
-### Web frontend (207 tests, Jest + React Testing Library)
+### Web frontend (312 tests, Jest + React Testing Library)
 
 ```bash
 cd frontend
 npm test
 ```
 
-Covers the game-logic port, the `useGame` staged-turn hook, the board / dice /
-controls components, and the auth stack (token storage, `register`/`login`/
-`fetchMe`/refresh, the 401 refresh-retry, and the login/register pages).
+Covers the game-logic port, the `useGame` staged-turn hook and its poller, the
+closed-seat helpers in `utils/seats.js`, the board / dice / controls components,
+the lobby-adjacent pages (game, profile), and the auth stack (token storage,
+`register`/`login`/`fetchMe`/refresh, the 401 refresh-retry, and the login,
+register, forgot-password and reset-password pages).
 
-### Mobile (114 tests, Jest + React Native Testing Library)
+### Mobile (190 tests, Jest + React Native Testing Library)
 
 ```bash
 cd mobile
 npm test
 ```
 
-Covers game logic, the `useGame` staged-turn hook, turn-ownership gating, the
-device-local seat registry, the game-over / match-score components, and the auth
-stack (SecureStore token store, `register`/`login`/`fetchMe`, the 401 refresh-retry).
+Covers game logic, the `useGame` staged-turn hook, turn-ownership gating and
+closed-seat handling, the device-local seat registry, the game-over / match-score /
+abandon / email / delete-account components, and the auth stack (SecureStore token
+store, `register`/`login`/`fetchMe`, the 401 refresh-retry).
 
 ---
 
@@ -215,7 +220,8 @@ backend/
     urls.py            Router wiring
     tests/             Endpoint, auth, lobby, match, serializer, model, and logic tests
 
-frontend/src/          React web client (api/, components/, hooks/, pages/, context/)
+frontend/src/          React web client (api/, components/, hooks/, pages/, context/,
+                       utils/ — the game-logic port and the closed-seat helpers)
 
 mobile/
   app/                 Expo Router screens (index lobby, login, profile, game/[id])
@@ -241,17 +247,21 @@ seat-permission rules — lives in
 | POST | `/api/auth/register/` | Create account |
 | POST | `/api/auth/login/` | Get JWT tokens |
 | POST | `/api/auth/refresh/` | Refresh access token |
+| POST | `/api/auth/password-reset/` | Email yourself a reset link |
+| POST | `/api/auth/password-reset/confirm/` | Set a new password from that link's `uid` + `token` |
 | GET | `/api/auth/me/` | Current user + stats |
-| GET/POST | `/api/games/` | List all games (unpaginated) / create game |
+| PATCH | `/api/auth/me/` | Set or clear your email address (send `""` to clear) |
+| DELETE | `/api/auth/me/` | Delete your account (requires your password) |
+| GET/POST | `/api/games/` | List games visible to you / create game |
 | GET | `/api/games/?status=waiting` | Open lobby games |
 | GET | `/api/games/{id}/` | Game detail (includes `viewer_seat` / `viewer_is_participant` for the requester) |
-| DELETE | `/api/auth/me/` | Delete your account (requires your password) |
 | POST | `/api/games/{id}/join/` | Join a waiting game |
 | POST | `/api/games/{id}/roll_dice/` | Roll dice for current turn |
 | POST | `/api/games/{id}/confirm_turn/` | Commit staged moves; an empty list passes the turn, but only when no legal move exists (otherwise 400) |
 | POST | `/api/games/{id}/offer_double/` | Offer to double the stakes (before rolling) |
 | POST | `/api/games/{id}/respond_to_double/` | Accept (`{"accept": true}`) or drop a pending double |
-| GET/POST | `/api/matches/` | List matches / create match (also creates the match's first game; `target_points` must be 3, 5, 7, or 9) |
+| POST | `/api/games/{id}/abandon/` | Close out a game deadlocked by a deleted opponent — no winner, no points |
+| GET/POST | `/api/matches/` | List matches visible to you / create match (also creates the match's first game; `target_points` must be 3, 5, 7, or 9) |
 | GET | `/api/matches/{id}/` | Match detail + current score |
 | POST | `/api/matches/{id}/next_game/` | Start the next game in a match (seat-enforced) |
 | POST | `/api/matches/{id}/join/` | Join a match that has no second player yet |
@@ -262,10 +272,10 @@ custom actions; `PUT` / `PATCH` / `DELETE` are not routed at all (405). List
 endpoints are paginated (`?page=`, `?page_size=`) but still return a bare JSON
 array, so clients need no envelope handling.
 
-> ⚠️ **`GET /api/games/` remains public and unscoped.** Pagination bounds each
-> response, but anyone can page through every game. Scoping it would break guest
-> hotseat resume, so it's a deliberate open item — see
-> [`docs/operations/going-live.md`](docs/operations/going-live.md).
+Both list endpoints are **scoped to the requester**: you see the open lobby (games
+only), your own rows, and fully-guest rows that carry no account details. Fetching a
+single game or match **by id** stays open to anyone who has the link — that's how
+sharing an invite works at all.
 
 `viewer_seat` (`"p1"` / `"p2"` / `"p1p2"` / `null`) is a server-side ownership
 signal: it tells the requesting authenticated user which seat they own so a
@@ -287,8 +297,7 @@ All win values are multiplied by the **doubling cube**: a gammon at cube value 4
 
 ---
 
-_Last updated 2026-07-25. Test counts (232 / 172 / 83) verified green on that date.
-That pass added the [API reference](docs/architecture/api.md), the
-[client map](docs/architecture/clients.md), the
-[go-live audit](docs/operations/going-live.md), and a [docs index](docs/README.md);
-it also corrected the API table above._
+_Last updated 2026-08-02. Test counts (441 / 312 / 190 = 943) verified green on that
+date. That pass made the higher-die rule general and mirrored it in both clients,
+scoped `GET /api/matches/`, shipped the password-reset and abandon UIs, added web
+polling, and removed the dead `move_checker` endpoint._

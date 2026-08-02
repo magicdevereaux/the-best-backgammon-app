@@ -74,7 +74,7 @@ Related: [auth.md](auth.md) (token lifecycle), [data-model.md](data-model.md)
 | `POST` | `/api/games/{id}/offer_double/` | seat-enforced |
 | `POST` | `/api/games/{id}/respond_to_double/` | seat-enforced (responder seat) |
 | `POST` | `/api/games/{id}/abandon/` | seat-enforced (surviving seat) |
-| `GET` | `/api/matches/` | optional |
+| `GET` | `/api/matches/` | optional — **scoped to the requester** |
 | `POST` | `/api/matches/` | optional |
 | `GET` | `/api/matches/{id}/` | optional |
 | `PUT`/`PATCH`/`DELETE` | `/api/matches/{id}/` | **not routed** — 405 |
@@ -280,10 +280,18 @@ written and no session is blacklisted on a failed attempt.
 
 Both endpoints are covered by
 [`test_password_reset.py`](../../backend/game/tests/test_password_reset.py).
-**No client UI implements this flow yet** — neither the web nor the mobile app
-has a "forgot password" screen or a `/reset-password/:uid/:token` route, so today
-the link in the email leads nowhere. The API half is complete and callable
-directly.
+
+**Client UI.** Both clients now drive the request half, and the web client owns the
+confirm half — which is why `FRONTEND_BASE_URL` points at the web origin from both:
+
+| | Web | Mobile |
+|---|---|---|
+| Ask for a link | `/forgot-password` ([`ForgotPasswordPage.jsx`](../../frontend/src/pages/ForgotPasswordPage.jsx)), linked from the login page | `app/login.jsx`'s third mode (`"reset"`), reached from the sign-in screen |
+| Follow the link | `/reset-password/:uid/:token` ([`ResetPasswordPage.jsx`](../../frontend/src/pages/ResetPasswordPage.jsx)) — the exact shape `build_password_reset_url` emits | none; the emailed link opens in the browser, and the screen says so |
+| Set the address | optional `email` field on register, editable later on the profile ([`EmailSettings.jsx`](../../frontend/src/components/EmailSettings.jsx) / [`EmailSection.jsx`](../../mobile/src/components/EmailSection.jsx) via `PATCH /api/auth/me/`) | same |
+
+Both render the server's flat "if an account with that email exists…" reply verbatim
+and never branch on hit-vs-miss — there is no such distinction to render.
 
 ---
 
@@ -373,7 +381,7 @@ listing — the same distinction [Seat enforcement](#seat-enforcement) draws.
 
 Covered by
 [`test_game_list_scoping.py`](../../backend/game/tests/test_game_list_scoping.py).
-`GET /api/matches/` is **not** scoped.
+`GET /api/matches/` is [scoped too](#get-apimatches), by a deliberately shorter rule.
 
 ### `POST /api/games/`
 
@@ -473,7 +481,7 @@ finishes if the last checker came off.
 | 400 | `"Each move requires from_point and to_point."` |
 | 400 | `"Illegal move."` — any single hop is not legal |
 | 400 | **maximal dice usage** (below) |
-| 400 | **higher-die bear-off rule** (below) |
+| 400 | **higher-die rule** (below) |
 | 404 | unknown id |
 
 **Maximal dice usage.** After replaying the staged moves the view compares dice
@@ -486,15 +494,19 @@ This is what makes passing with an empty `moves` list legal *only* when the roll
 is genuinely dead (`max_usable == 0`). Clients mirror it as a Confirm-button
 affordance; the server is authoritative.
 
-**Higher-die rule (bear-off only).** `higher_die_required_moves` applies when the
-roll is a non-double two-die roll, the player can bear off, exactly one die is
-playable (`max_usable == 1`), and *either* die individually has a legal move. The
-single staged `(from_point, to_point)` must be in the returned permitted set, or:
+**Higher-die rule.** `higher_die_required_moves` applies when the roll is a
+non-double two-die roll, exactly one die is playable (`max_usable == 1`), and
+*either* die individually has a legal move. It is **general** — bar entry, blocked
+mid-board positions and bear-off alike, not bear-off only. The single staged
+`(from_point, to_point)` must be in the returned permitted set, or:
 
-> `"When only one die can be played, you must play the higher die (N)."`
+> `"When only one die can be played, you must play the higher die (2)."`
 
-Outside bear-off the official general rule is **not** enforced — see
-[game-logic.md](game-logic.md) and Known gaps in [CLAUDE.md](../../CLAUDE.md).
+(the parenthesised number is the higher die of that roll). The check runs *after*
+maximal usage, which guarantees exactly one staged move whenever the rule is live —
+so only `moves[0]` is inspected. Both clients mirror it as a Confirm-button gate;
+the server is authoritative. See [game-logic.md](game-logic.md#higher-die-rule--higher_die_required_moves)
+and [`test_higher_die.py`](../../backend/game/tests/test_higher_die.py).
 
 ### `POST /api/games/{id}/offer_double/`
 
@@ -588,8 +600,17 @@ match is abandoned just the same.
 
 Note the check order is the reverse of the gameplay actions': state first, seat
 permission last. Covered by
-[`test_abandon.py`](../../backend/game/tests/test_abandon.py). **No client UI
-calls this yet** — neither app surfaces the deadlock or an abandon control.
+[`test_abandon.py`](../../backend/game/tests/test_abandon.py).
+
+**Both clients call it**, and both offer it to the surviving seat only —
+[`AbandonGamePanel.jsx`](../../frontend/src/components/AbandonGamePanel.jsx) on web,
+[`AbandonGameSection.jsx`](../../mobile/src/components/AbandonGameSection.jsx) on
+mobile, each behind a `canAbandon` predicate that mirrors the preconditions above
+(`canAbandon` in [`seats.js`](../../frontend/src/utils/seats.js) /
+[`gating.js`](../../mobile/src/game/gating.js)). The deadlock itself is surfaced as a
+banner ("your opponent deleted their account — this game can't continue") and both
+pollers stop on it. The predicates are affordance, not authorization — the server
+re-checks everything.
 
 ---
 
@@ -613,10 +634,31 @@ two `player*_deleted` closed-seat flags (same meaning as on `Game`).
 
 ### `GET /api/matches/`
 
-**200** → array of matches. No `?status` filter (unlike games), and **no
-requester scoping** either — `MatchViewSet.get_queryset` is a plain
-`Match.objects.all()`, so unlike `GET /api/games/` this still returns every
-match. Paginated at 100 per page.
+**200** → array of matches, **scoped to the requester**. No `?status` filter (unlike
+games). Paginated at 100 per page (bare array).
+
+**Scoping.** `_match_list_scope_q(user)` in
+[`views.py`](../../backend/game/views.py) is the match analogue of
+[`_list_scope_q`](#get-apigames) and is deliberately **one clause shorter**:
+
+| Rule | Rows | Why |
+|------|------|-----|
+| fully guest | **both** seat FKs null **and** neither seat closed | guest/hotseat resume, with no account to scope by; no user ids, no account names |
+| your own | either seat's user FK is the requester, whatever the status | registered players keep their full match history |
+
+**There is no public-lobby clause, because a match has no lobby state.**
+`Game.status` has a `"waiting"` value whose entire purpose is advertising an open
+seat to strangers; `Match.status` is only `active`/`finished`. Joinability is implied
+by an empty `player2_name`, and an open match is advertised through its *first game*,
+which sits in the `waiting` lobby carrying a `match` id — so the lobby already works
+without listing matches at all. A "player2_name is blank" clause here would re-expose
+exactly the registered-player rows this closes.
+
+As with games, scoping applies to **`list` only**: `GET /api/matches/{id}/` and the
+detail actions stay open, because sharing a match by id/link is how an online match
+is joined and resumed. This bounds *enumeration*, not access to a match you have the
+id for. Covered by
+[`test_match_list_scoping.py`](../../backend/game/tests/test_match_list_scoping.py).
 
 ### `POST /api/matches/`
 
@@ -725,9 +767,13 @@ Consequences worth knowing:
 - Enforcement is exactly as strong as the seat FKs: a guest seat is
   unverifiable, so an attacker can log out and act on one anonymously. See
   [auth.md](auth.md#security-note-current-limitations).
-- The **web UI does not gate** locally — an unauthorized click surfaces the
-  server's 403. Mobile hides controls via
+- The **web UI does not gate turn ownership** locally — an unauthorized click
+  surfaces the server's 403. Mobile hides controls via
   [`gating.js`](../../mobile/src/game/gating.js) as UX on top of the same rules.
+  The one branch both clients model is the **closed seat**: `isDeadlocked` /
+  `canAbandon` live in `gating.js` and in
+  [`seats.js`](../../frontend/src/utils/seats.js) as an identical, must-stay-in-sync
+  pair, because a deadlock has to be *explained* rather than left as a silent 403.
 - `next_game` is guarded by the separate `_match_permission_error`
   ([above](#post-apimatchesidnext_game)); `join` on either resource is **not**
   guarded at all, and `PUT`/`PATCH`/`DELETE` are no longer routed.
@@ -746,13 +792,14 @@ Not in the code today — do not assume them:
 
 - **Filtering beyond `?status`.** No ordering param and no search. (Pagination
   *does* exist — see [Conventions](#conventions).)
-- **A "my games" endpoint.** There is no *explicit* filter by the requesting
-  user — though `GET /api/games/` is now [scoped](#get-apigames) to them, so a
-  logged-in caller's list is already their own games plus the open lobby.
-  `GET /api/matches/` has no equivalent.
-- **Real-time push.** No WebSockets/Channels/ASGI and no long-poll endpoint.
-  Mobile polls the game detail route (~3.5s in
-  [`useGame.js`](../../mobile/src/game/useGame.js)); web has no auto-refresh.
+- **A "my games" endpoint.** There is no *explicit* filter by the requesting user —
+  though both list routes are now scoped to them ([games](#get-apigames),
+  [matches](#get-apimatches)), so a logged-in caller's lists are already their own
+  rows plus (for games) the open lobby.
+- **Real-time push.** No WebSockets/Channels/ASGI and no long-poll endpoint. **Both**
+  clients poll the game detail route on a ~3.5 s timer
+  ([mobile](../../mobile/src/game/useGame.js),
+  [web](../../frontend/src/hooks/useGame.js)).
 - **Matchmaking / lobby queue endpoints.** Pairing is manual via
   `?status=waiting` plus `join`. No queue, ranking, or auto-pairing route.
 - **Resign and rematch endpoints.** A game can only end on the board, by dropping
@@ -760,8 +807,9 @@ Not in the code today — do not assume them:
   [`abandon`](#post-apigamesidabandon), which is *not* a resign: it scores
   nothing. There is no way to concede points to an opponent, and no route to
   replay a finished match.
-- **Any client UI for `abandon` or password reset.** Both are complete,
-  server-side. Neither client has a screen, button or route that calls them.
+- **A mobile reset-confirm screen.** Mobile can *request* a reset link, but the
+  emailed link is a web URL and opens in the browser; there is no
+  `backgammon://reset-password/...` deep-link route.
 - **Chat.** No endpoint exists.
 - **A logout endpoint.** The blacklist app *is* installed and is used by refresh
   rotation and by account deletion, but no route revokes a token on demand —
