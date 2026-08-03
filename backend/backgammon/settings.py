@@ -326,6 +326,20 @@ REST_FRAMEWORK = {
     "DEFAULT_THROTTLE_RATES": THROTTLE_RATES,
 }
 
+# --------------------------------------------------------------------------
+# Inactivity forfeit (ADR-002)
+# --------------------------------------------------------------------------
+# How long a seat may leave the game waiting on it before the opponent can
+# claim the win via POST /api/games/{id}/claim_timeout/. Measured from
+# Game.turn_started_at, which covers roll *and* move together.
+#
+# 48 hours is a correspondence-play default: long enough that a normal person
+# with a day job never trips it, short enough that a walked-away opponent
+# doesn't strand a match for a week. Env-driven so it can be retuned on a
+# running deployment without a code change — and defaulted, so local dev still
+# needs no .env file.
+TURN_TIMEOUT_HOURS = int(os.environ.get("TURN_TIMEOUT_HOURS", "48"))
+
 SIMPLE_JWT = {
     "ACCESS_TOKEN_LIFETIME": timedelta(hours=1),
     "REFRESH_TOKEN_LIFETIME": timedelta(days=7),

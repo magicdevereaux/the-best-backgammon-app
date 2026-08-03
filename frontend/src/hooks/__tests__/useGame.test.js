@@ -307,6 +307,42 @@ describe('useGame', () => {
     expect(result.current.actionError).toBe('No double has been offered.');
   });
 
+  test('claimTimeout swaps in the finished, scored game', async () => {
+    gameApi.fetchGame.mockResolvedValue({ ...baseGame, current_turn: 'p2' });
+    const won = {
+      ...baseGame, status: 'finished', winner: 'p1', win_type: 'timeout',
+      points_value: 1, turn_waiting_seat: null, turn_deadline: null,
+    };
+    gameApi.claimTimeout.mockResolvedValue(won);
+
+    const { result } = renderHook(() => useGame(1));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    await act(async () => {
+      await result.current.claimTimeout();
+    });
+
+    expect(gameApi.claimTimeout).toHaveBeenCalledWith(1);
+    expect(result.current.game).toEqual(won);
+  });
+
+  test('claimTimeout surfaces a refusal and leaves the game alone', async () => {
+    // The server owns the clock: a client running ahead of it claims too early.
+    const game = { ...baseGame, current_turn: 'p2' };
+    gameApi.fetchGame.mockResolvedValue(game);
+    gameApi.claimTimeout.mockRejectedValue(new Error('This player still has time to move.'));
+
+    const { result } = renderHook(() => useGame(1));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    await act(async () => {
+      await result.current.claimTimeout();
+    });
+
+    expect(result.current.actionError).toBe('This player still has time to move.');
+    expect(result.current.game).toEqual(game);
+  });
+
   test('rollDice replaces the game and resets staged dice', async () => {
     gameApi.fetchGame.mockResolvedValue({ ...baseGame, dice_values: [] });
     gameApi.rollDice.mockResolvedValue({ ...baseGame, dice_values: [2, 6] });
@@ -440,6 +476,22 @@ describe('useGame polling', () => {
 
     await act(async () => { jest.advanceTimersByTime(3500); });
     expect(gameApi.fetchGame).toHaveBeenCalledTimes(2);
+  });
+
+  test('keeps polling while waiting on an idle opponent', async () => {
+    // The inactivity-forfeit case: an active online game whose *opponent* owes
+    // the move. None of the skip conditions may fire here, or the opponent's
+    // eventual move would never land and the clock would never reconcile.
+    gameApi.fetchGame.mockResolvedValue({
+      ...ONLINE,
+      current_turn: 'p2',
+      turn_waiting_seat: 'p2',
+      turn_deadline: new Date(Date.now() + 60000).toISOString(),
+    });
+    await load();
+
+    await act(async () => { jest.advanceTimersByTime(3500 * 2); });
+    expect(gameApi.fetchGame).toHaveBeenCalledTimes(3);
   });
 
   test('clears the interval on unmount', async () => {

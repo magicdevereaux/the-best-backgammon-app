@@ -5,10 +5,16 @@ const WIN_TYPE_LABEL = {
   gammon: "wins with a gammon!",
   backgammon: "wins with a backgammon!",
   drop: "wins — double declined!",
+  // An inactivity forfeit. Worded from neither seat's point of view: the same
+  // heading has to read correctly for the claimer and for the player who ran
+  // out of time, and neither should see "you win"/"you lose" phrasing the rest
+  // of this screen doesn't use either.
+  timeout: "wins on time!",
 };
 
 export default function GameOverScreen({ game, match, onNextGame, onNewMatch, onLobby }) {
   const winnerName = game.winner === "p1" ? game.player1_name : game.player2_name;
+  const loserName = game.winner === "p1" ? game.player2_name : game.player1_name;
   const pts = game.points_value ?? 1;
   const label = WIN_TYPE_LABEL[game.win_type] ?? "wins!";
 
@@ -62,6 +68,8 @@ export default function GameOverScreen({ game, match, onNextGame, onNewMatch, on
               {game.win_type === "gammon" && " — gammon (opponent has borne off nothing)"}
               {game.win_type === "backgammon" &&
                 " — backgammon (opponent still has a checker on the bar or in your home board)"}
+              {game.win_type === "timeout" &&
+                ` — ${loserName} ran out of time to move, so the game was claimed on time (a single, times the cube)`}
             </p>
           </>
         )}

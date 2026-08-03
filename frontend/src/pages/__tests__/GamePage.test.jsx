@@ -265,3 +265,81 @@ describe("GamePage abandon control", () => {
     ).toBeInTheDocument();
   });
 });
+
+/*
+ * The inactivity clock, wired end to end through the page. Deadlines here are
+ * fixed in the past or far future so no timer has to be advanced — TurnClock's
+ * own suite covers the ticking.
+ */
+describe("GamePage inactivity forfeit", () => {
+  const past = () => new Date(Date.now() - 60_000).toISOString();
+  const future = () => new Date(Date.now() + 3_600_000).toISOString();
+
+  const claimButton = () => screen.queryByRole("button", { name: /claim the win on time/i });
+
+  test("shows nothing at all when the server sent no deadline", async () => {
+    await renderGame();
+    expect(claimButton()).not.toBeInTheDocument();
+    expect(screen.queryByText(/on the clock/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/until you can claim/i)).not.toBeInTheDocument();
+  });
+
+  test("counts down for the player waiting on an idle opponent", async () => {
+    await renderGame({
+      current_turn: "p2", viewer_seat: "p1", turn_waiting_seat: "p2", turn_deadline: future(),
+    });
+    expect(screen.getByText(/waiting on bob/i)).toBeInTheDocument();
+    expect(claimButton()).not.toBeInTheDocument();
+  });
+
+  test("warns the player who is on the clock, and offers them no claim", async () => {
+    await renderGame({
+      current_turn: "p1", viewer_seat: "p1", turn_waiting_seat: "p1", turn_deadline: future(),
+    });
+    expect(screen.getByText(/you're on the clock/i)).toBeInTheDocument();
+    expect(claimButton()).not.toBeInTheDocument();
+  });
+
+  test("offers the claim once the deadline has passed, and finishes the game", async () => {
+    matchApi.fetchMatch.mockResolvedValue(null);
+    gameApi.claimTimeout.mockResolvedValue({
+      ...BASE, status: "finished", winner: "p1", win_type: "timeout", points_value: 1,
+      turn_waiting_seat: null, turn_deadline: null,
+    });
+    await renderGame({
+      current_turn: "p2", viewer_seat: "p1", turn_waiting_seat: "p2", turn_deadline: past(),
+    });
+
+    await userEvent.click(claimButton());
+    expect(gameApi.claimTimeout).not.toHaveBeenCalled(); // second yes required
+
+    await userEvent.click(screen.getByRole("button", { name: /yes, claim the win/i }));
+    await waitFor(() => expect(gameApi.claimTimeout).toHaveBeenCalledWith("1"));
+
+    expect(await screen.findByText(/alice wins on time!/i)).toBeInTheDocument();
+    expect(claimButton()).not.toBeInTheDocument();
+  });
+
+  test("surfaces the server's 'too early' 400 — a client clock can run ahead", async () => {
+    gameApi.claimTimeout.mockRejectedValue(
+      new Error("This player still has time to move.")
+    );
+    await renderGame({
+      current_turn: "p2", viewer_seat: "p1", turn_waiting_seat: "p2", turn_deadline: past(),
+    });
+
+    await userEvent.click(claimButton());
+    await userEvent.click(screen.getByRole("button", { name: /yes, claim the win/i }));
+
+    expect(await screen.findByText("This player still has time to move.")).toBeInTheDocument();
+    // Nothing changed server-side, so the control stays put to retry.
+    expect(claimButton()).toBeInTheDocument();
+  });
+
+  test("a deadlocked game shows the closed-seat exit, not a clock", async () => {
+    // Belt and braces: the server nulls turn_deadline on a closed seat anyway.
+    await renderGame({ current_turn: "p2", player2_user: null, player2_deleted: true, viewer_seat: "p1" });
+    expect(screen.getByRole("button", { name: /close out this game/i })).toBeInTheDocument();
+    expect(claimButton()).not.toBeInTheDocument();
+  });
+});

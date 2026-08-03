@@ -33,6 +33,23 @@ class GameSerializer(serializers.ModelSerializer):
     viewer_seat = serializers.SerializerMethodField()
     viewer_is_participant = serializers.SerializerMethodField()
 
+    # Inactivity-forfeit clock (ADR-002). Two fields, both derived, both
+    # deliberately shaped so a client never re-derives a server rule:
+    #
+    #   turn_waiting_seat — "p1" / "p2" while the game is active, else null.
+    #       Whose inaction is stalling the game; see Game.waiting_seat for why
+    #       that is not always current_turn.
+    #   turn_deadline     — an ISO-8601 timestamp, or null whenever a timeout
+    #       claim is impossible *in principle* for this game (see
+    #       Game.timeout_deadline for the four cases).
+    #
+    # There is intentionally no `can_claim` boolean. A boolean computed at
+    # serialisation time is stale the moment it is sent, and both clients want
+    # to render a live countdown anyway — so they compare their own clock to
+    # `turn_deadline`, and a null deadline is the "no claim here, ever" signal.
+    turn_waiting_seat = serializers.SerializerMethodField()
+    turn_deadline = serializers.SerializerMethodField()
+
     class Meta:
         model = Game
         fields = "__all__"
@@ -46,6 +63,9 @@ class GameSerializer(serializers.ModelSerializer):
             "player1_deleted", "player2_deleted",
             "dice_values", "status", "winner", "win_type", "points_value",
             "cube_value", "cube_owner", "double_offered_by", "crawford_game",
+            # Server-owned clock. Writable, a client could park its own
+            # deadline in the future and become un-timeoutable.
+            "turn_started_at",
             "created_at", "updated_at",
         ]
         extra_kwargs = {
@@ -69,6 +89,24 @@ class GameSerializer(serializers.ModelSerializer):
 
     def get_viewer_is_participant(self, obj):
         return self.get_viewer_seat(obj) is not None
+
+    def get_turn_waiting_seat(self, obj):
+        # Only a live game is waiting on anybody. `Game.waiting_seat` itself is
+        # unconditional (the view guards call it after their own status check),
+        # so the "active" gate lives here — a finished game reporting a seat
+        # would read to a client as "still their move".
+        if obj.status != "active":
+            return None
+        return obj.waiting_seat
+
+    def get_turn_deadline(self, obj):
+        deadline = obj.timeout_deadline()
+        if deadline is None:
+            return None
+        # Rendered through DRF's own DateTimeField so the format matches
+        # created_at / updated_at exactly ("2026-08-04T10:00:00Z") rather than
+        # Python's "+00:00" spelling of the same instant.
+        return serializers.DateTimeField().to_representation(deadline)
 
 
 class MatchSerializer(serializers.ModelSerializer):

@@ -23,6 +23,12 @@
 //                    case: a fresh device with no local record still gates to
 //                    the account's own seat when the server says it owns one.
 //   4. default     — unknown, single-device: both seats interactive.
+//
+// Stay-in-sync obligation: `isSeatClosed` / `blockedSeat` / `isDeadlocked` /
+// `canClaimTimeout`, plus the `toMillis` helper the last of those is built on,
+// are mirrored verbatim in frontend/src/utils/seats.js and **must stay identical
+// to it**. `computeGating` itself is deliberately NOT ported — the web client is
+// ungated and lets the server's 403 speak for itself.
 
 // True when the seat is marked closed by account deletion. The flags are
 // read-only server fields; a missing/absent flag means the seat is OPEN, so
@@ -59,6 +65,73 @@ export function blockedSeat(game) {
 export function isDeadlocked(game) {
   if (!game || game.status !== "active") return false;
   return isSeatClosed(game, blockedSeat(game));
+}
+
+// Milliseconds since the epoch for a Date / number / ISO string, or null when
+// the value isn't a usable instant. Shared by the clock predicates below, and
+// ported verbatim into frontend/src/utils/seats.js. Anything null, unparseable,
+// or non-finite comes back null, which callers read as "no clock" — never as
+// "expired", so a garbled field can't hand somebody a win.
+function toMillis(value) {
+  if (value == null) return null;
+  if (value instanceof Date) {
+    const t = value.getTime();
+    return Number.isNaN(t) ? null : t;
+  }
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+// Whether `viewerSeat` may claim an inactivity forfeit right now.
+//
+// Mirrors POST /api/games/{id}/claim_timeout/ as an affordance only — the
+// server re-checks everything and is authoritative.
+//
+// The eligibility rule itself is NOT re-derived here. The server publishes
+// `turn_deadline` as null whenever a claim is impossible in principle (game not
+// active, a closed/deleted seat, either seat a guest, no clock recorded), so a
+// null deadline is a complete answer: show nothing. All this adds is the two
+// things the server cannot know — what time it is on this device, and which
+// seat is looking.
+//
+//   game       — payload carrying `turn_waiting_seat` and `turn_deadline`
+//   viewerSeat — "p1" / "p2" / null: the seat this device is acting as
+//   now        — Date, epoch ms, or ISO string; defaults to the wall clock
+//
+// True only when the deadline has passed AND the viewer is the OPPONENT of the
+// seat on the clock. You claim against the idle player, never against yourself:
+// a player who is themselves out of time gets false, not a button that forfeits
+// their own game.
+//
+// Kept in sync with frontend/src/utils/seats.js — same name, same signature,
+// same semantics. (How each client works out the *viewer's* seat differs by
+// design: mobile from its device-local seat registry, web from the server's
+// `viewer_seat`.)
+export function canClaimTimeout(game, viewerSeat, now = Date.now()) {
+  if (!game) return false;
+  const waiting = game.turn_waiting_seat;
+  if (waiting !== "p1" && waiting !== "p2") return false;
+  if (viewerSeat !== otherSeat(waiting)) return false;
+  const deadline = toMillis(game.turn_deadline);
+  if (deadline == null) return false;
+  const current = toMillis(now);
+  if (current == null) return false;
+  return current >= deadline;
+}
+
+// How long `viewerSeat` has left before the clock runs out, in milliseconds, or
+// null when no clock applies to them. Non-negative — it floors at 0 rather than
+// counting up past the deadline. Used for the countdown in both directions: the
+// seat on the clock sees its own time draining, the opponent sees how long
+// until a claim becomes possible.
+export function msUntilTurnDeadline(game, now = Date.now()) {
+  if (!game) return null;
+  const deadline = toMillis(game.turn_deadline);
+  if (deadline == null) return null;
+  const current = toMillis(now);
+  if (current == null) return null;
+  return Math.max(0, deadline - current);
 }
 
 export function computeGating({ game, userId, seatInfo }) {
@@ -120,9 +193,17 @@ export function computeGating({ game, userId, seatInfo }) {
     mySeats.includes(surviving) &&
     !isSeatClosed(game, surviving);
 
+  // The single seat this device acts as, for predicates that need one seat
+  // rather than a set (canClaimTimeout). Null for a spectator and null for
+  // hotseat, where the device holds both seats and there is no "opponent" to
+  // claim against — the server never issues a deadline for either case, so this
+  // only ever hardens what the payload already decided.
+  const viewerSeat = mySeats.length === 1 ? mySeats[0] : null;
+
   return {
     gated,
     mySeats,
+    viewerSeat,
     iOwnASeat,
     isMyTurn,
     canInteract,

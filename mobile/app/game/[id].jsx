@@ -13,6 +13,7 @@ import GameControls from "../../src/components/GameControls";
 import GameOverScreen from "../../src/components/GameOverScreen";
 import MatchScore from "../../src/components/MatchScore";
 import AbandonGameSection from "../../src/components/AbandonGameSection";
+import TurnClockSection from "../../src/components/TurnClockSection";
 import { useGame } from "../../src/game/useGame";
 import { computeGating } from "../../src/game/gating";
 import { useSeatInfo, recordOnlineSeat } from "../../src/game/seatRegistry";
@@ -32,7 +33,7 @@ export default function GameScreen() {
     pendingMoves, legalMoves, mustUseMoreDice, mustPlayHigherDie, stageMove,
     resetTurn, undoMove, confirmTurn,
     offerDouble, respondToDouble, canOfferDouble,
-    abandonGame,
+    abandonGame, claimTimeout,
     reload, refresh, refreshing,
   } = useGame(id);
 
@@ -140,7 +141,7 @@ export default function GameScreen() {
   // Turn-ownership gating (see src/game/gating.js). Combines the seat user FKs
   // with the device-local seat registry so online-vs-guest games gate correctly.
   const {
-    gated, mySeats, canInteract, spectating, waitingForOpponent, deadlocked,
+    gated, mySeats, viewerSeat, canInteract, spectating, waitingForOpponent, deadlocked,
     blockedSeat, canAbandon,
   } = computeGating({ game, userId: user?.id, seatInfo });
 
@@ -211,12 +212,24 @@ export default function GameScreen() {
           <Text style={styles.finished}>
             {game.win_type === "abandoned"
               ? "Game closed out — no winner, no points scored."
-              : `Game over — ${game.winner === "p1" ? game.player1_name : game.player2_name} wins!`}
+              : `Game over — ${game.winner === "p1" ? game.player1_name : game.player2_name} ${
+                  game.win_type === "timeout" ? "wins on time!" : "wins!"
+                }`}
           </Text>
         )}
 
         {/* Only rendered for the surviving seat of a deadlocked game. */}
         <AbandonGameSection canAbandon={canAbandon} onAbandon={abandonGame} />
+
+        {/* The inactivity clock, in whichever direction applies to this viewer:
+            a warning while it is their own turn on the clock, a countdown then
+            a claim control while it is the opponent's. Renders nothing at all
+            unless the server issued a `turn_deadline`. */}
+        <TurnClockSection
+          game={game}
+          viewerSeat={viewerSeat}
+          onClaimTimeout={claimTimeout}
+        />
 
         <Board
           boardState={stagedBoard}

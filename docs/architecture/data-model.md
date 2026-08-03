@@ -58,12 +58,13 @@ A single game to bearing off all 15 checkers. Can be standalone or part of a `Ma
 | `dice_values` | **JSONField** (list) | remaining dice this turn; `[]` between turns |
 | `status` | Char | `waiting` / `active` / `finished` |
 | `winner` | Char, nullable | `"p1"` / `"p2"` |
-| `win_type` | Char, nullable | `normal` / `gammon` / `backgammon` / `drop` (conceded double) / `abandoned` (deadlocked game closed out — no winner) |
-| `points_value` | PositiveInt, nullable | points the win was worth — `win_points × cube_value` for board wins, the pre-double cube value for drops, **`0`** when abandoned |
+| `win_type` | Char, nullable | `normal` / `gammon` / `backgammon` / `drop` (conceded double) / `timeout` (opponent ran out the inactivity clock) / `abandoned` (deadlocked game closed out — no winner) |
+| `points_value` | PositiveInt, nullable | points the win was worth — `win_points × cube_value` for board wins, the pre-double cube value for drops, `1 × cube_value` for timeouts, **`0`** when abandoned |
 | `cube_value` | PositiveInt | doubling cube: 1 (default) → 64 |
 | `cube_owner` | Char, nullable | seat `"p1"`/`"p2"`; null = centered. A seat, **not** a user FK — guests have no User row |
 | `double_offered_by` | Char, nullable | seat of a pending, unanswered double offer; blocks gameplay while set |
 | `crawford_game` | Bool | cube disabled for this game (first game after a player reaches match point) |
+| `turn_started_at` | DateTime, nullable | when the **waiting seat** came on the inactivity clock. Null = no clock running. See [The turn clock](#the-turn-clock-turn_started_at) |
 | `created_at`, `updated_at` | DateTime | `updated_at` drives both clients' poll-diffing |
 
 Both models order by `["-created_at", "-id"]`. The four cube fields were added by
@@ -71,7 +72,14 @@ migration `0003_game_crawford_game_game_cube_owner_game_cube_value_and_more`;
 existing rows default to a centered cube at value 1 with `crawford_game=False`.
 The four `player*_deleted` flags (two per model) were added by
 `0004_game_player1_deleted_game_player2_deleted_and_more`; existing rows default
-to `False`, i.e. no seat is closed.
+to `False`, i.e. no seat is closed. `turn_started_at` came last, nullable, in
+`0005_game_turn_started_at`, which also backfills in-flight games — see
+[the backfill](#the-turn-clock-turn_started_at).
+
+`Game` also carries one derived property, `waiting_seat` — `current_turn` except
+while `double_offered_by` is set, where it is the responder. It is the server's
+single copy of that rule: `abandon`, `claim_timeout` and `GameSerializer` all
+read it. Both clients mirror it as `blockedSeat`.
 
 ### Lifecycle
 
@@ -79,6 +87,7 @@ to `False`, i.e. no seat is closed.
 create ──► waiting ──(opponent joins)──► active ──(15 borne off)──► finished
    │                                            │                      │
    │                                            ├──(double dropped)────┤
+   │                                            ├──(timeout claimed)───┤
    │                                            └──(abandoned)─────────┤
    └── hotseat (both names given at creation)                          │
        starts active                                                   ▼
@@ -88,13 +97,24 @@ create ──► waiting ──(opponent joins)──► active ──(15 borne 
                                           (abandonment writes no score at all)
 ```
 
-A game can therefore finish **without** anyone bearing off 15 checkers, by two
-different routes: declining a double ends it immediately with `win_type="drop"` (see
-[game-logic.md](game-logic.md#doubling-cube)), and
-[`abandon`](api.md#post-apigamesidabandon) closes out a game deadlocked by a closed
-seat with `winner=null`, `win_type="abandoned"`, `points_value=0` and no change to
-the match score. All three paths run through `_apply_game_result` in
-[`views.py`](../../backend/game/views.py).
+A game can therefore finish **without** anyone bearing off 15 checkers, by three
+different routes:
+
+- declining a double ends it immediately with `win_type="drop"` (see
+  [game-logic.md](game-logic.md#doubling-cube));
+- [`claim_timeout`](api.md#post-apigamesidclaim_timeout) awards the present
+  player a **real win** over an opponent who left the game waiting on them past
+  `turn_started_at + TURN_TIMEOUT_HOURS` — `win_type="timeout"`, `winner` set,
+  `points_value = 1 × cube_value`, match score updated normally;
+- [`abandon`](api.md#post-apigamesidabandon) closes out a game deadlocked by a
+  closed seat with `winner=null`, `win_type="abandoned"`, `points_value=0` and no
+  change to the match score.
+
+The last two look similar and are opposites: a timeout scores because somebody
+really won, an abandonment does not because nobody did. `claim_timeout` refuses a
+closed seat outright so the two can never be confused
+([ADR-002](../decisions/adr-002-inactivity-forfeit.md)). Every path runs through
+`_apply_game_result` in [`views.py`](../../backend/game/views.py).
 
 `board_state` is initialized by `get_initial_board_state()` to the standard opening
 position. Each committed turn overwrites `board_state` and clears/refills
@@ -152,14 +172,59 @@ the match `status="finished"` so `next_game` can't mint an endless series of gam
 dead on arrival. No points are invented for anybody. Both clients surface the
 deadlock and offer the control to the surviving seat only
 (`isDeadlocked`/`canAbandon`, see
-[clients.md](clients.md#closed-seats-the-one-predicate-both-clients-share)).
+[clients.md](clients.md#closed-seats-and-the-inactivity-clock-the-predicates-both-clients-share)).
 
-> **One knock-on to know about:** an abandoned game is `status="finished"` with
-> `winner=null`, and `UserSerializer` derives `losses` as `total_games − wins` — so
-> the row lands in the survivor's **loss** column (worth 0 points). See
+> **A knock-on that has since been closed:** an abandoned game is
+> `status="finished"` with `winner=null`, and `UserSerializer` derives `losses` as
+> `total_games − wins` — so the row *used to* land in the survivor's **loss**
+> column. `_stats` now excludes `win_type="abandoned"` from every stat. See
 > [Stats derivation](#stats-derivation).
 
 Pinned by [`test_account_deletion.py`](../../backend/game/tests/test_account_deletion.py).
+
+## The turn clock (`turn_started_at`)
+
+A nullable `DateTimeField` on `Game` recording when the **waiting seat** came on
+the clock — the anchor for the inactivity-forfeit deadline
+([ADR-002](../decisions/adr-002-inactivity-forfeit.md)).
+
+**`updated_at` cannot substitute for it.** `auto_now` bumps on every write for
+any reason, so it cannot tell "idle for 20 hours" from "rolled 20 hours ago then
+walked away" from "someone joined a minute ago." That is the entire reason this
+column exists.
+
+It is written by one helper, `_begin_turn()` in
+[`views.py`](../../backend/game/views.py) — which fuses the timestamp to the
+`current_turn` write so the two cannot drift — called wherever the waiting seat
+changes and nowhere else: creating a game or match that starts **`active`**,
+`join` (activating a `waiting` one), `confirm_turn` (turn passes),
+`offer_double` (the wait flips to the responder), `respond_to_double` on a
+**take** (it flips back to the offerer), and `next_game`. **`roll_dice`
+deliberately does not touch it** — the same seat is still on the clock, and one
+deadline is meant to cover rolling *and* moving.
+
+Two things read it, both derived rather than stored: `Game.timeout_deadline()`
+(`turn_started_at + TURN_TIMEOUT_HOURS`, or `None` when a claim is impossible in
+principle) and the `turn_deadline` / `turn_waiting_seat` serializer fields the
+clients render from. It is in `read_only_fields` — writable, a client could park
+its own deadline in the future and make itself un-timeoutable.
+
+**Null is a real state, not a gap** — it means "no clock running", and
+`timeout_deadline()` and `claim_timeout` both refuse to act on it.
+
+Migration
+[`0005_game_turn_started_at.py`](../../backend/game/migrations/0005_game_turn_started_at.py)
+adds the column and then backfills it with a `RunPython` step: `active` rows get
+`turn_started_at = updated_at` (written with `.update()`, so reading the
+`auto_now` field doesn't rewrite it); `waiting` rows are skipped, since nobody is
+on the clock until `join`; `finished` rows are skipped. Reverse is a `noop`.
+
+`updated_at` is only an **approximation** — it marks the last write of any kind —
+but it errs in the safe direction: where the row was touched after the turn
+flipped, it reads *later* than the truth and the deadline comes out **generous**.
+An early deadline would hand out a win nobody had earned yet; a late one costs
+only patience. In practice no deployment exists, so the only rows this touches
+are local dev games.
 
 ## Relationships
 
@@ -187,11 +252,22 @@ cube-multiplied**, so stats reflect cube stakes automatically. A `drop` win coun
 as a win (and its points) but never as a gammon/backgammon, since those counts
 filter on `win_type`.
 
-Abandonment interaction: `wins` counts rows where `winner` matches the seat, and
-`losses` is derived as `total_games − wins` rather than counted directly. An
-**abandoned** game has no winner at all, so it inflates `total_games` and falls into
-`losses` for the surviving player — a 0-point loss, since `points_value` is `0`.
-Nothing filters `win_type="abandoned"` out.
+The derivation that shapes everything else: `wins` counts rows where `winner`
+matches the seat, and `losses` is `total_games − wins` rather than a count of its
+own. Two win types interact with that.
+
+**Abandonment is excluded from every stat.** An abandoned game has no winner at
+all, so leaving it in would inflate `total_games` and drop the row into the
+surviving player's `losses` — charging them with a defeat nobody inflicted, which
+is precisely the result `abandon` refuses to invent. `_stats` therefore
+`.exclude(win_type="abandoned")` on both seats' querysets; dropping it from
+`total_games` too keeps `wins + losses == total_games`, which `win_percentage`
+assumes.
+
+**Timeouts are deliberately *not* excluded.** A timeout has a real `winner`, so
+`total − wins` already scores it correctly on both sides — a win for the claimant,
+a loss for the player who walked away — and no stats code was written to support
+it. It never counts as a gammon/backgammon, since those filter on `win_type`.
 
 ## Planned / Not Yet Implemented
 

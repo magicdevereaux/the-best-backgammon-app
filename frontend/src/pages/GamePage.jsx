@@ -7,6 +7,7 @@ import DoublingCube from "../components/DoublingCube";
 import GameOverScreen from "../components/GameOverScreen";
 import MatchScore from "../components/MatchScore";
 import AbandonGamePanel from "../components/AbandonGamePanel";
+import TurnClock from "../components/TurnClock";
 import { useGame } from "../hooks/useGame";
 import { blockedSeat } from "../utils/seats";
 import { useAuth } from "../context/AuthContext";
@@ -33,7 +34,7 @@ export default function GamePage() {
     pendingMoves, legalMoves, mustUseMoreDice, mustPlayHigherDie,
     stageMove, resetTurn, confirmTurn,
     offerDouble, respondToDouble, canOfferDouble,
-    deadlocked, abandonGame, canAbandon, reload,
+    deadlocked, abandonGame, canAbandon, claimTimeout, reload,
   } = useGame(id, user?.id);
 
   const [guestJoinName, setGuestJoinName] = useState("");
@@ -131,6 +132,12 @@ export default function GamePage() {
           <p style={T.sub}>{turnName}'s turn</p>
         )
       )}
+
+      {/* The inactivity clock, above the board so the warning can't be scrolled
+          past: a player must never lose to a clock they were never shown. Renders
+          nothing unless the server sent a `turn_deadline`, which it withholds
+          whenever a claim is impossible — including on a deadlocked game. */}
+      <TurnClock game={game} onClaimTimeout={claimTimeout} />
 
       <div style={{ overflowX: "auto" }}>
         <Board

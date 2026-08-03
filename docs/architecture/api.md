@@ -74,6 +74,7 @@ Related: [auth.md](auth.md) (token lifecycle), [data-model.md](data-model.md)
 | `POST` | `/api/games/{id}/offer_double/` | seat-enforced |
 | `POST` | `/api/games/{id}/respond_to_double/` | seat-enforced (responder seat) |
 | `POST` | `/api/games/{id}/abandon/` | seat-enforced (surviving seat) |
+| `POST` | `/api/games/{id}/claim_timeout/` | seat-enforced (claimant seat) |
 | `GET` | `/api/matches/` | optional — **scoped to the requester** |
 | `POST` | `/api/matches/` | optional |
 | `GET` | `/api/matches/{id}/` | optional |
@@ -143,7 +144,10 @@ on read** (never stored): `wins`, `losses`, `total_games`, `total_gammons`,
 finished without being played to a result, so counting it would reach `losses`
 through `total − wins` and charge the survivor with a defeat nobody inflicted.
 Excluding it from `total_games` too keeps `wins + losses == total_games`, which
-`win_percentage` assumes.
+`win_percentage` assumes. A **timeout** win is *not* excluded — it has a real
+`winner`, so the same `total − wins` derivation scores it correctly on both
+sides, and no stats code changed to support it. It never counts as a
+gammon/backgammon, since those filter on `win_type`.
 
 **401** when the header is missing or the token is invalid/expired.
 
@@ -304,7 +308,7 @@ and never branch on hit-vs-miss — there is no such distinction to render.
 
 ### The `Game` payload
 
-`GameSerializer` is `fields = "__all__"` over the `Game` model plus two computed
+`GameSerializer` is `fields = "__all__"` over the `Game` model plus four computed
 fields. Key fields:
 
 | Field | Type | Notes |
@@ -319,15 +323,18 @@ fields. Key fields:
 | `dice_values` | int[] | `[]` = not rolled; doubles are 4 identical values |
 | `status` | `"waiting"` \| `"active"` \| `"finished"` | read-only |
 | `winner` | `"p1"` \| `"p2"` \| null | read-only |
-| `win_type` | `"normal"`/`"gammon"`/`"backgammon"`/`"drop"`/`"abandoned"` \| null | read-only |
-| `points_value` | int \| null | `win_points(win_type) × cube_value`, the pre-double cube value on a drop, or `0` when abandoned |
+| `win_type` | `"normal"`/`"gammon"`/`"backgammon"`/`"drop"`/`"abandoned"`/`"timeout"` \| null | read-only |
+| `points_value` | int \| null | `win_points(win_type) × cube_value`, the pre-double cube value on a drop, `1 × cube_value` on a timeout, or `0` when abandoned |
 | `cube_value` | int | 1…64, read-only |
 | `cube_owner` | `"p1"`/`"p2"`/null | seat, not a user FK; null = centered |
 | `double_offered_by` | `"p1"`/`"p2"`/null | a pending, unanswered offer |
 | `crawford_game` | bool | cube disabled for this game |
+| `turn_started_at` | ISO datetime \| null | read-only; when the **waiting seat** came on the clock. Null = no clock running |
 | `created_at` / `updated_at` | ISO datetime | read-only |
 | `viewer_seat` | `"p1"`/`"p2"`/`"p1p2"`/null | computed per request |
 | `viewer_is_participant` | bool | `viewer_seat is not None` |
+| `turn_waiting_seat` | `"p1"`/`"p2"`/null | computed; the seat the game is waiting on, or null unless `status="active"` |
+| `turn_deadline` | ISO datetime \| null | computed; when [`claim_timeout`](#post-apigamesidclaim_timeout) becomes available. **Null whenever a claim is impossible in principle** |
 
 Everything except `player1_name`/`player2_name` is in `read_only_fields`, so a
 write request can only ever set those two. `player1_deleted`/`player2_deleted`
@@ -348,6 +355,37 @@ It is an authoritative server-side ownership signal usable on a fresh device
 with no local seat record (e.g. a deep link opened for the first time). Guests
 fall back to the client's device-local seat registry. Covered by `ViewerSeatTest`
 in [`test_lobby.py`](../../backend/game/tests/test_lobby.py).
+
+#### The turn-clock fields
+
+Three fields carry the inactivity clock ([ADR-002](../decisions/adr-002-inactivity-forfeit.md)):
+
+- **`turn_started_at`** (model field) is stamped whenever the **waiting seat
+  changes**, through a single `_begin_turn()` helper in `views.py` that fuses the
+  timestamp to the `current_turn` write so the two cannot drift: creation of a
+  game (or match) that starts **`active`**, activation on `join` (a `waiting`
+  game has nobody on the clock, and a lobby advert may have sat unjoined for
+  days), `confirm_turn` flipping the turn, `offer_double` (the wait flips to the
+  responder while `current_turn` stays put), `respond_to_double` on a *take* (it
+  flips back to the offerer, who must roll), and `next_game`. It is deliberately
+  **not** reset by `roll_dice`: one deadline covers rolling *and* moving, or a
+  player could roll and then stall forever on a fresh clock. `updated_at` cannot
+  substitute for it — `auto_now` bumps on every write for any reason.
+- **`turn_waiting_seat`** is `current_turn` **except** while `double_offered_by`
+  is set, where it is the responder — the same derivation `abandon`,
+  [`gating.js`](../../mobile/src/game/gating.js) and
+  [`seats.js`](../../frontend/src/utils/seats.js) already share. Null unless
+  `status="active"`.
+- **`turn_deadline`** is `turn_started_at + TURN_TIMEOUT_HOURS` (env-driven,
+  **default 48**), and is **null whenever a claim is impossible in principle**:
+  the game isn't `active`, either seat is closed (`player*_deleted` — that is
+  `abandon`'s deadlock, deliberately non-scoring), either seat is a guest (null
+  user FK, hence unverifiable), or no clock has been recorded.
+
+**Clients compare their own `now()` to `turn_deadline` and never re-derive
+eligibility.** There is deliberately no `can_claim` boolean: it would be stale
+the instant it was serialised, and both clients want a live countdown anyway. A
+null deadline is the "no claim here, ever" signal.
 
 ### `GET /api/games/`
 
@@ -438,6 +476,10 @@ On success sets `player2_user` (or null), `player2_name`, and
 No body. Rolls for `current_turn`; doubles produce four identical values. The
 roll is recorded **even when it leaves no legal move** — the client then calls
 `confirm_turn` with an empty `moves` list to pass.
+
+**This action does not touch `turn_started_at`.** The waiting seat has not
+changed, and one deadline is meant to cover rolling *and* moving — see
+[the turn-clock fields](#the-turn-clock-fields).
 
 **200** → the updated game.
 
@@ -617,6 +659,78 @@ banner ("your opponent deleted their account — this game can't continue") and 
 pollers stop on it. The predicates are affordance, not authorization — the server
 re-checks everything.
 
+### `POST /api/games/{id}/claim_timeout/`
+
+No body. The **inactivity forfeit**: the opponent has left the game waiting on
+them past `turn_deadline`, and the player still present claims the win. Rationale
+and the alternatives rejected are in
+[ADR-002](../decisions/adr-002-inactivity-forfeit.md).
+
+**This is not `abandon`, and the two are not interchangeable.** `abandon` closes
+out a game *deadlocked by a closed seat* and invents nothing — no winner, no
+points. `claim_timeout` awards a real win to a real player against a seat that
+still exists and simply stopped playing. A closed seat therefore 400s here and
+sends you to [`abandon`](#post-apigamesidabandon) instead.
+
+**Evaluation is pull-based.** There is no scheduler in this stack — no Celery, no
+cron — so a deadline can only be evaluated when someone hits the API. Nothing
+sweeps expired games in the background; the opponent must ask. For a live game
+the other client's ~3.5 s poll effectively *is* the sweeper.
+
+Preconditions, all read off the same state the serializer exposes as
+[`turn_deadline`](#the-turn-clock-fields):
+
+1. **The game is `active`.**
+2. **Neither seat is closed** (`player*_deleted`).
+3. **Both seats are registered** — both user FKs non-null. A guest seat is
+   unverifiable, so without this rule anyone holding the game id could claim,
+   including a hotseat player farming their own second seat.
+4. **A clock is recorded** (`turn_started_at` is set).
+5. **The deadline has elapsed** — `now() >= turn_started_at + TURN_TIMEOUT_HOURS`.
+6. **The caller may act for the claimant seat**, judged by the same
+   `_seat_permission_error` every gameplay action uses. The **idle** seat is
+   `turn_waiting_seat`; the **claimant** is its opponent.
+
+On success: `status="finished"`, `winner` = the claimant seat,
+`win_type="timeout"`, `points_value = 1 × cube_value`, `dice_values` and
+`double_offered_by` cleared, and the match score updated — it runs through
+`_apply_game_result` exactly like a board win or a drop. **A single point, not a
+gammon:** you cannot prove a gammon the opponent never let you play, so one is
+the defensible floor, and multiplying by the live cube keeps the stake the two
+players had actually agreed to.
+
+**Stats need no special case.** `"timeout"` is deliberately **not** added to the
+`abandoned` exclusion in `UserSerializer._stats`: a timeout has a real `winner`,
+so `losses = total − wins` already scores it correctly on both sides
+([`GET /api/auth/me/`](#get-apiauthme)).
+
+**200** → the updated game.
+
+| Status | Trigger |
+|--------|---------|
+| 400 | `"Game is not active."` — `waiting` or `finished`, **including a second claim** (the first one finished the game) |
+| 400 | `"A player deleted their account, so this game is not stalled — it is deadlocked. Use abandon to close it out; …"` — a closed seat |
+| 400 | `"Timeout wins are only available when both players are registered accounts."` — either seat is a guest |
+| 400 | `"This game has no turn clock running."` — `turn_started_at` is null |
+| 400 | `"Your opponent still has time to move — Nh Nm remaining."` — the deadline hasn't elapsed |
+| 403 | seat enforcement against the **claimant** seat — the idle player claiming their own timeout gets `"It's not your turn."` |
+| 404 | unknown id |
+
+Note the check order, which matches [`abandon`](#post-apigamesidabandon) rather
+than the gameplay actions: **every state check runs before the permission
+check**, so a stranger hitting a finished or not-yet-expired game gets 400, not
+403. The whole action runs inside `transaction.atomic()` on a locked row, so the
+deadline read and the "already finished?" test see the same row this action
+writes — a replayed request loses.
+
+**Both clients offer it to the claimant seat only**, behind a `canClaimTimeout`
+predicate that is the **third** member of the `seats.js` / `gating.js`
+stay-in-sync obligation, and render a countdown extrapolated from
+`turn_deadline` rather than from the poll — see
+[clients.md](clients.md#closed-seats-and-the-inactivity-clock-the-predicates-both-clients-share).
+As everywhere else, the predicate is affordance; the server re-checks all six
+preconditions.
+
 ---
 
 ## Matches
@@ -737,10 +851,11 @@ Sets the match's `player2_user`/`player2_name` and promotes the match's first
 ## Seat enforcement
 
 `_seat_permission_error` in [`views.py`](../../backend/game/views.py) guards the
-five actions that mutate a game: `roll_dice`, `confirm_turn`, `offer_double`,
-`respond_to_double` and `abandon`. It checks the seat being acted for —
-`game.current_turn` by default, the explicit responder seat for
-`respond_to_double`, or the **surviving** seat for `abandon`. On rejection:
+six actions that mutate a game: `roll_dice`, `confirm_turn`, `offer_double`,
+`respond_to_double`, `abandon` and `claim_timeout`. It checks the seat being
+acted for — `game.current_turn` by default, the explicit responder seat for
+`respond_to_double`, the **surviving** seat for `abandon`, or the **claimant**
+seat (the waiting seat's opponent) for `claim_timeout`. On rejection:
 **403** with `{"error": "<message>"}`.
 
 | Seat FK | Requester | Result |
@@ -764,7 +879,10 @@ both sides of the board. Consequence: such a game **deadlocks** — no action on
 the closed seat ever succeeds and nothing auto-forfeits it. The only way out is
 [`abandon`](#post-apigamesidabandon), which does not play the seat — it closes
 the game out unscored. See
-[data-model.md](data-model.md#closed-seats-player_deleted).
+[data-model.md](data-model.md#closed-seats-player_deleted). Note that
+[`claim_timeout`](#post-apigamesidclaim_timeout) is **not** an alternative exit
+here: it refuses a closed seat outright, precisely so a deadlock never turns into
+points nobody won.
 
 Consequences worth knowing:
 
@@ -775,10 +893,12 @@ Consequences worth knowing:
 - The **web UI does not gate turn ownership** locally — an unauthorized click
   surfaces the server's 403. Mobile hides controls via
   [`gating.js`](../../mobile/src/game/gating.js) as UX on top of the same rules.
-  The one branch both clients model is the **closed seat**: `isDeadlocked` /
-  `canAbandon` live in `gating.js` and in
-  [`seats.js`](../../frontend/src/utils/seats.js) as an identical, must-stay-in-sync
-  pair, because a deadlock has to be *explained* rather than left as a silent 403.
+  Two branches both clients *do* model are the **closed seat** and the
+  **inactivity clock**: `isDeadlocked` / `canAbandon` / `canClaimTimeout` live in
+  `gating.js` and in [`seats.js`](../../frontend/src/utils/seats.js) as an
+  identical, must-stay-in-sync trio, because a deadlock has to be *explained*
+  rather than left as a silent 403, and a claim has to be *offered* rather than
+  guessed at.
 - `next_game` is guarded by the separate `_match_permission_error`
   ([above](#post-apimatchesidnext_game)); `join` on either resource is **not**
   guarded at all, and `PUT`/`PATCH`/`DELETE` are no longer routed.
@@ -808,10 +928,19 @@ Not in the code today — do not assume them:
 - **Matchmaking / lobby queue endpoints.** Pairing is manual via
   `?status=waiting` plus `join`. No queue, ranking, or auto-pairing route.
 - **Resign and rematch endpoints.** A game can only end on the board, by dropping
-  a double, or — for the one deadlock case — via
-  [`abandon`](#post-apigamesidabandon), which is *not* a resign: it scores
-  nothing. There is no way to concede points to an opponent, and no route to
-  replay a finished match.
+  a double, by an opponent running out the clock
+  ([`claim_timeout`](#post-apigamesidclaim_timeout)), or — for the one deadlock
+  case — via [`abandon`](#post-apigamesidabandon), which is *not* a resign: it
+  scores nothing. There is no way to **concede** points to an opponent, and no
+  route to replay a finished match.
+- **A background sweeper for expired turns.** Timeout claims are pull-based;
+  nothing forfeits an idle game until the opponent calls `claim_timeout`. There
+  is no Celery/cron/management-command sweep, by design
+  ([ADR-002](../decisions/adr-002-inactivity-forfeit.md)).
+- **Live chess-style clocks.** `turn_deadline` is a single per-turn deadline.
+  There is no reserve time, no Fischer/Bronstein increment, no per-player
+  accumulated-time field, and no clock mode at game creation — deferred until
+  presence exists ([ADR-002](../decisions/adr-002-inactivity-forfeit.md)).
 - **A mobile reset-confirm screen.** Mobile can *request* a reset link, but the
   emailed link is a web URL and opens in the browser; there is no
   `backgammon://reset-password/...` deep-link route.

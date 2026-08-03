@@ -198,8 +198,29 @@ Related detail: a bear-off `(from, 25)` can match both dice (exact + oversized),
 - `detect_win_type` — `normal` (1 pt), `gammon` (loser bore off none; 2 pts), or
   `backgammon` (loser bore off none **and** still has a checker on the bar or in the
   winner's home board; 3 pts).
-- Board-win points are **multiplied by the doubling-cube value** (below), and a
-  fourth `win_type`, `drop`, marks a game conceded by declining a double.
+- Board-win points are **multiplied by the doubling-cube value** (below).
+
+A game can also end **off** the board, and `game_logic.py` knows nothing about
+these — they are endpoint-driven in [`views.py`](../../backend/game/views.py).
+Every path converges on `_apply_game_result`:
+
+| Path | `win_type` | Winner | Points |
+|------|-----------|--------|--------|
+| bear off all 15 | `normal` / `gammon` / `backgammon` | the player who bore off | `win_points(win_type) × cube_value` |
+| decline a double | `drop` | the offerer | the **pre-double** `cube_value` |
+| opponent runs out the clock ([`claim_timeout`](api.md#post-apigamesidclaim_timeout)) | `timeout` | the claimant | `1 × cube_value` |
+| deadlocked by a closed seat ([`abandon`](api.md#post-apigamesidabandon)) | `abandoned` | **none** | `0`, and the match score is untouched |
+
+**`timeout` and `abandoned` are opposites, deliberately.** A timeout is a real
+win over a player who exists and stopped playing, so it scores and counts in
+stats; an abandonment closes out a game nobody can play because a seat ceased to
+exist, so it invents nothing and is excluded from stats entirely. `claim_timeout`
+refuses a closed seat for exactly that reason. See
+[ADR-002](../decisions/adr-002-inactivity-forfeit.md).
+
+A timeout is capped at a **single** point before the cube multiplier: you cannot
+prove a gammon the opponent never let you play.
+
 - In match mode, points accumulate on the `Match` until a player reaches
   `target_points`; the game winner goes first in the next game.
 
@@ -215,7 +236,9 @@ unanswered offer), and `crawford_game`. The flow is endpoint-driven in
   centered or yours, outside the Crawford game, below 64, and with no offer already
   pending. Seat-enforced against `current_turn` like the gameplay actions (403).
   Sets `double_offered_by`; while set, `roll_dice` / `confirm_turn` and a second
-  `offer_double` are all blocked (400) until the opponent answers.
+  `offer_double` are all blocked (400) until the opponent answers. Because the
+  game is now waiting on the *responder*, this also restarts the inactivity clock
+  (`turn_started_at`) — see [api.md](api.md#the-turn-clock-fields).
 - **`respond_to_double`** (`{"accept": bool}`) — answered by the *offerer's
   opponent* (seat-enforced with the same 403 pattern as gameplay actions; the
   responder is not the current-turn player, so the permission check takes an
@@ -225,9 +248,10 @@ unanswered offer), and `crawford_game`. The flow is endpoint-driven in
   **pre-double** cube value.
 - **Scoring:** board wins award `win_points(win_type) × cube_value` (gammon at
   cube 4 = 8, backgammon at cube 4 = 12). This multiplied value is what lands in
-  `points_value`, the match score, and (by aggregation) user stats. Both endings
-  go through `_apply_game_result`, which also clears `dice_values` and any
-  pending offer.
+  `points_value`, the match score, and (by aggregation) user stats. Every ending
+  goes through `_apply_game_result`, which also clears `dice_values` and any
+  pending offer. A **timeout** is scored the same way at `1 × cube_value`, so a
+  player who walks away from a doubled game loses the doubled stake.
 - **Crawford rule:** `next_game` marks the first game after either player reaches
   `target_points − 1` as `crawford_game=True` (cube disabled for that one game);
   `match.games.filter(crawford_game=True).exists()` prevents a second one, so

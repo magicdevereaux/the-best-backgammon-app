@@ -7,6 +7,7 @@ from django.contrib.auth.tokens import default_token_generator
 from django.core.mail import send_mail
 from django.db import transaction
 from django.db.models import Q
+from django.utils import timezone
 from django.utils.encoding import force_bytes
 from django.utils.http import urlsafe_base64_encode
 from rest_framework import generics, mixins, viewsets, status
@@ -440,6 +441,48 @@ class PasswordResetConfirmView(generics.GenericAPIView):
 # Game helpers
 # ---------------------------------------------------------------------------
 
+def _begin_turn(game, seat):
+    """
+    Hand ``current_turn`` to `seat` **and** restart the inactivity clock, as one
+    operation. Does NOT call ``game.save()`` — the caller is responsible.
+
+    The two writes are fused into a helper rather than left as two adjacent
+    assignments because they must never drift: a ``current_turn`` flip that
+    forgot the timestamp would leave the incoming player already partway (or
+    entirely) through a deadline they never saw start, and a timestamp reset
+    without the flip would silently pardon a stalling player. Every place the
+    game changes who owes the next action goes through here — ``join`` on both
+    viewsets, ``confirm_turn``, ``offer_double``, a taken double in
+    ``respond_to_double``, and ``next_game``.
+
+    Note ``offer_double`` calls it with the seat *already* holding the turn.
+    That is not a no-op: the seat on the clock is ``Game.waiting_seat``, not
+    ``current_turn``, and offering a double moves it to the responder while
+    leaving the roller as ``current_turn``. The waiting seat changed, so the
+    clock restarts.
+
+    **``roll_dice`` deliberately does not call this.** The deadline covers
+    roll-and-move together, on purpose: if rolling started a fresh clock, a
+    player could roll within the window and then stall forever on an untouched
+    board, and the timeout would never be claimable.
+    """
+    game.current_turn = seat
+    game.turn_started_at = timezone.now()
+
+
+def _turn_start_fields(seat):
+    """
+    ``_begin_turn`` as a kwargs dict, for the paths that create a row rather
+    than mutate one (``serializer.save()`` / ``Model.objects.create()``).
+
+    Built by running ``_begin_turn`` against a throwaway instance rather than
+    by restating the assignments, so this cannot drift from it.
+    """
+    stub = Game()
+    _begin_turn(stub, seat)
+    return {"current_turn": stub.current_turn, "turn_started_at": stub.turn_started_at}
+
+
 def _apply_single_move(board, player, dice, from_point, to_point):
     """
     Validate and apply one move in place. Returns the updated dice list.
@@ -465,9 +508,11 @@ def _apply_single_move(board, player, dice, from_point, to_point):
 def _seat_permission_error(game, user, seat=None):
     """
     Server-side seat/turn enforcement for gameplay actions (roll_dice,
-    confirm_turn, cube actions). Returns an error message if the
-    requester may not act for `seat` (default: game.current_turn — the seat a
-    double responder acts for is passed explicitly), or None if allowed.
+    confirm_turn, cube actions, abandon, claim_timeout). Returns an error
+    message if the requester may not act for `seat` (default:
+    game.current_turn — actions whose actor is *not* the current-turn seat pass
+    it explicitly: the responder for a double, the survivor for abandon, the
+    claimant for claim_timeout), or None if allowed.
 
     Seat identity is only as strong as the player user FKs: a seat with a null
     FK belongs to a guest, who has no server identity to verify. Policy:
@@ -768,8 +813,15 @@ class MatchViewSet(
                 player2_name=player2_name,
             )
 
-            # Create the first game of this match
+            # Create the first game of this match. A game that starts active
+            # (both names known: hotseat/guest) starts its clock now; a waiting
+            # one has nobody on it yet and gets its clock from `join`.
             game_status = "active" if player2_name else "waiting"
+            turn_fields = (
+                _turn_start_fields("p1")
+                if game_status == "active"
+                else {"current_turn": "p1"}
+            )
             Game.objects.create(
                 match=match,
                 player1_user=match.player1_user,
@@ -777,9 +829,9 @@ class MatchViewSet(
                 player1_name=match.player1_name,
                 player2_name=match.player2_name,
                 board_state=get_initial_board_state(),
-                current_turn="p1",
                 dice_values=[],
                 status=game_status,
+                **turn_fields,
             )
 
         return Response(self.get_serializer(match).data, status=status.HTTP_201_CREATED)
@@ -844,10 +896,12 @@ class MatchViewSet(
                 player1_deleted=match.player1_deleted,
                 player2_deleted=match.player2_deleted,
                 board_state=get_initial_board_state(),
-                current_turn=next_turn,
                 dice_values=[],
                 status="active",
                 crawford_game=at_match_point and not crawford_played,
+                # The new game is live immediately, so `next_turn` is on the
+                # clock from this moment.
+                **_turn_start_fields(next_turn),
             )
 
         return Response(GameSerializer(game).data, status=status.HTTP_201_CREATED)
@@ -879,6 +933,17 @@ class MatchViewSet(
                 )
 
             user = request.user if request.user.is_authenticated else None
+
+            # Same guard as `GameViewSet.join`, for the same reason: one account
+            # holding both seats makes every game in the match timeout-claimable
+            # against itself. Refused here too, or the match's waiting game would
+            # inherit both seats from the rows written just below.
+            if user is not None and match.player1_user_id == user.id:
+                return Response(
+                    {"error": "You cannot hold both seats in one match."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
             player2_name = request.data.get("player2_name") or (
                 user.username if user else None
             )
@@ -900,6 +965,10 @@ class MatchViewSet(
                 waiting_game.player2_user = user
                 waiting_game.player2_name = player2_name
                 waiting_game.status = "active"
+                # The game only becomes playable here, so this is when p1 is
+                # first genuinely owed a move — not when the match was created,
+                # which could have been days ago.
+                _begin_turn(waiting_game, waiting_game.current_turn)
                 waiting_game.save()
 
         return Response(self.get_serializer(match).data)
@@ -924,6 +993,7 @@ class GameViewSet(
       POST /api/games/{id}/offer_double/
       POST /api/games/{id}/respond_to_double/
       POST /api/games/{id}/abandon/
+      POST /api/games/{id}/claim_timeout/
 
     Deliberately **not** a ModelViewSet: PUT/PATCH/DELETE were routed with no
     permission check at all, so any caller could overwrite a board mid-game or
@@ -961,14 +1031,22 @@ class GameViewSet(
         # Lobby: only player1 → start waiting for an opponent.
         game_status = "active" if player2_name else "waiting"
 
+        # An active game is on the clock from creation; a waiting one has no
+        # opponent to be idle yet, so `join` starts it.
+        turn_fields = (
+            _turn_start_fields("p1")
+            if game_status == "active"
+            else {"current_turn": "p1"}
+        )
+
         serializer.save(
             player1_user=user,
             player1_name=player1_name,
             player2_name=player2_name,
             board_state=get_initial_board_state(),
-            current_turn="p1",
             dice_values=[],
             status=game_status,
+            **turn_fields,
         )
 
     @action(detail=True, methods=["post"], url_path="join")
@@ -994,6 +1072,24 @@ class GameViewSet(
                 )
 
             user = request.user if request.user.is_authenticated else None
+
+            # One account must never hold both seats. Beyond being nonsense as a
+            # game, it is a scoring exploit: two registered seats make the row
+            # timeout-claimable, and `_seat_permission_error` waves the claim
+            # through because the idle seat's user *is* the requester — so the
+            # account farms `win_type="timeout"` wins against itself. Keyed off
+            # the requester's id, never the submitted name, which is free text.
+            #
+            # Hotseat is not caught by this: those games are created with both
+            # names, start `active`, and leave p2 a guest seat, so they never
+            # reach `join` at all. See `Game.timeout_deadline`, which refuses a
+            # same-account row as a second line of defence.
+            if user is not None and game.player1_user_id == user.id:
+                return Response(
+                    {"error": "You cannot hold both seats in one game."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
             player2_name = request.data.get("player2_name") or (
                 user.username if user else None
             )
@@ -1007,6 +1103,10 @@ class GameViewSet(
             game.player2_user = user
             game.player2_name = player2_name
             game.status = "active"
+            # Activating is the first moment anyone is genuinely owed an
+            # action, so the inactivity clock starts here rather than at
+            # creation — a lobby advert may have sat unjoined for days.
+            _begin_turn(game, game.current_turn)
             game.save()
 
             serializer = self.get_serializer(game)
@@ -1051,6 +1151,11 @@ class GameViewSet(
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
+            # No `_begin_turn` here, on purpose: the inactivity deadline covers
+            # roll-and-move as one turn. Restarting the clock on a roll would
+            # let a player roll inside the window and then stall indefinitely
+            # on a fresh deadline, which is exactly the behaviour the timeout
+            # exists to catch. See `_begin_turn`.
             game.dice_values = roll_dice()
             game.save()
 
@@ -1176,7 +1281,7 @@ class GameViewSet(
                 # _apply_game_result.
                 _finish_game(game, board, winner)
             else:
-                game.current_turn = opponent(player)
+                _begin_turn(game, opponent(player))
                 game.dice_values = []
 
             game.save()
@@ -1242,6 +1347,10 @@ class GameViewSet(
                 )
 
             game.double_offered_by = player
+            # The waiting seat just moved to the responder (see
+            # `Game.waiting_seat`), so their clock starts now. `current_turn` is
+            # unchanged — the offerer still rolls if the double is taken.
+            _begin_turn(game, player)
             game.save()
 
             serializer = self.get_serializer(game)
@@ -1294,6 +1403,10 @@ class GameViewSet(
                 game.cube_value *= 2
                 game.cube_owner = responder
                 game.double_offered_by = None
+                # Clearing the offer hands the wait back to the offerer, who
+                # now has to roll — a fresh deadline for them, not the remains
+                # of the one the responder was answering under.
+                _begin_turn(game, game.current_turn)
             else:
                 # Dropping concedes the game at the pre-double stakes. Scores
                 # the match on its locked row — see _apply_game_result.
@@ -1360,11 +1473,10 @@ class GameViewSet(
                     {"error": "Game is not active."}, status=status.HTTP_400_BAD_REQUEST
                 )
 
-            # Whose action is the game waiting on? A pending double blocks all play
-            # until the offerer's opponent answers it.
-            blocked = (
-                opponent(game.double_offered_by) if game.double_offered_by else game.current_turn
-            )
+            # Whose action is the game waiting on? A pending double blocks all
+            # play until the offerer's opponent answers it. Shared with
+            # `claim_timeout` and the serializer — see `Game.waiting_seat`.
+            blocked = game.waiting_seat
             blocked_closed = game.player1_deleted if blocked == "p1" else game.player2_deleted
             if not blocked_closed:
                 return Response(
@@ -1398,6 +1510,133 @@ class GameViewSet(
                 # another dead game is revoked.
                 match.status = "finished"
                 match.save()
+
+            serializer = self.get_serializer(game)
+            return Response(serializer.data)
+
+    @action(detail=True, methods=["post"], url_path="claim_timeout")
+    def claim_timeout(self, request, pk=None):
+        """
+        Claim the win when the opponent has left the game waiting on them past
+        the ``TURN_TIMEOUT_HOURS`` deadline. See ADR-002.
+
+        **Pull-based, because there is no scheduler in this stack** — no Celery,
+        no cron. A deadline can only be evaluated when someone hits the API, so
+        the opponent asks for the win rather than a sweeper granting it. For a
+        live game the opponent's ~3.5s poll effectively *is* the sweeper.
+
+        This is emphatically **not** ``abandon``. That endpoint exists for the
+        closed-seat deadlock and is non-scoring on purpose; this one has a real
+        winner and moves the match score. A closed seat is therefore refused
+        here and pointed at ``abandon`` explicitly, so the two never blur.
+
+        Preconditions, in the order they are checked (all under the row lock —
+        the deadline and the "already finished?" test are read from the same row
+        this action writes, and a replay must lose):
+
+          1. The game is ``active``. This is also what makes a second claim a
+             plain 400 instead of a second score: the first one finished the
+             game.
+          2. Neither seat is closed → ``abandon``'s case, named as such.
+          3. **Both seats are registered.** A guest seat carries no server
+             identity, so without this anyone holding the game id could claim
+             one — including a hotseat player farming their own second seat
+             against themselves. Guest games keep the existing non-scoring exit.
+          4. **The two seats are different accounts.** Rule 3 was written for
+             the farming threat but tested only for null FKs, so a user sitting
+             in *both* seats passed it — and then passed rule 7 too, because the
+             claimant seat really is theirs. That minted a real scoring win on
+             demand. ``join`` no longer lets such a row be created; this guard
+             covers any that already exist.
+          5. A clock is actually running (``turn_started_at`` set).
+          6. The deadline has passed, with the remaining time reported when it
+             has not.
+          7. The caller owns the *claimant* seat — the opponent of
+             ``waiting_seat``. Passed to ``_seat_permission_error`` explicitly,
+             the same way ``respond_to_double`` does, because the claimant is by
+             definition not the seat the game is waiting on.
+
+        1–5 are exactly the conditions under which ``Game.timeout_deadline()``
+        returns None, which is how the serializer tells a client "no claim is
+        possible here, ever" — the two cannot disagree, since this action reads
+        its deadline from that method.
+
+        The award is a **single game at the current cube value** (``win_points``
+        of 1 × ``cube_value``), routed through ``_apply_game_result`` so match
+        scoring and match completion behave exactly as they do for a board win
+        or a dropped double. A single is the defensible floor: you cannot prove
+        a gammon your opponent never let you play.
+        """
+        with transaction.atomic():
+            game = self._locked_object()
+
+            if game.status != "active":
+                return Response(
+                    {"error": "Game is not active."}, status=status.HTTP_400_BAD_REQUEST
+                )
+
+            if game.player1_deleted or game.player2_deleted:
+                return Response(
+                    {
+                        "error": "A player deleted their account, so this game is "
+                                 "not stalled — it is deadlocked. Use abandon to "
+                                 "close it out; it ends with no winner and no "
+                                 "score change."
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            if game.player1_user_id is None or game.player2_user_id is None:
+                return Response(
+                    {
+                        "error": "Timeout wins are only available when both "
+                                 "players are registered accounts."
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            if game.player1_user_id == game.player2_user_id:
+                return Response(
+                    {
+                        "error": "One account holds both seats in this game, so "
+                                 "there is nobody to claim a timeout against."
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            if game.turn_started_at is None:
+                return Response(
+                    {"error": "This game has no turn clock running."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            # Guaranteed non-None by the five guards above — they are precisely
+            # the cases `timeout_deadline` returns None for.
+            deadline = game.timeout_deadline()
+            now = timezone.now()
+            if now < deadline:
+                remaining = deadline - now
+                total_minutes = int(remaining.total_seconds() // 60)
+                hours, minutes = divmod(total_minutes, 60)
+                return Response(
+                    {
+                        "error": (
+                            "Your opponent still has time to move — "
+                            f"{hours}h {minutes}m remaining."
+                        )
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            claimant = opponent(game.waiting_seat)
+            perm_error = _seat_permission_error(game, request.user, seat=claimant)
+            if perm_error:
+                return Response({"error": perm_error}, status=status.HTTP_403_FORBIDDEN)
+
+            # win_points of 1, multiplied by the cube like every other win.
+            # Scores the match on its locked row — see _apply_game_result.
+            _apply_game_result(game, claimant, "timeout", 1 * game.cube_value)
+            game.save()
 
             serializer = self.get_serializer(game)
             return Response(serializer.data)

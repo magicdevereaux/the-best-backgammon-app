@@ -15,6 +15,13 @@ numbers in `views.py` moved and were re-read for this pass; `settings.py`,
 `serializers.py` and `models.py` are untouched since the previous audit, so their
 citations below still hold as written.
 
+> **Added after that pass:** the inactivity forfeit ([3.35](#3-done)) — a
+> `turn_started_at` column, `TURN_TIMEOUT_HOURS`, `POST /claim_timeout/`, and a
+> countdown plus claim control on both clients. It closes the last way an online
+> game could become permanently unplayable with nobody at fault. `models.py`,
+> `serializers.py` and `settings.py` all moved with it, so line citations naming
+> those three may sit a few lines off; the symbols they name are unchanged.
+
 ## Current state
 
 The original audit found 11 hard blockers. **All of them are closed**, and so is
@@ -51,11 +58,17 @@ System check identified no issues (0 silenced).
 ```
 
 Six warnings → zero. All three suites are green as of **2026-08-02**:
-**backend 450**, **web 312**, **mobile 190** (952 total), and
+**backend 531**, **web 364**, **mobile 247** (1142 total), and
 [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) runs each on every
-push. The backend count moved from 441 in the previous pass: the `ADMIN_URL`
-tests in [2.2](#22-django-admin-has-no-2fa-ip-allowlist-or-lockout) and the
-transaction tests account for the difference.
+push. Those numbers moved on all three clients in this pass — from 450 / 312 /
+190 (952) — and the inactivity forfeit ([3.35](#3-done)) is what moved them:
+`test_timeout.py` on the server plus the turn-clock and claim-control suites on
+web and mobile. The backend figure had itself already grown from 441 with the
+`ADMIN_URL` tests in [2.2](#22-django-admin-has-no-2fa-ip-allowlist-or-lockout)
+and the transaction tests. **The backend's 531 are also green against real
+Postgres**, not only SQLite — see
+[postgres-readiness.md](postgres-readiness.md) and
+[1.1](#11-pick-a-host-and-provision-postgresql).
 
 Still true, and still good news: **no secrets are committed.** `git status`
 shows no `.env`, and [`.gitignore`](../../.gitignore) covers `db.sqlite3`,
@@ -115,9 +128,14 @@ Heroku-style hosts. Nothing host-specific is committed, on purpose.
 The owner must provision a managed Postgres and set `DATABASE_URL`. The old
 warning here — *"verify the migrations apply cleanly on an empty Postgres before
 cutting over, they have only ever been run against SQLite"* — is **discharged as
-of 2026-08-02**: all 34 migrations apply clean to an empty Postgres 16 and the
-full backend suite passes there. Evidence, the compatibility audit, and the two
-settings still to change at cutover (notably `DB_SSL_REQUIRE=True`) are in
+of 2026-08-02**, and fully so: all **35** migrations in the tree apply clean to
+an empty Postgres 16 and the full **531**-test backend suite passes there. That
+now includes `0005_game_turn_started_at` ([3.35](#3-done)), whose `RunPython`
+backfill was exercised against **real rows** rather than the zero rows an empty
+database offers it — `active` games took `updated_at` exactly, `waiting` and
+`finished` stayed null, and `updated_at` was not itself rewritten — and which
+also reverses cleanly. Evidence, the compatibility audit, and the two settings
+still to change at cutover (notably `DB_SSL_REQUIRE=True`) are in
 [postgres-readiness.md](postgres-readiness.md).
 
 ### 1.2 Domain, TLS, and the production environment
@@ -138,6 +156,7 @@ in [`backend/.env.example`](../../backend/.env.example):
 | `CORS_ALLOWED_ORIGINS` / `CSRF_TRUSTED_ORIGINS` | The web app's origin ([`settings.py:254–255`](../../backend/backgammon/settings.py)). Defaults are `http://localhost:3000`. |
 | `SECURE_HSTS_SECONDS` | **Caution.** Defaults to 1 year *with* `includeSubDomains` and `preload`. Set it to `60` for the first deploys and ramp — HSTS is very hard to undo. |
 | `THROTTLE_RATE_*` | Optional; defaults are sane. |
+| `TURN_TIMEOUT_HOURS` | Optional; **defaults to 48**. How long a seat may leave a game waiting on it before the opponent can claim an inactivity forfeit ([3.35](#3-done)). Env-driven so it can be retuned on a live deployment without a deploy — worth revisiting once real players show you how they actually pace a game. |
 | `REDIS_URL` | **Optional, strongly recommended.** Unset → `LocMemCache`, so DRF's throttle counters are per gunicorn worker and reset on deploy. Set → `RedisCache` and the limits become global ([`settings.py:63–90, 196–204`](../../backend/backgammon/settings.py)). Provisioning is owner work; see [3.22](#3-done). |
 | `SENTRY_DSN` | **Optional, strongly recommended.** Unset → `sentry_sdk.init()` is never called and a 500 reports nowhere. Set → errors ship, tagged by `SENTRY_ENVIRONMENT` / `SENTRY_RELEASE` ([`settings.py:445–473`](../../backend/backgammon/settings.py)). See [3.25](#3-done). |
 | `ADMINS` | Optional. `Name <addr>` pairs, comma-separated; attaches Django's `mail_admins` handler to `django.request` ([`settings.py:429–443`](../../backend/backgammon/settings.py)). Needs `EMAIL_HOST` to actually send. |
@@ -362,6 +381,14 @@ treat the four items above as the real fix.
   [`frontend/public/index.html`](../../frontend/public/index.html) (still present,
   re-read this pass). Same comment notes the missing PNG/ICO favicon fallback and
   the 192/512px manifest icons.
+- **Nothing tells a player their clock is running.** The inactivity forfeit
+  ([3.35](#3-done)) is fully built and both clients render a countdown, but only
+  *while the game screen is open*. There is no push notification, no email, and
+  no badge, so a player who doesn't open the app can be forfeited without ever
+  having seen the clock. Mitigated by the 48-hour default rather than solved.
+  Closing it needs a notification channel that does not exist anywhere in the
+  tree — the same missing "presence" layer that defers live clocks
+  ([ADR-002](../decisions/adr-002-inactivity-forfeit.md)).
 - **No load testing.** Nobody knows what concurrency this survives. One `k6` or
   `locust` run against the deployed API is cheap insurance.
 - **No matchmaking.** Online play is link/code only, so a store user with no
@@ -814,3 +841,59 @@ each was verified by reading the file, not by trusting a changelog.
     outright**: a client can no longer stage a turn the server will reject with a
     400. Covered by [`test_higher_die.py`](../../backend/game/tests/test_higher_die.py)
     and mirrored describe-blocks in `gameLogic.test.js` and `logic.test.js`.
+35. **A player who walks away no longer strands the game forever.** This was the
+    last remaining way for an online game to become unplayable with nobody at
+    fault: there was no timeout, no forfeit and no clock, so the opponent's only
+    exit was to stop playing. Designed in
+    [ADR-002](../decisions/adr-002-inactivity-forfeit.md) and built to it.
+
+    `Game.turn_started_at` (nullable, migration
+    [`0005_game_turn_started_at.py`](../../backend/game/migrations/0005_game_turn_started_at.py),
+    which also backfills `active` rows from `updated_at` — an approximation that
+    deliberately errs *generous*, and touches only local dev games since no
+    deployment exists) records when the **waiting seat** came on the clock,
+    written by a single
+    `_begin_turn()` helper at every point that seat changes — creation of an
+    already-`active` game, `join`, `confirm_turn`, `offer_double`,
+    `respond_to_double` on a take, and
+    `next_game`. **`roll_dice` deliberately does not reset it**, or a player could
+    roll and then stall indefinitely on a fresh deadline. `updated_at` could not
+    stand in: `auto_now` bumps on every write for any reason.
+    `TURN_TIMEOUT_HOURS` (**default 48**,
+    [`settings.py`](../../backend/backgammon/settings.py)) is the only tunable,
+    and dev still needs no `.env` — see
+    [1.2](#12-domain-tls-and-the-production-environment).
+
+    `POST /api/games/{id}/claim_timeout/` ([`views.py`](../../backend/game/views.py))
+    is **pull-based** — there is no scheduler in this stack, so nothing sweeps
+    expired games; the opponent claims, and for a live game the other client's
+    ~3.5 s poll effectively *is* the sweeper. It requires an `active` game, two
+    **registered** seats, neither closed, a recorded clock, an elapsed deadline,
+    and a caller who holds the claimant seat, then finishes the game
+    `win_type="timeout"` with a real `winner` and `1 × cube_value` through
+    `_apply_game_result` like any other win. A **single** point because you cannot
+    prove a gammon the opponent never let you play.
+
+    **It is deliberately not `abandon`, and refuses a closed seat.** A deadlock is
+    closed out unscored ([3.24](#3-done)); an inactivity forfeit is a genuine win.
+    Nothing in the stats code changed — `"timeout"` has a real winner, so
+    `losses = total − wins` scores it on both sides, and only `"abandoned"`
+    remains in the exclusion.
+
+    Both clients render a countdown **in both directions** (the seat on the clock
+    sees its own time draining; the opponent sees when a claim opens),
+    extrapolated locally on a 1 s interval from the serializer's `turn_deadline` —
+    polling only reconciles it.
+    [`TurnClock.jsx`](../../frontend/src/components/TurnClock.jsx) +
+    [`ClaimTimeoutPanel.jsx`](../../frontend/src/components/ClaimTimeoutPanel.jsx)
+    on web, [`TurnClockSection.jsx`](../../mobile/src/components/TurnClockSection.jsx)
+    + [`useTurnClock.js`](../../mobile/src/game/useTurnClock.js) on mobile. The
+    eligibility rule is **never re-derived client-side**: `turn_deadline` is null
+    whenever a claim is impossible in principle, and `canClaimTimeout` — now the
+    **third** member of the `seats.js` / `gating.js` stay-in-sync obligation —
+    adds only the device clock and which seat is looking. Covered by
+    [`test_timeout.py`](../../backend/game/tests/test_timeout.py) and the clock
+    suites in both clients.
+
+    **One residue, in [2.3](#23-polish-and-hygiene):** nothing notifies a player
+    that their clock is running unless the game screen is open.

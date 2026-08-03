@@ -7,12 +7,18 @@ const WIN_TYPE_LABEL = {
   gammon: "wins with a gammon!",
   backgammon: "wins with a backgammon!",
   drop: "wins — double declined!",
+  timeout: "wins on time!",
 };
 
 const WIN_TYPE_DETAIL = {
   gammon: "Gammon — opponent has borne off nothing.",
   backgammon: "Backgammon — opponent still has a checker on the bar or in your home board.",
   drop: "The double was dropped — the game ends at the pre-double stakes.",
+  // Deliberately neutral about who is reading it: the headline already names
+  // the winner, so this line has to be true from both chairs. It also has to
+  // say *why* it is only a single game — you cannot prove a gammon your
+  // opponent never let you play.
+  timeout: "The clock ran out — the player on the move didn't play in time. A forfeit is worth a single game at the current stakes.",
 };
 
 // Native port of frontend/src/components/GameOverScreen.jsx as a modal overlay.

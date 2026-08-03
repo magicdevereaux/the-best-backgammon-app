@@ -114,3 +114,54 @@ describe("GameOverScreen", () => {
     expect(screen.queryByText("Next Game")).toBeNull();
   });
 });
+
+describe("GameOverScreen timeout", () => {
+  const timeoutWin = {
+    winner: "p1",
+    player1_name: "Alice",
+    player2_name: "Bob",
+    win_type: "timeout",
+    points_value: 1,
+  };
+
+  test("names the winner and explains the forfeit in terms both players can read", () => {
+    render(
+      <GameOverScreen
+        game={timeoutWin}
+        match={null}
+        onNextGame={jest.fn()}
+        onNewMatch={jest.fn()}
+        onLobby={jest.fn()}
+      />
+    );
+
+    // Not the bare "wins!" fallback — a timeout says so.
+    expect(screen.getByText("Alice wins on time!")).toBeTruthy();
+    expect(screen.getByText("1 point awarded")).toBeTruthy();
+    // Neutral phrasing: nothing here reads as "you" or "your opponent", so the
+    // same card is correct for the winner and for the player who ran out.
+    expect(screen.getByText(/The clock ran out/)).toBeTruthy();
+    expect(screen.getByText(/single game at the current stakes/)).toBeTruthy();
+  });
+
+  test("scores into the match like any other win, at the cube value", () => {
+    const match = {
+      player1_name: "Alice", player2_name: "Bob",
+      player1_score: 4, player2_score: 1,
+      target_points: 5, status: "active",
+    };
+    render(
+      <GameOverScreen
+        game={{ ...timeoutWin, points_value: 2 }}
+        match={match}
+        onNextGame={jest.fn()}
+        onNewMatch={jest.fn()}
+        onLobby={jest.fn()}
+      />
+    );
+
+    expect(screen.getByText("2 points awarded")).toBeTruthy();
+    expect(screen.getByText(/Alice 4 – 1 Bob/)).toBeTruthy();
+    expect(screen.getByText("Next Game")).toBeTruthy();
+  });
+});

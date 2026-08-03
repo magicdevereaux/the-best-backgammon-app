@@ -1,3 +1,4 @@
+import { AppState } from "react-native";
 import { renderHook, act, waitFor } from "@testing-library/react-native";
 import { useGame } from "../useGame";
 import * as games from "../../api/games";
@@ -302,6 +303,100 @@ describe("useGame abandon", () => {
 
     const { result } = await mountLoaded();
     await act(async () => { await result.current.abandonGame(); });
+    expect(result.current.actionError).toBe("It is not your turn.");
+  });
+});
+
+describe("useGame claimTimeout", () => {
+  // Waiting on an opponent who has walked away: an ordinary active game with a
+  // deadline attached. Nothing here trips a poll skip condition.
+  const stalled = {
+    ...baseGame,
+    current_turn: "p2",
+    dice_values: [],
+    player1_user: 1,
+    player2_user: 2,
+    turn_waiting_seat: "p2",
+    turn_deadline: "2026-08-02T12:00:00Z",
+  };
+  const claimed = {
+    ...stalled,
+    status: "finished",
+    winner: "p1",
+    win_type: "timeout",
+    points_value: 1,
+    turn_waiting_seat: null,
+    turn_deadline: null,
+    updated_at: "t9",
+  };
+
+  test("calls the endpoint and adopts the finished, scored game", async () => {
+    games.fetchGame.mockResolvedValue(stalled);
+    games.claimTimeout.mockResolvedValue(claimed);
+
+    const { result } = await mountLoaded();
+    await act(async () => { await result.current.claimTimeout(); });
+
+    expect(games.claimTimeout).toHaveBeenCalledWith(1);
+    expect(result.current.game.status).toBe("finished");
+    // Unlike abandon, a timeout has a real winner and real points.
+    expect(result.current.game.winner).toBe("p1");
+    expect(result.current.game.win_type).toBe("timeout");
+    expect(result.current.game.points_value).toBe(1);
+    expect(result.current.actionError).toBeNull();
+  });
+
+  test("polling continues while waiting on an idle opponent, then stops once claimed", async () => {
+    jest.useFakeTimers();
+    // The poller also gates on AppState, which reports `undefined` under jest
+    // (there is no native module), so foreground it explicitly — otherwise this
+    // test would prove nothing about the skip conditions we actually care about.
+    const savedAppState = AppState.currentState;
+    AppState.currentState = "active";
+    try {
+      games.fetchGame.mockResolvedValue(stalled);
+      games.claimTimeout.mockResolvedValue(claimed);
+
+      const view = renderHook(() => useGame(1));
+      await waitFor(() => expect(view.result.current.loading).toBe(false));
+      const afterLoad = games.fetchGame.mock.calls.length;
+
+      // Nothing staged, no closed seat, game active: the poller keeps running,
+      // so a deadline set server-side always reaches the screen.
+      await act(async () => { jest.advanceTimersByTime(3500 * 3); });
+      expect(games.fetchGame.mock.calls.length).toBeGreaterThan(afterLoad);
+
+      await act(async () => { await view.result.current.claimTimeout(); });
+      const afterClaim = games.fetchGame.mock.calls.length;
+
+      // status="finished" now trips the poller's existing status guard.
+      await act(async () => { jest.advanceTimersByTime(3500 * 4); });
+      expect(games.fetchGame).toHaveBeenCalledTimes(afterClaim);
+    } finally {
+      AppState.currentState = savedAppState;
+      jest.useRealTimers();
+    }
+  });
+
+  test("surfaces a 400 (too early — e.g. a device clock ahead of the server's)", async () => {
+    games.fetchGame.mockResolvedValue(stalled);
+    games.claimTimeout.mockRejectedValue(
+      new Error("The turn deadline has not passed yet.")
+    );
+
+    const { result } = await mountLoaded();
+    await act(async () => { await result.current.claimTimeout(); });
+
+    expect(result.current.actionError).toBe("The turn deadline has not passed yet.");
+    expect(result.current.game.status).toBe("active");
+  });
+
+  test("surfaces a 403 (not the claiming seat) through actionError", async () => {
+    games.fetchGame.mockResolvedValue(stalled);
+    games.claimTimeout.mockRejectedValue(new Error("It is not your turn."));
+
+    const { result } = await mountLoaded();
+    await act(async () => { await result.current.claimTimeout(); });
     expect(result.current.actionError).toBe("It is not your turn.");
   });
 });

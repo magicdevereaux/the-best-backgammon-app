@@ -1,4 +1,10 @@
-import { computeGating, isDeadlocked, isSeatClosed } from "../gating";
+import {
+  computeGating,
+  isDeadlocked,
+  isSeatClosed,
+  canClaimTimeout,
+  msUntilTurnDeadline,
+} from "../gating";
 
 function game(over = {}) {
   return {
@@ -318,5 +324,194 @@ describe("canAbandon (the abandon button's visibility)", () => {
     );
     expect(res.deadlocked).toBe(true);
     expect(res.canAbandon).toBe(false);
+  });
+});
+
+// canClaimTimeout mirrors POST /api/games/{id}/claim_timeout/. The eligibility
+// rule itself lives on the server, which publishes turn_deadline: null whenever
+// a claim is impossible in principle — so the predicate only adds "has it
+// passed?" and "is it my opponent's clock?". Kept in sync with the identical
+// function in frontend/src/utils/seats.js.
+describe("canClaimTimeout", () => {
+  const DEADLINE = "2026-08-02T12:00:00Z";
+  const AT = Date.parse(DEADLINE);
+
+  function clocked(over = {}) {
+    return {
+      status: "active",
+      current_turn: "p2",
+      player1_user: 1,
+      player2_user: 2,
+      turn_waiting_seat: "p2",
+      turn_deadline: DEADLINE,
+      ...over,
+    };
+  }
+
+  test("true for the opponent of the idle seat once the deadline has passed", () => {
+    expect(canClaimTimeout(clocked(), "p1", AT + 1000)).toBe(true);
+  });
+
+  test("mirrored for the other seat", () => {
+    const g = clocked({ turn_waiting_seat: "p1", current_turn: "p1" });
+    expect(canClaimTimeout(g, "p2", AT + 1000)).toBe(true);
+    expect(canClaimTimeout(g, "p1", AT + 1000)).toBe(false);
+  });
+
+  test("false before the deadline", () => {
+    expect(canClaimTimeout(clocked(), "p1", AT - 1)).toBe(false);
+    expect(canClaimTimeout(clocked(), "p1", AT - 3600_000)).toBe(false);
+  });
+
+  test("the boundary is inclusive — exactly at the deadline is claimable", () => {
+    expect(canClaimTimeout(clocked(), "p1", AT)).toBe(true);
+  });
+
+  test("false when claiming against yourself, however late it is", () => {
+    // The seat on the clock never gets a button that forfeits its own game.
+    expect(canClaimTimeout(clocked(), "p2", AT + 86_400_000)).toBe(false);
+  });
+
+  test("null turn_deadline means no claim is possible, full stop", () => {
+    // The server nulls it for every ineligible case (guest seat, closed seat,
+    // finished game, no clock recorded); the client never re-derives why.
+    expect(canClaimTimeout(clocked({ turn_deadline: null }), "p1", AT + 1000)).toBe(false);
+  });
+
+  test("a missing turn_deadline field behaves like null", () => {
+    const { turn_deadline, ...rest } = clocked();
+    expect(canClaimTimeout(rest, "p1", AT + 1000)).toBe(false);
+  });
+
+  test("false without a turn_waiting_seat, or with a nonsense one", () => {
+    expect(canClaimTimeout(clocked({ turn_waiting_seat: null }), "p1", AT + 1000)).toBe(false);
+    expect(canClaimTimeout(clocked({ turn_waiting_seat: "p3" }), "p1", AT + 1000)).toBe(false);
+  });
+
+  test("false for a spectator or any viewer holding no seat", () => {
+    expect(canClaimTimeout(clocked(), null, AT + 1000)).toBe(false);
+    expect(canClaimTimeout(clocked(), undefined, AT + 1000)).toBe(false);
+    expect(canClaimTimeout(clocked(), "p3", AT + 1000)).toBe(false);
+  });
+
+  test("false for a null/absent game", () => {
+    expect(canClaimTimeout(null, "p1", AT + 1000)).toBe(false);
+    expect(canClaimTimeout(undefined, "p1", AT + 1000)).toBe(false);
+  });
+
+  test("an unparseable deadline is treated as no deadline, not as expired", () => {
+    expect(canClaimTimeout(clocked({ turn_deadline: "not a date" }), "p1", AT + 1000)).toBe(false);
+  });
+
+  test("now accepts a Date, epoch ms, or an ISO string alike", () => {
+    expect(canClaimTimeout(clocked(), "p1", new Date(AT + 1000))).toBe(true);
+    expect(canClaimTimeout(clocked(), "p1", AT + 1000)).toBe(true);
+    expect(canClaimTimeout(clocked(), "p1", new Date(AT + 1000).toISOString())).toBe(true);
+    expect(canClaimTimeout(clocked(), "p1", new Date(AT - 1000))).toBe(false);
+  });
+
+  test("now defaults to the wall clock", () => {
+    const past = new Date(Date.now() - 60_000).toISOString();
+    const future = new Date(Date.now() + 60_000).toISOString();
+    expect(canClaimTimeout(clocked({ turn_deadline: past }), "p1")).toBe(true);
+    expect(canClaimTimeout(clocked({ turn_deadline: future }), "p1")).toBe(false);
+  });
+
+  test("the waiting seat need not be current_turn (a pending double)", () => {
+    // The server decides which seat is on the clock; the client just reads it.
+    // With a double pending that is the responder, not the player to move.
+    const g = clocked({ current_turn: "p1", double_offered_by: "p1", turn_waiting_seat: "p2" });
+    expect(canClaimTimeout(g, "p1", AT + 1000)).toBe(true);
+    expect(canClaimTimeout(g, "p2", AT + 1000)).toBe(false);
+  });
+
+  /*
+   * Parity block. These four cases are byte-for-byte the ones in
+   * frontend/src/utils/__tests__/seats.test.js: both clients route the deadline
+   * *and* `now` through the same toMillis, so both accept the same values and
+   * reject the same ones. They drifted once (web rejected a numeric deadline and
+   * accepted `now = Infinity`); these pin them together.
+   */
+  test("a numeric epoch deadline is accepted, exactly like an ISO string", () => {
+    const numeric = clocked({ turn_deadline: AT });
+    expect(canClaimTimeout(numeric, "p1", AT + 1000)).toBe(true);
+    expect(canClaimTimeout(numeric, "p1", AT)).toBe(true); // inclusive here too
+    expect(canClaimTimeout(numeric, "p1", AT - 1)).toBe(false);
+    // ...and a Date deadline, the third accepted shape.
+    expect(canClaimTimeout(clocked({ turn_deadline: new Date(AT) }), "p1", AT + 1)).toBe(true);
+  });
+
+  test("a non-finite deadline is 'no clock', not 'expired'", () => {
+    expect(canClaimTimeout(clocked({ turn_deadline: Infinity }), "p1", AT + 1000)).toBe(false);
+    expect(canClaimTimeout(clocked({ turn_deadline: -Infinity }), "p1", AT + 1000)).toBe(false);
+    expect(canClaimTimeout(clocked({ turn_deadline: NaN }), "p1", AT + 1000)).toBe(false);
+    expect(canClaimTimeout(clocked({ turn_deadline: new Date(NaN) }), "p1", AT + 1000)).toBe(false);
+  });
+
+  test("a non-finite `now` is false — an unusable clock never claims", () => {
+    expect(canClaimTimeout(clocked(), "p1", Infinity)).toBe(false);
+    expect(canClaimTimeout(clocked(), "p1", -Infinity)).toBe(false);
+    expect(canClaimTimeout(clocked(), "p1", NaN)).toBe(false);
+    expect(canClaimTimeout(clocked(), "p1", new Date(NaN))).toBe(false);
+    expect(canClaimTimeout(clocked(), "p1", null)).toBe(false);
+  });
+
+  test("eligibility is never re-derived — only turn_deadline gates", () => {
+    // A finished game, a deleted seat and guest seats all still claim, because
+    // the server would have nulled turn_deadline for every one of them. Adding
+    // checks here would drift the moment the server's rule is tuned.
+    expect(canClaimTimeout(clocked({ status: "finished" }), "p1", AT + 1000)).toBe(true);
+    expect(canClaimTimeout(clocked({ player2_deleted: true }), "p1", AT + 1000)).toBe(true);
+    const guests = clocked({ player1_user: null, player2_user: null });
+    expect(canClaimTimeout(guests, "p1", AT + 1000)).toBe(true);
+  });
+});
+
+describe("msUntilTurnDeadline", () => {
+  const DEADLINE = "2026-08-02T12:00:00Z";
+  const AT = Date.parse(DEADLINE);
+  const g = { turn_waiting_seat: "p2", turn_deadline: DEADLINE };
+
+  test("counts down toward the deadline", () => {
+    expect(msUntilTurnDeadline(g, AT - 90_000)).toBe(90_000);
+    expect(msUntilTurnDeadline(g, AT)).toBe(0);
+  });
+
+  test("floors at zero rather than counting up past it", () => {
+    expect(msUntilTurnDeadline(g, AT + 500_000)).toBe(0);
+  });
+
+  test("null when there is no usable deadline", () => {
+    expect(msUntilTurnDeadline({ turn_deadline: null }, AT)).toBeNull();
+    expect(msUntilTurnDeadline({}, AT)).toBeNull();
+    expect(msUntilTurnDeadline({ turn_deadline: "nope" }, AT)).toBeNull();
+    expect(msUntilTurnDeadline(null, AT)).toBeNull();
+  });
+});
+
+// computeGating.viewerSeat: the single seat this device acts as, which is what
+// canClaimTimeout needs (mySeats is a set and can hold two).
+describe("computeGating viewerSeat", () => {
+  test("the owned seat in a gated two-account game", () => {
+    const g = game({ player1_user: 1, player2_user: 2 });
+    expect(computeGating({ game: g, userId: 1, seatInfo: null }).viewerSeat).toBe("p1");
+    expect(computeGating({ game: g, userId: 2, seatInfo: null }).viewerSeat).toBe("p2");
+  });
+
+  test("null for hotseat, where the device holds both seats", () => {
+    const res = computeGating({ game: game(), userId: null, seatInfo: null });
+    expect(res.mySeats).toEqual(["p1", "p2"]);
+    expect(res.viewerSeat).toBeNull();
+  });
+
+  test("null for a spectator, who holds none", () => {
+    const g = game({ player1_user: 1, player2_user: 2 });
+    expect(computeGating({ game: g, userId: 99, seatInfo: null }).viewerSeat).toBeNull();
+  });
+
+  test("follows the device-local seat registry in a guest-online game", () => {
+    const g = game({ player1_user: 1, player2_user: null });
+    const res = computeGating({ game: g, userId: 1, seatInfo: { online: true, seats: ["p2"] } });
+    expect(res.viewerSeat).toBe("p2");
   });
 });

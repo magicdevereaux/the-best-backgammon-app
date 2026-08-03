@@ -1,4 +1,4 @@
-import { fetchGames, fetchGame, createGame, rollDice, confirmTurn, offerDouble, respondToDouble } from '../gameApi';
+import { fetchGames, fetchGame, createGame, rollDice, confirmTurn, offerDouble, respondToDouble, claimTimeout } from '../gameApi';
 
 /*
  * All tests here FAIL until you implement the functions in gameApi.js.
@@ -238,5 +238,42 @@ describe('respondToDouble(id, accept)', () => {
     await respondToDouble(3, false);
     const [, options] = fetch.mock.calls[0];
     expect(JSON.parse(options.body)).toEqual({ accept: false });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// claimTimeout — the inactivity forfeit
+// ---------------------------------------------------------------------------
+
+describe('claimTimeout(id)', () => {
+  test('POSTs to the claim_timeout endpoint for the given id, with no body', async () => {
+    fetch.mockReturnValueOnce(mockResponse({}));
+    await claimTimeout(9);
+    const [url, options] = fetch.mock.calls[0];
+    expect(url).toMatch(/9/);
+    expect(url).toMatch(/claim_timeout/);
+    expect(options.method.toUpperCase()).toBe('POST');
+    expect(options.body).toBeUndefined();
+  });
+
+  test('returns the finished game, scored to a real winner', async () => {
+    const finished = { id: 9, status: 'finished', winner: 'p1', win_type: 'timeout', points_value: 2 };
+    fetch.mockReturnValueOnce(mockResponse(finished));
+    expect(await claimTimeout(9)).toEqual(finished);
+  });
+
+  test('surfaces the too-early 400 rather than swallowing it', async () => {
+    // The server owns the clock; a client running ahead of it can get here early.
+    fetch.mockReturnValueOnce(
+      mockResponse({ error: 'This player still has time to move.' }, { ok: false, status: 400 })
+    );
+    await expect(claimTimeout(9)).rejects.toThrow('This player still has time to move.');
+  });
+
+  test('surfaces the 403 when the caller does not hold the claiming seat', async () => {
+    fetch.mockReturnValueOnce(
+      mockResponse({ error: 'It is not your turn.' }, { ok: false, status: 403 })
+    );
+    await expect(claimTimeout(9)).rejects.toThrow('It is not your turn.');
   });
 });

@@ -8,6 +8,7 @@ import {
   offerDouble as apiOfferDouble,
   respondToDouble as apiRespondToDouble,
   abandonGame as apiAbandonGame,
+  claimTimeout as apiClaimTimeout,
 } from "../api/games";
 import {
   getLegalMoves,
@@ -139,6 +140,14 @@ export function useGame(gameId) {
   // (nobody is coming — see gating.isDeadlocked), and only swaps in state that
   // actually changed (by updated_at) so a steady stream of identical responses
   // causes no re-render or flicker.
+  //
+  // None of those guards starve the inactivity clock. Waiting on an idle
+  // opponent is an active game with nothing staged and no closed seat, so
+  // polling continues and `turn_deadline` stays fresh. It would not matter much
+  // if it didn't: the countdown is extrapolated locally from that timestamp
+  // (see useTurnClock), so the claim control appears on time even if every poll
+  // returns the identical payload — which, against a player who has walked
+  // away, is exactly what happens.
   useEffect(() => {
     if (!gameId) return;
     const interval = setInterval(() => {
@@ -337,6 +346,25 @@ export function useGame(gameId) {
     }
   }, [gameId]);
 
+  // Claim an inactivity forfeit against an opponent who is past their turn
+  // deadline. Wired exactly like abandonGame, but the outcome is the opposite
+  // kind: this one scores (win_type "timeout", a real winner, one point times
+  // the cube). The returned game is status="finished", which the poller's
+  // status guard reads on the next tick, so polling stops and the screen
+  // switches to its game-over path. Errors — 400 too early / wrong state /
+  // guest seat, 403 not your seat — land in actionError like every other
+  // action's. A 400 "too early" is a real possibility with a device clock
+  // skewed ahead of the server's, so it must never be swallowed.
+  const claimTimeout = useCallback(async () => {
+    try {
+      setActionError(null);
+      const updated = await apiClaimTimeout(gameId);
+      setGame(updated);
+    } catch (err) {
+      setActionError(err.message);
+    }
+  }, [gameId]);
+
   // Doubling is legal on your turn before rolling, with the cube centered or
   // yours, outside the Crawford game and below the 64 cap. Mirrors the
   // server-side rules for button visibility; the server re-validates.
@@ -370,6 +398,7 @@ export function useGame(gameId) {
     respondToDouble,
     canOfferDouble,
     abandonGame,
+    claimTimeout,
     reload,
     refresh,
     refreshing,

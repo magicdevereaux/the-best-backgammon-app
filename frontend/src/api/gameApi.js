@@ -61,3 +61,21 @@ export async function respondToDouble(id, accept) {
 export async function abandonGame(id) {
   return request(`${BASE}${id}/abandon/`, { method: "POST" });
 }
+
+/**
+ * Claim the win against an opponent who has run out of time to move.
+ *
+ * Unlike `abandonGame` this *scores*: the game comes back finished with
+ * `win_type: "timeout"`, a real `winner`, and one point times the cube value
+ * applied to the match (see docs/decisions/adr-002-inactivity-forfeit.md).
+ *
+ * The server is the authority on the clock. It refuses with 400 when the
+ * deadline has not actually passed (a client whose clock runs ahead of the
+ * server's can get here early), when the game isn't in a claimable state, or
+ * when a seat is a guest; and 403 when the caller doesn't hold the claiming
+ * seat. All of them arrive as ordinary `{ error }` bodies, which `request`
+ * turns into the thrown message.
+ */
+export async function claimTimeout(id) {
+  return request(`${BASE}${id}/claim_timeout/`, { method: "POST" });
+}

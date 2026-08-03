@@ -6,6 +6,7 @@ import {
   offerDouble as apiOfferDouble,
   respondToDouble as apiRespondToDouble,
   abandonGame as apiAbandonGame,
+  claimTimeout as apiClaimTimeout,
 } from "../api/gameApi";
 import {
   getLegalMoves,
@@ -83,6 +84,12 @@ export function useGame(gameId, viewerUserId) {
   // is the only thing that can change the board. Only state that actually
   // changed is swapped in (by updated_at), so a stream of identical responses
   // causes no re-render and no flicker.
+  //
+  // Note none of those guards fires on the case inactivity forfeit cares about —
+  // an active online game where the *opponent* is idle. That keeps polling, so a
+  // move by the idle player retracts the claim control within a tick. The
+  // countdown itself does not depend on this: TurnClock extrapolates locally
+  // from `turn_deadline`, and polling only reconciles it.
   useEffect(() => {
     if (!gameId) return;
     const interval = setInterval(() => {
@@ -255,6 +262,25 @@ export function useGame(gameId, viewerUserId) {
     }
   }, [gameId]);
 
+  // Claim the win against an opponent who let the turn clock run out. Scores
+  // normally, unlike abandonGame. The 400s (too early — a client clock running
+  // ahead of the server's is the likely cause — wrong game state, guest seat)
+  // and the 403 (not your seat) all land in `actionError` like every other
+  // rejected action, and the game is left untouched so the control can retry.
+  //
+  // Deliberately no `canClaimTimeout` here to match `canAbandon`: the answer
+  // depends on the wall clock, so it would be stale the moment it was computed.
+  // components/TurnClock.jsx owns the 1s tick and calls the predicate itself.
+  const claimTimeout = useCallback(async () => {
+    try {
+      setActionError(null);
+      const updated = await apiClaimTimeout(gameId);
+      setGame(updated);
+    } catch (err) {
+      setActionError(err.message);
+    }
+  }, [gameId]);
+
   // Doubling is legal on your turn before rolling, with the cube centered or
   // yours, outside the Crawford game and below the 64 cap. The server
   // enforces all of this — this mirrors it for button visibility.
@@ -289,6 +315,7 @@ export function useGame(gameId, viewerUserId) {
     deadlocked,
     abandonGame,
     canAbandon: canAbandon(game),
+    claimTimeout,
     reload,
   };
 }

@@ -24,6 +24,7 @@ rules engine itself see [game-logic.md](game-logic.md); for tokens and login see
 | Opponent sync | polling every 3.5 s in `useGame`, **online games only** (`isOnlineGame`) | polling every 3.5 s in `useGame`, focus/foreground-gated |
 | Turn gating | **none** client-side; server 403 surfaces as an error | `gating.js` + `seatRegistry.js` hide controls |
 | Closed-seat handling | `seats.js` — deadlock banner + abandon panel | `gating.js` — same, in `AbandonGameSection` |
+| Inactivity clock | `TurnClock.jsx` (own 1 s interval) + `ClaimTimeoutPanel.jsx` | `TurnClockSection.jsx` + the `useTurnClock` hook |
 | Tests | 312, `__tests__/` beside sources | 190, `src/**/__tests__/` |
 
 Orientation and packaging are mobile-only concerns: `app.json` locks the app to
@@ -53,7 +54,8 @@ Rows are counterparts — same job, one file per client.
 | Email settings (profile) | [`src/components/EmailSettings.jsx`](../../frontend/src/components/EmailSettings.jsx) | [`src/components/EmailSection.jsx`](../../mobile/src/components/EmailSection.jsx) |
 | Account deletion (profile) | [`src/components/DeleteAccountPanel.jsx`](../../frontend/src/components/DeleteAccountPanel.jsx) | [`src/components/DeleteAccountSection.jsx`](../../mobile/src/components/DeleteAccountSection.jsx) |
 | Abandon a deadlocked game | [`src/components/AbandonGamePanel.jsx`](../../frontend/src/components/AbandonGamePanel.jsx) | [`src/components/AbandonGameSection.jsx`](../../mobile/src/components/AbandonGameSection.jsx) |
-| Closed-seat predicates | [`src/utils/seats.js`](../../frontend/src/utils/seats.js) | the top half of [`src/game/gating.js`](../../mobile/src/game/gating.js) |
+| Inactivity countdown + claim | [`src/components/TurnClock.jsx`](../../frontend/src/components/TurnClock.jsx) + [`ClaimTimeoutPanel.jsx`](../../frontend/src/components/ClaimTimeoutPanel.jsx) | [`src/components/TurnClockSection.jsx`](../../mobile/src/components/TurnClockSection.jsx) (countdown + claim in one) |
+| Closed-seat + clock predicates | [`src/utils/seats.js`](../../frontend/src/utils/seats.js) | the top half of [`src/game/gating.js`](../../mobile/src/game/gating.js) |
 | Board | [`src/components/Board.jsx`](../../frontend/src/components/Board.jsx) | [`src/components/Board.jsx`](../../mobile/src/components/Board.jsx) |
 | Dice / Cube / Controls / Game over / Match score | `src/components/{Dice,DoublingCube,GameControls,GameOverScreen,MatchScore}.jsx` | same five filenames under `mobile/src/components/` |
 
@@ -62,6 +64,7 @@ Rows are counterparts — same job, one file per client.
 | File | Purpose |
 |------|---------|
 | [`src/game/seatRegistry.js`](../../mobile/src/game/seatRegistry.js) | Device-local record of which seat(s) this device owns per game |
+| [`src/game/useTurnClock.js`](../../mobile/src/game/useTurnClock.js) | 1 s countdown hook + `formatDuration`; torn down when the app backgrounds. Web keeps the equivalent interval inside `TurnClock.jsx` |
 | [`src/api/config.js`](../../mobile/src/api/config.js) | Resolves the backend host from Metro (`MANUAL_OVERRIDE` to pin it) |
 | [`src/api/errors.js`](../../mobile/src/api/errors.js) | `friendlyJoinError()` — maps raw join failures to user-facing text |
 
@@ -136,7 +139,12 @@ leaves it as "Confirm Turn".
 
 `abandonGame()` rides alongside too, in both hooks: `POST /abandon/` for a game
 deadlocked by a closed seat, offered only where `canAbandon` says the viewer holds
-the surviving seat (see [Turn gating](#turn-gating)).
+the surviving seat (see [Turn gating](#turn-gating)). So does `claimTimeout()` —
+`POST /claim_timeout/`, the inactivity forfeit, offered where `canClaimTimeout`
+says the viewer is the *waiting* seat's opponent and the deadline has passed. The
+two are not variants of each other: `abandon` scores nothing, `claim_timeout`
+awards a real win (see
+[the shared predicates](#canclaimtimeout--the-third-member-of-the-sync-obligation)).
 
 Doubling rides alongside: `offerDouble()` / `respondToDouble(accept)` post to
 `/offer_double/` and `/respond_to_double/`, and `canOfferDouble` is computed
@@ -225,6 +233,11 @@ The poll interval is subscribed once for the life of the game — web keeps the 
 inputs in refs (`pendingRef` / `statusRef` / `pollableRef`) so the effect never has to
 re-subscribe.
 
+**The poll is not the clock.** It refreshes `turn_deadline` when the opponent
+finally acts; the countdown itself runs on its own 1 s interval and would keep
+counting correctly even if every poll were dropped. See
+[the countdown](#the-countdown-is-extrapolated-not-polled).
+
 ## Turn gating
 
 **Mobile gates the UI; web does not.**
@@ -259,7 +272,7 @@ unauthorized click is simply sent, and the server's **403** from
 `_seat_permission_error` surfaces as `actionError` text. That is the whole
 protection — client gating on mobile is UX, not security.
 
-### Closed seats: the one predicate both clients share
+### Closed seats and the inactivity clock: the predicates both clients share
 
 A seat closed by account deletion is the exception, because a deadlock has to be
 *explained* rather than left as a silent 403. Four functions —
@@ -286,6 +299,80 @@ They reach it differently, because the two clients know different things:
 
 Consumers: a banner ("your opponent deleted their account — this game can't
 continue"), the abandon panel/section, and the poll gate on both sides.
+
+#### `canClaimTimeout` — the third member of the sync obligation
+
+The inactivity forfeit ([ADR-002](../decisions/adr-002-inactivity-forfeit.md),
+[`claim_timeout`](api.md#post-apigamesidclaim_timeout)) adds
+**`canClaimTimeout(game, viewerSeat, now)`** to the same must-stay-in-sync set,
+with the same name, signature and semantics in `seats.js` and `gating.js`. Both
+copies carry a header comment saying so. Change one, change the other — and check
+the server, which is the third copy of the underlying rule.
+
+**It does not re-derive eligibility, and must not start.** The server publishes
+the whole question in two fields: `turn_waiting_seat` (the seat on the clock) and
+`turn_deadline`, which is **null whenever a claim is impossible in principle** —
+game not active, a closed seat, either seat a guest, or no clock recorded. A null
+deadline is a complete answer: render nothing. A client that instead inspected
+`status` / user FKs / the closure flags would be a fourth copy of the rule, in two
+languages, that drifts the moment the rule is tuned.
+
+What the predicate adds is only what the server cannot know: **what time it is on
+this device**, and **which seat is looking**. It is true only when the deadline
+has passed *and* the viewer holds the **opposite** seat — you claim against the
+idle player, never yourself, so a player who is themselves out of time gets
+`false`, not a button that forfeits their own game.
+
+The viewer's seat is the one legitimate divergence, so it is a **parameter**
+rather than something the predicate derives:
+
+- **Mobile** passes `viewerSeat` from `computeGating`, which returns it as
+  `mySeats.length === 1 ? mySeats[0] : null` — null for a spectator *and* for
+  hotseat, where the device holds both seats and there is no opponent to claim
+  against.
+- **Web** passes the server's `game.viewer_seat`.
+
+Mobile also has `msUntilTurnDeadline(game, now)` in `gating.js` (floored at 0);
+the web countdown computes the same quantity inline in `TurnClock.jsx`. That one
+is a helper, not part of the sync obligation.
+
+#### The countdown is extrapolated, not polled
+
+Both clients tick a **1 s local interval** against `turn_deadline` and render the
+remaining time. **Polling only reconciles**: the ~3.5 s `useGame` poll refreshes
+the *deadline*, it is not the tick source — driving a countdown off it would
+stutter and lag by up to 3.5 s. When the idle player finally moves, the fresh
+payload carries a new deadline (or none) and the clock re-derives from that,
+which is also how the claim control retracts within a tick.
+
+Both clocks show the countdown **in both directions**: the seat on the clock sees
+its own time draining, with the consequence spelled out; the opponent sees how
+long until a claim becomes possible. Nobody should lose to a clock they were never
+shown.
+
+- **Web** — [`TurnClock.jsx`](../../frontend/src/components/TurnClock.jsx) owns
+  the interval and the `formatRemaining` helper, and swaps in
+  [`ClaimTimeoutPanel.jsx`](../../frontend/src/components/ClaimTimeoutPanel.jsx)
+  once `canClaimTimeout` is true. It escalates its styling under five minutes.
+- **Mobile** — [`useTurnClock(deadline)`](../../mobile/src/game/useTurnClock.js)
+  returns `{ now, msRemaining, expired }` and is consumed by
+  [`TurnClockSection.jsx`](../../mobile/src/components/TurnClockSection.jsx). It
+  stops on unmount **and** whenever the app backgrounds (`AppState`), matching
+  the poller, and resyncs from the wall clock on resume rather than assuming the
+  missed ticks accrued. It also stops once the deadline passes, since the value
+  is pinned at 0 from then on.
+
+The same `now` the countdown rendered is the `now` handed to `canClaimTimeout`,
+so the button and the clock can never disagree about the time. A device clock
+running ahead of the server's can therefore offer the button early — the server
+400s, and that message surfaces through the normal `actionError` path. Affordance,
+as everywhere else.
+
+Both hooks expose `claimTimeout()` → `POST /claim_timeout/` (`claimTimeout` in
+[`gameApi.js`](../../frontend/src/api/gameApi.js) /
+[`games.js`](../../mobile/src/api/games.js)), routed through the game hook so the
+200 replaces local state without a refetch. Both `GameOverScreen`s render the
+`"timeout"` win type with wording that reads correctly from either chair.
 
 ## Rendering
 
@@ -352,7 +439,7 @@ No rule is implemented *differently* between the three — the drift is entirely
 | Suite | Location | Covers |
 |-------|----------|--------|
 | Logic | `src/utils/__tests__/gameLogic.test.js` (57) | `opponent`, `getLegalMoves`, `getCombinedMoves`, `applyMove`, `canBearOff`, `maxMovesUsable`, `higherDieRequiredMoves`, `checkWinner`, `isBlotHit` |
-| Seats | `src/utils/__tests__/seats.test.js` (27) | `isSeatClosed`, `blockedSeat`, `isDeadlocked`, `survivingSeat`, `canAbandon`, `isOnlineGame` |
+| Seats | `src/utils/__tests__/seats.test.js` | `isSeatClosed`, `blockedSeat`, `isDeadlocked`, `survivingSeat`, `canAbandon`, `canClaimTimeout`, `isOnlineGame` |
 | Hook | `src/hooks/__tests__/useGame.test.js` (26) | staging, combined-move expansion, reset, confirm payload, `mustUseMoreDice`, and the polling effect |
 | API | `src/api/__tests__/gameApi.test.js` (24) | every endpoint wrapper — URL, method, body and error path |
 | API | `src/api/__tests__/{apiClient,authApi,config}.test.js` (7 + 36 + 19) | bearer injection, 401→refresh→retry, token storage, `updateEmail`, both password-reset calls, `deleteAccount`, and `normalizeBaseUrl`/`apiUrl` |
@@ -360,6 +447,7 @@ No rule is implemented *differently* between the three — the drift is entirely
 | UI | `src/components/__tests__/{Dice,DoublingCube,GameControls}.test.jsx` (5 + 7 + 26) | die faces, cube/Crawford states, roll/reset/confirm enablement, the maximal-dice **and** higher-die affordances |
 | Pages | `src/pages/__tests__/{LoginPage,ProfilePage,GamePage}.test.jsx` (7 + 11 + 18) | login/register submit and errors; profile stats + email settings; the turn banner and the abandon control |
 | Pages | `src/pages/__tests__/{ForgotPasswordPage,ResetPasswordPage}.test.jsx` (5 + 6) | the reset request and confirm screens |
+| UI | `src/components/__tests__/{TurnClock,GameOverScreen}.test.jsx` | countdown formatting, both clock directions, claim-panel visibility, the `timeout` win-type wording |
 
 **Mobile — 190 tests across 15 files** (15 suites, green 2026-08-02):
 
@@ -367,19 +455,21 @@ No rule is implemented *differently* between the three — the drift is entirely
 |-------|----------|--------|
 | Logic | `src/game/__tests__/logic.test.js` (43) | the same nine groups as web |
 | Hook | `src/game/__tests__/useGame.test.js` (18) | staging, undo/reset, confirm, abandon |
-| Gating | `src/game/__tests__/gating.test.js` (30) | the four `computeGating` branches, closed seats, `canAbandon` |
+| Gating | `src/game/__tests__/gating.test.js` | the four `computeGating` branches, closed seats, `canAbandon`, `canClaimTimeout`, `msUntilTurnDeadline` |
 | Seats | `src/game/__tests__/seatRegistry.test.js` (5) | record/read/hydrate, local-vs-online |
 | API | `src/api/__tests__/{client,auth,tokenStore,config}.test.js` (8 + 22 + 5 + 21) | 401 retry, register/login/fetchMe/`requestPasswordReset`, SecureStore, Metro host resolution |
 | UI | `src/components/__tests__/{DoublingCube,GameOverScreen,MatchScore}.test.jsx` (5 + 4 + 2) | cube prompts and gating props, win-type text (incl. abandoned), score banner |
 | UI | `src/components/__tests__/{AbandonGameSection,DeleteAccountSection,EmailSection}.test.jsx` (11 + 6 + 5) | abandon visibility + confirmation, account deletion, email set/clear |
+| UI | `src/components/__tests__/TurnClockSection.test.jsx` | countdown in both directions, claim visibility, `formatDuration` |
 
 Both suites mock `fetch`; mobile uses the in-memory SecureStore mock in
 [`jest.setup.js`](../../mobile/jest.setup.js) and the `jest-expo` preset. Run
 commands are in [CLAUDE.md](../../CLAUDE.md#tests).
 
-Untested on the web side: `LobbyPage`, `RegisterPage`, `GameOverScreen`,
-`MatchScore`, `AbandonGamePanel`/`DeleteAccountPanel`/`EmailSettings` (exercised
-indirectly through `GamePage`/`ProfilePage`), and `matchApi`. Untested on mobile:
+Untested on the web side: `LobbyPage`, `RegisterPage`, `MatchScore`,
+`AbandonGamePanel`/`ClaimTimeoutPanel`/`DeleteAccountPanel`/`EmailSettings`
+(exercised indirectly through `TurnClock`/`GamePage`/`ProfilePage`), and
+`matchApi`. Untested on mobile:
 every screen under `app/`, `Board`, `Dice`, `GameControls`, `games.js`, `matches.js`,
 `errors.js`.
 
@@ -387,7 +477,16 @@ every screen under `app/`, `Board`, `Dice`, `GameControls`, `games.js`, `matches
 
 - **Web focus/visibility gating of the poller.** Web polls unconditionally once
   `isOnlineGame` is true — there is no `visibilitychange` or blur check, so a
-  backgrounded tab keeps ticking. Mobile has both.
+  backgrounded tab keeps ticking. Mobile has both. The same asymmetry applies to
+  the turn clock: mobile's `useTurnClock` stops on `AppState` change, while
+  `TurnClock.jsx` keeps its 1 s interval running in a hidden tab.
+- **Live (reserve-time) clocks.** The countdown renders a single per-turn
+  deadline. There is no reserve time, no Fischer/Bronstein increment, no
+  accumulated-time display, and no clock-mode picker at game creation — deferred
+  until presence exists ([ADR-002](../decisions/adr-002-inactivity-forfeit.md)).
+- **A timeout notification.** Nothing tells a player their clock is running out
+  unless the game screen is open: there is no push notification, no email, and no
+  badge. A player can be forfeited without ever seeing the countdown.
 - **A mobile reset-confirm screen.** Mobile can request a reset link, but the emailed
   link is a web URL; there is no `backgammon://` deep-link route for
   `/reset-password/:uid/:token`.

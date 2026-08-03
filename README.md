@@ -18,6 +18,7 @@ gammon/backgammon detection. Both clients talk to the same backend.
 - **Password recovery** — add an email address at signup or later on your profile, then reset a forgotten password by emailed link
 - **Profile page** — lifetime stats: games, wins, losses, gammons, backgammons, points won/lost, win %, gammon rate
 - **Online play** — create an online game, share a deep link, join by code, open-games list, with both clients polling for the opponent's moves
+- **Nobody gets stranded** — if an opponent walks away mid-game, a countdown appears for both players, and after 48 hours the one still at the board can claim the win. Only between registered players, and you always see your own clock before it runs out
 - **Turn-ownership security** — the server rejects gameplay actions (403) from anyone who doesn't own the current seat; online, the mobile app also gates its UI so a device only acts on the seat it owns and only on its turn (read-only "waiting"/"spectating" views otherwise)
 - **Graceful exit from a dead game** — if your opponent deletes their account mid-game, both apps say so and offer to close the game out unscored rather than leaving you stuck
 - **Mobile app** — native SVG board, tap-to-roll, per-move undo, pull-to-refresh, opponent move sync
@@ -52,7 +53,7 @@ This README is the setup and feature tour. Deeper reference lives in
 
 ## Project status
 
-Feature-complete for local and link-based online play, with **976 passing tests**
+Feature-complete for local and link-based online play, with **1142 passing tests**
 and CI running all three suites on every push. The backend suite is green on
 Postgres as well as SQLite, so the database move for hosting is de-risked.
 
@@ -171,7 +172,7 @@ auto-incrementing version).
 
 ## Running tests
 
-### Backend (474 tests)
+### Backend (531 tests)
 
 ```bash
 cd backend
@@ -298,10 +299,12 @@ All win values are multiplied by the **doubling cube**: a gammon at cube value 4
 
 ---
 
-_Last updated 2026-08-02. Test counts (474 / 312 / 190 = 976) verified green on that
-date, on both SQLite and Postgres 16. The most recent pass made every mutating
-endpoint transactional and row-locked, made the Django admin path configurable,
-and corrected two false statements in the legal drafts. Earlier the same day: the
+_Last updated 2026-08-02. Test counts (531 / 364 / 247 = 1142) verified green on that
+date, on both SQLite and Postgres 16. The most recent pass shipped the inactivity
+forfeit — a per-turn clock, a claim endpoint, and a countdown on both clients —
+so a walked-away opponent no longer strands a game. Before that, the same day: every
+mutating endpoint became transactional and row-locked, the Django admin path became
+configurable, and two false statements in the legal drafts were corrected. Earlier still: the
 higher-die rule went general and was mirrored in both clients, `GET /api/matches/`
 was scoped, the password-reset and abandon UIs shipped, web gained polling, and
 the dead `move_checker` endpoint was removed._

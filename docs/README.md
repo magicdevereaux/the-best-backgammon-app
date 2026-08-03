@@ -37,7 +37,7 @@ code moves on.
 | ADR | Decision |
 |-----|----------|
 | [adr-001](decisions/adr-001-combined-moves.md) | Combined (multi-die) moves are expanded client-side; the backend only knows single hops. |
-| [adr-002](decisions/adr-002-inactivity-forfeit.md) | Inactivity forfeit is a pull-based claim on registered seats, separate from `abandon`; live clocks wait for presence. **Accepted, not implemented.** |
+| [adr-002](decisions/adr-002-inactivity-forfeit.md) | Inactivity forfeit is a pull-based claim on registered seats, separate from `abandon`; live clocks wait for presence. **Implemented** — the claim half only; reserve-time clocks are still deferred. |
 
 ## Adding to these docs
 

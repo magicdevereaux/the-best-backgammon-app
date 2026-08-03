@@ -102,8 +102,8 @@ realtime channel. The flow:
 ### Whose turn is it? (seat ownership)
 
 The backend **enforces** seat/turn ownership on every player action — `roll_dice`,
-`confirm_turn`, the cube actions `offer_double` / `respond_to_double`, and
-`abandon` — via `_seat_permission_error` in
+`confirm_turn`, the cube actions `offer_double` / `respond_to_double`, `abandon`
+and `claim_timeout` — via `_seat_permission_error` in
 [`views.py`](../../backend/game/views.py). Enforcement is only as strong as the
 `player1_user` / `player2_user` FKs — a **guest seat (null FK) has no server
 identity to verify**. The policy:
@@ -122,8 +122,10 @@ surface it via their normal action-error path.
 
 The check normally runs against `game.current_turn`, but it takes an explicit
 seat where the actor isn't the current player: `respond_to_double` checks the
-**offerer's opponent**, so the offerer can't answer their own double, and
-`abandon` checks the **surviving** seat (the closed one is the blocked player).
+**offerer's opponent**, so the offerer can't answer their own double, `abandon`
+checks the **surviving** seat (the closed one is the blocked player), and
+`claim_timeout` checks the **claimant** seat (the idle one is the seat on the
+clock).
 
 > **Residual gap:** a logged-in attacker can log *out* and act on a guest seat
 > anonymously — a guest seat is inherently unverifiable without a guest-token
@@ -148,6 +150,34 @@ controls rather than eating 403s):
 turn ownership in its UI** — its board is interactive for whoever's turn it is, and
 an unauthorized click is caught by the server's 403.
 
+### When a player walks away
+
+An online game used to stall forever if one side stopped playing. It no longer
+does. `Game.turn_started_at` records when the **waiting seat** came on the clock —
+reset whenever that seat changes (creating an already-`active` game, `join`,
+`confirm_turn`, `offer_double`, `respond_to_double` on a take, `next_game`), and
+deliberately **not** by
+`roll_dice`, so one deadline covers rolling and moving together. Past
+`TURN_TIMEOUT_HOURS` (env-driven, **default 48**) the opponent can call
+[`claim_timeout`](api.md#post-apigamesidclaim_timeout) and take the game:
+`win_type="timeout"`, a real winner, `1 × cube_value` into the match score.
+
+Three properties are worth carrying around:
+
+- **It is pull-based.** There is no scheduler in this stack, so nothing forfeits
+  an idle game in the background — the opponent has to ask. For a live game the
+  other client's ~3.5 s poll effectively is the sweeper.
+- **Registered seats only.** Both seats need real user FKs, since a guest seat is
+  unverifiable and a hotseat player could otherwise farm their own second seat.
+  Guest/hotseat games are unaffected.
+- **It is not `abandon`.** A closed seat is refused here on purpose: a deadlock
+  is closed out unscored, an inactivity forfeit is a genuine win. See
+  [ADR-002](../decisions/adr-002-inactivity-forfeit.md).
+
+The serializer publishes `turn_waiting_seat` and `turn_deadline` (null whenever a
+claim is impossible in principle), and both clients render a countdown
+extrapolated locally from the deadline rather than from the poll.
+
 ### Deadlock derivation (shared by both clients)
 
 One slice of that logic *is* mirrored on the web. `isSeatClosed` / `otherSeat` /
@@ -161,8 +191,11 @@ have to agree on when a game can no longer move.
 
 Both clients use it to show "your opponent deleted their account — this game can't
 continue", to stop polling (nobody is coming), and to offer the abandon control to
-the surviving seat only (`canAbandon` in each file). Mobile's gating layer *proper*
-— which seats this device may touch — is still deliberately not ported.
+the surviving seat only (`canAbandon` in each file). **`canClaimTimeout` is the
+third function under the same obligation**, added with the inactivity forfeit; the
+server's `Game.waiting_seat` property is the same derivation once more, and all of
+them have to agree. Mobile's gating layer *proper* — which seats this device may
+touch — is still deliberately not ported.
 
 ## Move sync
 
@@ -202,6 +235,14 @@ poll of either client.
   `/api/matchmaking/` endpoint that auto-pairs two waiting players, no ranking/ELO,
   and no "quick play against a random opponent" button. Pairing is always
   player-initiated against a chosen or listed game.
+- **Live (reserve-time) clocks.** The inactivity forfeit above is a single
+  per-turn deadline. There is no reserve time, no Fischer/Bronstein increment, no
+  per-player accumulated-time state, and no clock mode chosen at game creation —
+  deferred until presence exists
+  ([ADR-002](../decisions/adr-002-inactivity-forfeit.md)).
+- **A background sweeper, or any out-of-app notice that a clock is running.**
+  Timeout claims are pull-based, and there is no push notification or email — a
+  player who never opens the app never sees the countdown.
 - **Chat.** Not implemented anywhere.
 - **httpOnly cookie auth.** Auth is Bearer tokens in `localStorage`/SecureStore, not
   cookies.

@@ -54,3 +54,15 @@ export function respondToDouble(id, accept) {
 export function abandonGame(id) {
   return request(`/api/games/${id}/abandon/`, { method: "POST" });
 }
+
+// Claim an inactivity forfeit against an opponent who is past their turn
+// deadline. Unlike abandonGame this DOES score: the game finishes with
+// win_type "timeout", a real winner, and one point times the cube value, which
+// goes into the match normally. No body. 400 when the deadline hasn't passed
+// (a device clock running ahead of the server's is the likely cause), when the
+// game isn't in a claimable state, or when a seat is a guest; 403 when the
+// caller doesn't hold the claiming seat. See
+// docs/decisions/adr-002-inactivity-forfeit.md.
+export function claimTimeout(id) {
+  return request(`/api/games/${id}/claim_timeout/`, { method: "POST" });
+}

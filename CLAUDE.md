@@ -47,13 +47,20 @@ It is ported to JS twice — [`frontend/src/utils/gameLogic.js`](frontend/src/ut
 and [`mobile/src/game/logic.js`](mobile/src/game/logic.js). **These three files must
 stay in sync**; change one and mirror the others.
 
-There is a **second, smaller sync obligation**: the closed-seat deadlock
-predicates `isSeatClosed` / `isDeadlocked` / `blockedSeat` exist in both
-[`mobile/src/game/gating.js`](mobile/src/game/gating.js) and
+There is a **second, smaller sync obligation**: the seat predicates
+`isSeatClosed` / `isDeadlocked` / `blockedSeat` — and now **`canClaimTimeout`** —
+exist in both [`mobile/src/game/gating.js`](mobile/src/game/gating.js) and
 [`frontend/src/utils/seats.js`](frontend/src/utils/seats.js) — the web copy is a
 verbatim port carrying a stay-in-sync header comment. They must agree with each
-other *and* with the server's `abandon` action, which derives the blocked seat
-the same way. Change one, change all three.
+other *and* with the server, which derives the same seat in `abandon`,
+`claim_timeout`, and the `Game.waiting_seat` property. Change one, change all
+three.
+
+`canClaimTimeout` carries an extra rule: **it must never re-derive eligibility.**
+Whether a claim is possible at all (active game, no closed seat, no guest seat, a
+clock recorded) is decided *only* by the server returning a non-null
+`turn_deadline`. A client that second-guesses that will drift from the server the
+moment either changes.
 
 ## Configuration (all env-driven, dev needs none)
 
@@ -67,6 +74,9 @@ behaviours you can't read off that file:
 - **The security settings are gated on `DEBUG`.** SSL redirect, HSTS, secure
   cookies, nosniff, and `X_FRAME_OPTIONS` apply only when `DEBUG=False`.
   `manage.py check --deploy` reports **0 issues** in that mode.
+- **`TURN_TIMEOUT_HOURS` (default 48)** is how long a seat may sit on the clock
+  before its opponent can claim a forfeit. Env-driven, defaulted, so dev needs no
+  `.env`. See [ADR-002](docs/decisions/adr-002-inactivity-forfeit.md).
 - **`ADMIN_URL` moves the Django admin off its predictable path**, defaulting to
   `"admin"` so dev still needs no `.env`. `env_url_path()` in
   [`settings.py`](backend/backgammon/settings.py) strips slashes and whitespace
@@ -92,15 +102,19 @@ Deploy target is **Railway** — runbook and its traps in
 
 | Suite | Count | Command (cwd) |
 |-------|-------|---------------|
-| Backend | **474** | `python manage.py test game` (`backend/`, in-memory DB) |
-| Web | **312** | `CI=true npm test -- --watchAll=false` (`frontend/`) |
-| Mobile | **190** | `CI=true npx jest` (`mobile/`) |
+| Backend | **531** | `python manage.py test game` (`backend/`, in-memory DB) |
+| Web | **364** | `CI=true npm test -- --watchAll=false` (`frontend/`) |
+| Mobile | **247** | `CI=true npx jest` (`mobile/`) |
 
-All three suites were **green as of 2026-08-02** (474 / 312 / 190, 976 total, zero
+All three suites were **green as of 2026-08-02** (531 / 364 / 247, 1142 total, zero
 failures). If you see a failure, it is yours — the baseline is clean.
 
-> **The backend suite is also green on Postgres 16**, not just SQLite — all 34
-> migrations apply clean to an empty database and all 474 tests pass there. See
+> **Use `backend/venv/Scripts/python.exe`**, not bare `python` — the system
+> interpreter has no `dj_database_url` and dies at import.
+
+> **The backend suite is also green on Postgres 16**, not just SQLite — all 35
+> migrations apply clean to an empty database and all 531 tests pass there, and
+> the `0005` backfill was exercised against real rows. See
 > [postgres-readiness.md](docs/operations/postgres-readiness.md).
 
 > **Throttling is disabled under test** (`"test" in sys.argv` in
@@ -144,14 +158,15 @@ Board is `points[24]` (index = point − 1), plus `bar` and `off` counts per pla
   used it; both clients drive the staging → `confirm_turn` flow, which is now the
   only path that mutates a board. Nine tests that used it merely as a convenient
   one-shot rules harness were repointed at `confirm_turn` rather than deleted.
-- **Seat/turn ownership is enforced server-side** on **five** actions —
+- **Seat/turn ownership is enforced server-side** on **six** actions —
   `roll_dice` / `confirm_turn` / `offer_double` / `respond_to_double` /
-  `abandon`. `_seat_permission_error` in
+  `abandon` / `claim_timeout`. `_seat_permission_error` in
   [`views.py`](backend/game/views.py) returns **403** when the current-turn seat is
   owned by a registered user and the requester isn't that user, and when another
   logged-in account touches a guest seat. It normally checks `current_turn`, but
   `respond_to_double` passes an explicit seat — the *offerer's opponent* — since
-  answering a double isn't the offerer's turn. **Guest seats (null user FK) are
+  answering a double isn't the offerer's turn, and `claim_timeout` likewise
+  passes the *claimant* seat, i.e. the opponent of whoever is on the clock. **Guest seats (null user FK) are
   unverifiable** — anonymous requests on them are allowed by design (hotseat/guest
   play). Client gating on top of that is UX: mobile hides controls via
   [`gating.js`](mobile/src/game/gating.js) + a device-local seat registry; the
@@ -221,6 +236,39 @@ Board is `points[24]` (index = point − 1), plus `bar` and `off` counts per pla
   surviving seat only. Note the blocked seat is `current_turn` *except* with a
   double pending, where it is the responder — all three of `gating.js`,
   `seats.js` and the server's `abandon` derive it the same way.
+- **A walked-away player no longer strands a game.** `Game.turn_started_at` is
+  written by `_begin_turn` wherever the *waiting* seat changes — game activation,
+  `confirm_turn`, `offer_double`, `respond_to_double` on a take, and `next_game`.
+  It deliberately does **not** reset on `roll_dice`; one deadline covers
+  roll-and-move together, or a player could roll and then stall forever on a
+  fresh clock. After `TURN_TIMEOUT_HOURS` the opponent may
+  `POST /api/games/{id}/claim_timeout/` for a `win_type="timeout"` win worth
+  `1 × cube_value`. **Registered seats only** — a guest seat is unverifiable, so
+  otherwise anyone with the game id could claim. A closed seat 400s and is sent
+  to `abandon` instead, so a deadlock can never be laundered into a scoring win.
+  **One account may not hold both seats**, enforced in two places: both `join`
+  actions 400 a self-join, and `Game.timeout_deadline` independently refuses a
+  same-account row. That belt-and-braces is deliberate — with two registered
+  seats the row *is* claimable and `_seat_permission_error` passes the claim,
+  because the idle seat's user is the requester, so the account would farm
+  timeout wins against itself. Hotseat is unaffected: those games are created
+  with both names, start `active`, and leave p2 a guest seat, so they never
+  reach `join`.
+  **Three residual gaps, all known and deliberate:**
+  1. **Nothing notifies a player that their clock is running** — no push, no
+     email. The clients show a countdown, but only while the app is open.
+  2. **No server clock reference is sent.** `turn_deadline` goes out but
+     `server_now` does not, so both clients compare it against the *device*
+     clock. A device running hours fast shows the claim button early and then
+     eats a 400 that reads like a server bug, or tells a player their time is up
+     when it isn't. Fix is to serialise `server_now` and apply the offset — the
+     clients already isolate the comparison, so it is a contained change.
+  3. **The claim-vs-move race gives the mover a misleading error.** `claim_timeout`
+     takes the row lock first, so a `confirm_turn` arriving in the same instant
+     blocks, then reads `status="finished"` and gets `400 "Game is not active."` —
+     i.e. the player who *did* move in time sees a confusing message and then
+     polls into a loss. Correct, but poor copy; neither client special-cases it.
+     (The reverse order is graceful and the UI is not stuck in either client.)
 - **Throttle counters are per-process *unless* `REDIS_URL` is set.** `CACHES` is
   env-driven: a set `REDIS_URL` selects `RedisCache` and makes limits global,
   unset falls back to `LocMemCache`, which is per-gunicorn-worker and wiped on
@@ -280,13 +328,17 @@ These are intended but **do not exist in the code today** — don't assume them:
 - **Automated matchmaking.** No auto-pairing queue, ranking/ELO, or "quick play vs
   a random opponent." Online pairing is always player-initiated via link/code or the
   open-games list. See [overview.md](docs/architecture/overview.md#online-multiplayer).
-- **Inactivity forfeit and game clocks.** A player who walks away from an online
-  game stalls it forever; there is no timeout, no forfeit, and no clock of any
-  kind. The design is agreed and specified in
-  [ADR-002](docs/decisions/adr-002-inactivity-forfeit.md) — **read it before
-  building this**, especially the part explaining why the existing `abandon`
-  action is *not* the thing to extend. Nothing in it is implemented yet: there is
-  no `turn_started_at` field, no claim endpoint, and no clock state.
+- **Live game clocks.** The *per-turn deadline* is built (see Known gaps), but
+  reserve-time clocks are not: no accumulated per-player time, no increment or
+  delay, no mode selection at game creation, no clock UI beyond the deadline
+  countdown. [ADR-002](docs/decisions/adr-002-inactivity-forfeit.md) explains why
+  this waits — sudden death is the wrong clock shape for backgammon (tournaments
+  use delay/Bronstein because so many turns carry no decision), and live play
+  needs a **presence** concept that does not exist, or it would forfeit players
+  who never knew the game had started.
+- **A background sweeper.** Timeouts are claimed, never swept. With no Celery and
+  no cron, an expired game simply sits finished-in-waiting until its opponent
+  asks for the win. Deliberate, and it matches how chess.com daily behaves.
 - **Chat.** No chat feature exists anywhere.
 - **httpOnly cookie auth.** Auth is JWT **Bearer** tokens stored in `localStorage`
   (web) and `expo-secure-store` (mobile). Cookie-based sessions are not implemented.
