@@ -4,6 +4,7 @@ import { fetchMe } from "../api/authApi";
 import { useAuth } from "../context/AuthContext";
 import DeleteAccountPanel from "../components/DeleteAccountPanel";
 import EmailSettings from "../components/EmailSettings";
+import TurnReminderSettings from "../components/TurnReminderSettings";
 
 function StatRow({ label, value }) {
   return (
@@ -58,6 +59,15 @@ export default function ProfilePage() {
       {/* Mounted only after the stats load (the page returns early while
           loading), so the field starts from the server's value. */}
       <EmailSettings initialEmail={stats.email} onSaved={setStats} />
+
+      {/* Directly below the email field on purpose: it is the same address, and
+          saving one here re-renders the other with `stats` fresh from the
+          server — so adding an address enables the toggle immediately. */}
+      <TurnReminderSettings
+        enabled={stats.turn_reminder_emails}
+        email={stats.email}
+        onSaved={setStats}
+      />
 
       <DeleteAccountPanel
         onDeleted={() => {

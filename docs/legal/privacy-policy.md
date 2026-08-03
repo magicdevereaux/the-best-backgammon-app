@@ -16,13 +16,19 @@ at `[TODO: contact email address]`.
 ## Short version
 
 - We collect a **username and password**, and an **email address only if you
-  choose to give us one** — it is optional, and used solely to send you a
-  password-reset link. We do not ask for your phone number, real name, or date
-  of birth.
+  choose to give us one** — it is optional, and used only for two things: sending
+  you a password-reset link, and reminding you when a game is waiting on your
+  move. We do not ask for your phone number, real name, or date of birth.
+- **You can play without giving us an email address at all**, and everything
+  except password recovery and those reminders works the same way.
+- **Turn reminders are on by default** for accounts that have an address, and you
+  can switch them off at any time from your profile in either app. Every reminder
+  we send says so and tells you where the switch is.
 - We store the **games you play**: the board position, dice, scores, and the
   display names shown on each seat.
-- We do **not** use advertising, analytics, tracking pixels, crash-reporting
-  services, or any third-party SDK that profiles you.
+- Neither app contains advertising, analytics, tracking pixels, a crash-reporting
+  SDK, or any third-party SDK that profiles you. (Server-side error reporting is
+  covered in [What we do NOT collect](#what-we-do-not-collect).)
 - We do **not** sell or share your data with third parties for their own
   purposes.
 - Game records, including the display names on them, are **publicly readable**
@@ -41,13 +47,47 @@ When you register an account, we store:
 | Password | Stored only as a salted **hash** (Django's default password hasher). We cannot read your password. |
 | Account creation date | Recorded automatically when the account is created. |
 | Email address | **Optional.** Only stored if you choose to supply one, at registration or later from your profile. Never shown to other players. |
+| Email preferences | Whether you want turn-reminder emails. Stored only once you change it — until then we simply treat it as "on", the default. |
 
-An email address is used for one thing only: sending you a password-reset link
-when you ask for one. We do not send marketing, newsletters, or notifications.
-If you do not give us an address, everything else works exactly the same — but a
-forgotten password cannot then be reset, because we would have no way to check
-the request came from you. See
+An email address is used for exactly two things, both about your own account and
+your own games:
+
+1. **Password reset** — sending you a reset link when you ask for one. We only
+   ever send this because you asked for it.
+2. **Turn reminders** — telling you that a game is waiting on you and roughly how
+   long you have left to play before your opponent can claim the win. **At most
+   one such message per turn**, only for games you are actually playing, and only
+   when your time to move is genuinely running low. You did not ask for these
+   individually, so you can turn them off — see
+   [Turn reminders, and how to switch them off](#turn-reminders-and-how-to-switch-them-off).
+
+We do not send marketing or newsletters, we do not share your address with
+anyone, and we never show it to other players. **No email address is required to
+play.** If you do not give us one, everything else works exactly the same — you
+simply get no reminders, and a forgotten password cannot then be reset, because
+we would have no way to check the request came from you. See
 [Limitations you should know about](#limitations-you-should-know-about).
+
+### Turn reminders, and how to switch them off
+
+If your account has an email address, turn reminders are **on by default**. We
+default them on because they are about a game you are already playing, on a clock
+that can cost you the game while you are not looking — but we also make them easy
+to refuse, because you gave us the address for password reset rather than for
+game mail.
+
+**To switch them off:** open your **profile** in the web app or the mobile app
+and turn off **"Turn reminder emails"**. The change takes effect immediately, and
+you can turn it back on the same way. Every reminder we send carries a footer
+that says why you received it and names that exact setting.
+
+Switching reminders off does not affect anything else: your games, your
+statistics, and password reset all continue to work, and you will still see the
+countdown inside the app.
+
+We do not use a tracking pixel or an "unsubscribe" link in these messages. The
+setting sits behind the login you already have, which is one fewer way for
+anybody else to change your preferences.
 
 ### Gameplay data
 
@@ -96,7 +136,18 @@ the code, not policy promises:
 
 - **No advertising and no ad identifiers.** There is no ad SDK in the app.
 - **No analytics or telemetry SDK.** We do not measure your behaviour in-app.
-- **No crash or performance reporting service.**
+- **No crash or performance reporting SDK in either app.** Neither the web client
+  nor the mobile app contains one, so nothing on your device reports your
+  behaviour or your crashes to anyone.
+
+  > **`[TODO — CHECK THIS BEFORE YOU PUBLISH]`** This bullet is about the *apps*,
+  > and that half is unconditionally true. The **server** is a different matter:
+  > error reporting to **Sentry** is wired into the backend and switches on the
+  > moment a `SENTRY_DSN` is configured. It is not configured today, so nothing is
+  > sent anywhere — but if you set that variable when you deploy, Sentry becomes a
+  > service provider that may receive the contents of a failed request, and it
+  > must be named in [Service providers](#service-providers) below. Decide, then
+  > either say so there or delete this notice.
 - **No location data**, contacts, photos, camera, microphone, calendar, or
   health data. The app requests none of these permissions.
 - **No payments.** There are no purchases, subscriptions, or in-app currency, so
@@ -104,7 +155,11 @@ the code, not policy promises:
 - **No chat or messaging.** The app has no chat feature, so there are no
   messages to store.
 - **No phone numbers.** (An email address is collected only if you volunteer
-  one, and only to send password-reset links — see "Account information" above.)
+  one, and only to send password-reset links and turn reminders — see "Account
+  information" above.)
+- **No marketing email, no newsletter, and no mailing list.** The only two
+  messages we ever send are the two described above, and one of them is
+  switchable.
 - **No cross-app or cross-site tracking**, and no data brokers.
 
 ## How we use what we collect
@@ -116,8 +171,14 @@ We use your data only to run the game:
    your opponent sees your moves.
 3. To calculate your statistics.
 4. To send you a password-reset link, if you asked for one and have an email
-   address on file. We send no other mail.
-5. To keep the service working and secure — for example, to check that the
+   address on file.
+5. To email you a turn reminder when a game is waiting on your move and your time
+   to play it is running out — if you have an email address on file and have not
+   switched reminders off. At most one message per turn.
+
+   We send no other mail. In particular we do not email you about other people's
+   games, about new features, or about anything we would like you to buy.
+6. To keep the service working and secure — for example, to check that the
    person making a move is the player whose turn it is, and to investigate abuse
    or technical faults.
 
@@ -145,8 +206,9 @@ required to, or where it is necessary to protect the service or its users.
 
 Running the App involves `[TODO: list every third party that actually processes
 data on your behalf — your hosting/server provider, your database host, your
-domain/DNS or CDN provider, your outbound **email/SMTP provider** (password-reset
-mail is sent through one, so whoever you use handles your address), and Expo/EAS
+domain/DNS or CDN provider, your outbound **email/SMTP provider** (both the
+password-reset mail and the turn reminders are sent through one, so whoever you
+use handles your address), and Expo/EAS
 if you use their build or update services. If you add push notifications, error
 tracking, or analytics later, they must be listed here and the "What we do NOT
 collect" section corrected.]`
@@ -173,7 +235,9 @@ Deleting your account **unlinks it from your past games rather than erasing
 them.** Your chosen display name, the boards you played, and the results stay
 visible to your opponents, so their own game history is not damaged by your
 decision. Games you had created but nobody had joined are removed entirely. Any
-game still in progress becomes unplayable for your seat.
+game still in progress becomes unplayable for your seat. Your email address, your
+password hash and your saved email preferences are deleted outright — with the
+address gone, no further mail of any kind can reach you.
 
 > **`[TODO — REQUIRED BEFORE STORE SUBMISSION]`** In-app deletion exists, but
 > Google Play additionally requires a **web-accessible account-deletion request
@@ -199,6 +263,12 @@ or UK representative if one is required of you.]`
 
 - You can play the App **without an account** using hotseat and guest seats.
   Guest seats are not linked to any identity.
+- You can play a registered account **without giving us an email address**. The
+  address is optional at registration and can be added or removed later from your
+  profile.
+- You can **switch off turn-reminder emails** from your profile at any time, from
+  either app. See
+  [Turn reminders, and how to switch them off](#turn-reminders-and-how-to-switch-them-off).
 - You can sign out at any time, which removes your tokens from your device.
 - You can choose any display name you like for a guest seat.
 

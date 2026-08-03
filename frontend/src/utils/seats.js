@@ -1,7 +1,8 @@
 // Seat-state derivation from a game payload.
 //
-// `isSeatClosed` / `blockedSeat` / `isDeadlocked` / `canClaimTimeout` — and the
-// `toMillis` helper the last of those is built on — are a port of
+// `isSeatClosed` / `blockedSeat` / `isDeadlocked` / `canClaimTimeout` /
+// `serverClockOffset` — and the `toMillis` helper the last two are built on —
+// are a port of
 // mobile/src/game/gating.js and **must stay identical to it** — the two
 // clients have to agree on when a game can no longer move and on when an
 // inactivity forfeit is claimable. Mobile's gating layer proper (which seats
@@ -88,6 +89,33 @@ function toMillis(value) {
   if (typeof value === "number") return Number.isFinite(value) ? value : null;
   const parsed = Date.parse(value);
   return Number.isNaN(parsed) ? null : parsed;
+}
+
+// How far this device's clock is behind the server's, in milliseconds: add it to
+// `Date.now()` to get the time the *server* thinks it is.
+//
+// Every game payload carries `server_now` — the instant the response was
+// serialised, always present, never null. The device clock is not trustworthy:
+// a browser or phone running hours fast would show the claim control early and
+// then eat a 400 forever, and one running slow would promise a player time they
+// do not have. So no countdown and no `canClaimTimeout` comparison is made
+// against `Date.now()` directly; they all go through `Date.now() + offset`.
+//
+// Network latency is folded into this (the payload was serialised slightly
+// before it arrived), which biases the offset a few hundred ms *behind* the
+// server. That is the harmless direction: the claim opens a moment late rather
+// than a moment early, which is exactly the side the server would refuse.
+//
+// A missing, null, or unparseable `server_now` — an older cached payload, a
+// fixture — yields **0**: fall back to the device clock rather than break the
+// countdown. Ported verbatim into mobile/src/game/gating.js.
+export function serverClockOffset(game, deviceNow = Date.now()) {
+  if (!game) return 0;
+  const server = toMillis(game.server_now);
+  if (server == null) return 0;
+  const device = toMillis(deviceNow);
+  if (device == null) return 0;
+  return server - device;
 }
 
 // Whether this viewer may claim an inactivity forfeit right now.

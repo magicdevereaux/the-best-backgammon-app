@@ -79,6 +79,25 @@ export async function updateEmail(email) {
 }
 
 /**
+ * Switch turn-reminder emails on or off. The other writable field on
+ * `/api/auth/me/`, and the reason that mail is legitimate at all: addresses
+ * were collected for password reset, so game mail needs a real opt-out.
+ *
+ * Sent alone — a PATCH that omits `email` leaves the address untouched, which
+ * is what lets this be a one-tap toggle rather than a form submit.
+ *
+ * Returns the full user payload, same shape as `GET /api/auth/me/`, whose
+ * `turn_reminder_emails` is always a real boolean (the server resolves the
+ * default), so callers should render the response rather than what they sent.
+ */
+export async function updateTurnReminders(enabled) {
+  return request("/api/auth/me/", {
+    method: "PATCH",
+    body: JSON.stringify({ turn_reminder_emails: Boolean(enabled) }),
+  });
+}
+
+/**
  * Ask the backend to mail a password-reset link. Unauthenticated.
  *
  * The backend answers **identically** whether or not an account holds the

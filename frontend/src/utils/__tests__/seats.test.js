@@ -6,6 +6,7 @@ import {
   survivingSeat,
   canAbandon,
   canClaimTimeout,
+  serverClockOffset,
 } from "../seats";
 
 /*
@@ -295,6 +296,117 @@ describe("canClaimTimeout", () => {
     expect(canClaimTimeout({ ...onClock, player2_deleted: true }, "p1", AT + 1000)).toBe(true);
     const guests = { ...onClock, player1_user: null, player2_user: null };
     expect(canClaimTimeout(guests, "p1", AT + 1000)).toBe(true);
+  });
+});
+
+/*
+ * Device clock skew. Every payload carries `server_now`; the offset it yields is
+ * added to Date.now() before any deadline comparison, so a device running fast
+ * or slow still counts down against the clock the server is judging by.
+ *
+ * Mirrored verbatim in mobile/src/game/__tests__/gating.test.js.
+ */
+describe("serverClockOffset", () => {
+  const SERVER = "2026-08-02T12:00:00Z";
+  const AT = Date.parse(SERVER);
+
+  test("a device running fast yields a negative offset that walks it back", () => {
+    // Device thinks it is 12:02; the server says 12:00. Correcting the device
+    // clock by the offset lands exactly on the server's time.
+    const device = AT + 2 * 60_000;
+    const offset = serverClockOffset({ server_now: SERVER }, device);
+    expect(offset).toBe(-2 * 60_000);
+    expect(device + offset).toBe(AT);
+  });
+
+  test("a device running slow yields a positive offset that pushes it forward", () => {
+    const device = AT - 90 * 60_000; // an hour and a half behind
+    const offset = serverClockOffset({ server_now: SERVER }, device);
+    expect(offset).toBe(90 * 60_000);
+    expect(device + offset).toBe(AT);
+  });
+
+  test("a device already in step yields no correction", () => {
+    expect(serverClockOffset({ server_now: SERVER }, AT)).toBe(0);
+  });
+
+  test("a missing, null or garbage server_now falls back to zero, not to a broken clock", () => {
+    // An older cached payload, or a fixture written before the field existed.
+    expect(serverClockOffset({}, AT)).toBe(0);
+    expect(serverClockOffset({ server_now: null }, AT)).toBe(0);
+    expect(serverClockOffset({ server_now: "yesterday-ish" }, AT)).toBe(0);
+    expect(serverClockOffset({ server_now: NaN }, AT)).toBe(0);
+    expect(serverClockOffset({ server_now: Infinity }, AT)).toBe(0);
+    expect(serverClockOffset(null, AT)).toBe(0);
+    expect(serverClockOffset(undefined, AT)).toBe(0);
+  });
+
+  test("an unusable device clock also falls back to zero", () => {
+    expect(serverClockOffset({ server_now: SERVER }, NaN)).toBe(0);
+    expect(serverClockOffset({ server_now: SERVER }, "whenever")).toBe(0);
+    expect(serverClockOffset({ server_now: SERVER }, null)).toBe(0);
+  });
+
+  test("server_now and the device clock take the same three shapes as every other instant", () => {
+    expect(serverClockOffset({ server_now: AT }, AT - 1000)).toBe(1000);
+    expect(serverClockOffset({ server_now: new Date(AT) }, AT - 1000)).toBe(1000);
+    expect(serverClockOffset({ server_now: SERVER }, new Date(AT - 1000))).toBe(1000);
+  });
+
+  test("the device clock defaults to now, so a live payload reads as near-zero skew", () => {
+    const offset = serverClockOffset({ server_now: new Date().toISOString() });
+    expect(Math.abs(offset)).toBeLessThan(5000);
+  });
+});
+
+/*
+ * The point of the offset: canClaimTimeout keeps its signature (the caller
+ * decides what "now" means), and the caller hands it the corrected instant.
+ * Mirrored in mobile/src/game/__tests__/gating.test.js.
+ */
+describe("canClaimTimeout with a corrected clock", () => {
+  const DEADLINE = "2026-08-02T12:00:00Z";
+  const AT = Date.parse(DEADLINE);
+  const onClock = {
+    status: "active",
+    current_turn: "p2",
+    player1_user: 1,
+    player2_user: 2,
+    turn_waiting_seat: "p2",
+    turn_deadline: DEADLINE,
+    server_now: new Date(AT - 60_000).toISOString(), // a minute of clock left
+  };
+
+  test("a device running two hours fast does not claim early once corrected", () => {
+    const device = AT + 2 * 3600_000 - 60_000; // reads as an hour PAST the deadline
+    expect(canClaimTimeout(onClock, "p1", device)).toBe(true); // uncorrected: wrong
+    const offset = serverClockOffset(onClock, device);
+    expect(canClaimTimeout(onClock, "p1", device + offset)).toBe(false);
+  });
+
+  test("a device running two hours slow still gets its claim once corrected", () => {
+    // The server says the deadline passed a minute ago; the device disagrees.
+    const past = { ...onClock, server_now: new Date(AT + 60_000).toISOString() };
+    const device = AT - 2 * 3600_000 + 60_000;
+    expect(canClaimTimeout(past, "p1", device)).toBe(false); // uncorrected: wrong
+    const offset = serverClockOffset(past, device);
+    expect(canClaimTimeout(past, "p1", device + offset)).toBe(true);
+  });
+
+  test("the boundary stays inclusive against the corrected clock", () => {
+    const exact = { ...onClock, server_now: DEADLINE };
+    const device = AT + 7 * 3600_000; // seven hours fast, arbitrarily
+    const offset = serverClockOffset(exact, device);
+    expect(canClaimTimeout(exact, "p1", device + offset)).toBe(true);
+    expect(canClaimTimeout(exact, "p1", device + offset - 1)).toBe(false);
+  });
+
+  test("with no server_now the offset is zero, so behaviour is exactly as before", () => {
+    const noAnchor = { ...onClock };
+    delete noAnchor.server_now;
+    const offset = serverClockOffset(noAnchor, AT + 1000);
+    expect(offset).toBe(0);
+    expect(canClaimTimeout(noAnchor, "p1", AT + 1000 + offset)).toBe(true);
   });
 });
 

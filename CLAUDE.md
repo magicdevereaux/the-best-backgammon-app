@@ -56,11 +56,26 @@ other *and* with the server, which derives the same seat in `abandon`,
 `claim_timeout`, and the `Game.waiting_seat` property. Change one, change all
 three.
 
+That pair now shares four predicates — `isSeatClosed` / `isDeadlocked` /
+`blockedSeat` / `canClaimTimeout` — plus **`serverClockOffset`**. And there is
+now a **third** stay-in-sync pair: [`frontend/src/api/errors.js`](frontend/src/api/errors.js)
+and [`mobile/src/api/errors.js`](mobile/src/api/errors.js), which classify server
+error messages and must agree.
+
 `canClaimTimeout` carries an extra rule: **it must never re-derive eligibility.**
 Whether a claim is possible at all (active game, no closed seat, no guest seat, a
 clock recorded) is decided *only* by the server returning a non-null
 `turn_deadline`. A client that second-guesses that will drift from the server the
 moment either changes.
+
+**Clocks run on server time, not device time.** Every game payload carries
+`server_now`; each client computes `server_now − deviceNow` on every successful
+payload and bases every countdown and claim check on the corrected value. The
+offset is only adopted on a ≥1s change (`OFFSET_EPSILON_MS`) so a steady poll
+causes no re-render, and network latency biases it *behind* the server, which is
+the safe direction — a client should never offer a claim button the server will
+reject. `canClaimTimeout`'s signature is unchanged: it always took `now` as a
+parameter precisely so the caller decides what "now" means.
 
 ## Configuration (all env-driven, dev needs none)
 
@@ -77,6 +92,8 @@ behaviours you can't read off that file:
 - **`TURN_TIMEOUT_HOURS` (default 48)** is how long a seat may sit on the clock
   before its opponent can claim a forfeit. Env-driven, defaulted, so dev needs no
   `.env`. See [ADR-002](docs/decisions/adr-002-inactivity-forfeit.md).
+- **`TURN_REMINDER_LEAD_HOURS` (default 12)** is how far ahead of that deadline
+  `manage.py send_turn_reminders` warns the player on the clock. Also defaulted.
 - **`ADMIN_URL` moves the Django admin off its predictable path**, defaulting to
   `"admin"` so dev still needs no `.env`. `env_url_path()` in
   [`settings.py`](backend/backgammon/settings.py) strips slashes and whitespace
@@ -102,18 +119,18 @@ Deploy target is **Railway** — runbook and its traps in
 
 | Suite | Count | Command (cwd) |
 |-------|-------|---------------|
-| Backend | **531** | `python manage.py test game` (`backend/`, in-memory DB) |
-| Web | **364** | `CI=true npm test -- --watchAll=false` (`frontend/`) |
-| Mobile | **247** | `CI=true npx jest` (`mobile/`) |
+| Backend | **596** | `python manage.py test game` (`backend/`, in-memory DB) |
+| Web | **411** | `CI=true npm test -- --watchAll=false` (`frontend/`) |
+| Mobile | **292** | `CI=true npx jest` (`mobile/`) |
 
-All three suites were **green as of 2026-08-02** (531 / 364 / 247, 1142 total, zero
+All three suites were **green as of 2026-08-03** (596 / 411 / 292, 1299 total, zero
 failures). If you see a failure, it is yours — the baseline is clean.
 
 > **Use `backend/venv/Scripts/python.exe`**, not bare `python` — the system
 > interpreter has no `dj_database_url` and dies at import.
 
-> **The backend suite is also green on Postgres 16**, not just SQLite — all 35
-> migrations apply clean to an empty database and all 531 tests pass there, and
+> **The backend suite is also green on Postgres 16**, not just SQLite — all 37
+> migrations apply clean to an empty database and all 596 tests pass there, and
 > the `0005` backfill was exercised against real rows. See
 > [postgres-readiness.md](docs/operations/postgres-readiness.md).
 
@@ -195,6 +212,22 @@ Board is `points[24]` (index = point − 1), plus `bar` and `off` counts per pla
   match point (`match.games.filter(crawford_game=True)` marks it already played).
 - **Stats are computed on read**, not stored — see `UserSerializer` in
   [`serializers.py`](backend/game/serializers.py).
+- **`UserPreferences` is the third app model**, and the only one hanging off
+  `User`. Auth uses Django's stock user model, so there is nowhere to add a
+  column without swapping it out from under six migrations of FKs — a
+  `OneToOneField` is the least invasive answer. **The row is optional and created
+  lazily** on the first PATCH that changes something, so *absence means "all
+  defaults"* and `UserPreferences.reminders_enabled(user)` is the single source
+  of truth that both the serializer and `send_turn_reminders` read.
+  **Trap:** the serializer resolves it in `to_representation`, **not** with a DRF
+  `default=`. DRF applies defaults on the way *in*, so a dotted source with no
+  row serialises as `None` — and since both clients render this as a checkbox,
+  every account that had never opened its settings would have been shown
+  "reminders: off" while the command cheerfully mailed them. A consent control
+  that misreports consent is worse than none; a test caught it.
+  `/api/auth/me/` therefore has **two** writable fields, `email` and
+  `turn_reminder_emails`. Username is deliberately read-only — games and matches
+  carry a denormalised copy of it.
 - **Every mutating action runs in `transaction.atomic()` and locks its row
   first.** `RowLockingMixin._locked_object()` in
   [`views.py`](backend/game/views.py) does `get_object()` (unchanged 404
@@ -254,21 +287,36 @@ Board is `points[24]` (index = point − 1), plus `bar` and `off` counts per pla
   timeout wins against itself. Hotseat is unaffected: those games are created
   with both names, start `active`, and leave p2 a guest seat, so they never
   reach `join`.
-  **Three residual gaps, all known and deliberate:**
-  1. **Nothing notifies a player that their clock is running** — no push, no
-     email. The clients show a countdown, but only while the app is open.
-  2. **No server clock reference is sent.** `turn_deadline` goes out but
-     `server_now` does not, so both clients compare it against the *device*
-     clock. A device running hours fast shows the claim button early and then
-     eats a 400 that reads like a server bug, or tells a player their time is up
-     when it isn't. Fix is to serialise `server_now` and apply the offset — the
-     clients already isolate the comparison, so it is a contained change.
-  3. **The claim-vs-move race gives the mover a misleading error.** `claim_timeout`
-     takes the row lock first, so a `confirm_turn` arriving in the same instant
-     blocks, then reads `status="finished"` and gets `400 "Game is not active."` —
-     i.e. the player who *did* move in time sees a confusing message and then
-     polls into a loss. Correct, but poor copy; neither client special-cases it.
-     (The reverse order is graceful and the UI is not stuck in either client.)
+  **Clock skew and the claim-vs-move race are both closed** — see the
+  `server_now` note above, and `_inactive_game_error` in
+  [`views.py`](backend/game/views.py), which makes the four gameplay actions say
+  *"your opponent claimed a timeout win before this action reached the server"*
+  instead of a bare "Game is not active." Both clients render that as a calm
+  notice rather than an error, and re-fetch immediately so the finished game
+  lands underneath it.
+
+  **Notification is half-closed, and the half that's missing matters.**
+  `manage.py send_turn_reminders` emails the player on the clock
+  `TURN_REMINDER_LEAD_HOURS` before their deadline. There is no Celery and no
+  in-process cron — and mailing from inside a GET would be a write-on-read that
+  only fires when the *opponent* polls — so this is a command a **platform cron**
+  invokes, and it is **dormant until one is scheduled**, exactly like `REDIS_URL`
+  and `SENTRY_DSN`. Three properties are load-bearing, all found by review:
+  it **claims the row before sending** (a conditional `UPDATE` whose affected-row
+  count decides the winner), so overlapping crons cannot double-mail — the
+  documented trade-off is *at most one lost reminder, never a duplicate*, and
+  un-claiming on a send failure looks like an improvement but is not, because
+  `send_mail` can raise after the message was accepted; it **re-reads the row and
+  the clock per row** (`_candidates` yields ids *only*, on purpose) so a long run
+  cannot mail "move now or lose" about a game already lost; and it **refuses to
+  run** when `FRONTEND_BASE_URL` or `DEFAULT_FROM_EMAIL` are still at their dev
+  defaults, because a cron scheduled early would blast dead `localhost` links
+  from a bogus sender. `--dry-run` still rehearses on defaults;
+  `--allow-dev-defaults` is the escape hatch.
+  **Mobile push notifications still do not exist** — they need EAS credentials
+  and a device-token system, so that gap is owner-blocked, not code-blocked. A
+  player with no email address on file still gets no warning at all, and
+  **email is optional at registration by design**, so that is a real state.
 - **Throttle counters are per-process *unless* `REDIS_URL` is set.** `CACHES` is
   env-driven: a set `REDIS_URL` selects `RedisCache` and makes limits global,
   unset falls back to `LocMemCache`, which is per-gunicorn-worker and wiped on

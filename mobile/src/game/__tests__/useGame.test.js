@@ -225,6 +225,216 @@ describe("useGame", () => {
   });
 });
 
+/*
+ * Clock skew. Every payload carries `server_now`; useGame turns it into a
+ * constant correction the countdown and the claim check are made against, so a
+ * device whose clock is wrong still agrees with the server about the deadline.
+ *
+ * Mirrored in frontend/src/hooks/__tests__/useGame.test.js.
+ */
+describe("useGame clock offset", () => {
+  const NOW = Date.parse("2026-08-02T12:00:00Z");
+  const ONLINE = { ...baseGame, player1_user: 1, player2_user: 2 };
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    jest.setSystemTime(NOW);
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  async function load(game) {
+    games.fetchGame.mockResolvedValue(game);
+    const view = renderHook(() => useGame(1));
+    await act(async () => {});
+    return view;
+  }
+
+  test("a device running fast gets a negative offset that walks it back", async () => {
+    // Device clock is NOW; the server says two minutes earlier.
+    const { result } = await load({
+      ...baseGame,
+      server_now: new Date(NOW - 2 * 60_000).toISOString(),
+    });
+    expect(result.current.clockOffset).toBe(-2 * 60_000);
+  });
+
+  test("a device running slow gets a positive offset that pushes it forward", async () => {
+    const { result } = await load({
+      ...baseGame,
+      server_now: new Date(NOW + 90 * 60_000).toISOString(),
+    });
+    expect(result.current.clockOffset).toBe(90 * 60_000);
+  });
+
+  test("a missing or garbage server_now leaves the offset at zero", async () => {
+    // An older cached payload must not break the countdown, only forgo the
+    // correction.
+    for (const payload of [
+      baseGame,
+      { ...baseGame, server_now: null },
+      { ...baseGame, server_now: "not a timestamp" },
+    ]) {
+      jest.clearAllMocks();
+      const { result, unmount } = await load(payload);
+      expect(result.current.clockOffset).toBe(0);
+      unmount();
+    }
+  });
+
+  test("every poll re-anchors the offset, even when the payload is unchanged", async () => {
+    const savedAppState = AppState.currentState;
+    AppState.currentState = "active";
+    try {
+      const { result } = await load({ ...ONLINE, server_now: new Date(NOW).toISOString() });
+      expect(result.current.clockOffset).toBe(0);
+
+      // The device's clock jumps an hour forward mid-game; the server's does
+      // not. updated_at is identical, so the *game* object must be kept — but
+      // the offset still has to move, or the countdown silently loses an hour.
+      const first = result.current.game;
+      games.fetchGame.mockResolvedValue({
+        ...ONLINE,
+        server_now: new Date(NOW + 3500).toISOString(),
+      });
+      act(() => { jest.setSystemTime(NOW + 3600_000); });
+      await act(async () => { jest.advanceTimersByTime(3500); });
+
+      expect(result.current.clockOffset).toBe(-3600_000);
+      expect(result.current.game).toBe(first);
+    } finally {
+      AppState.currentState = savedAppState;
+    }
+  });
+
+  test("sub-second jitter is ignored, so a steady poll changes nothing", async () => {
+    const savedAppState = AppState.currentState;
+    AppState.currentState = "active";
+    try {
+      const { result } = await load({ ...ONLINE, server_now: new Date(NOW).toISOString() });
+
+      // 200ms of network jitter on the next response: below the countdown's own
+      // resolution, and not worth a re-render every 3.5s.
+      games.fetchGame.mockResolvedValue({
+        ...ONLINE,
+        server_now: new Date(NOW + 3500 - 200).toISOString(),
+      });
+      await act(async () => { jest.advanceTimersByTime(3500); });
+      expect(result.current.clockOffset).toBe(0);
+    } finally {
+      AppState.currentState = savedAppState;
+    }
+  });
+
+  test("an action response re-anchors too — not just loads and polls", async () => {
+    const { result } = await load({ ...baseGame, server_now: new Date(NOW).toISOString() });
+    expect(result.current.clockOffset).toBe(0);
+
+    games.rollDice.mockResolvedValue({
+      ...baseGame,
+      dice_values: [2, 6],
+      server_now: new Date(NOW - 600_000).toISOString(),
+    });
+    await act(async () => { await result.current.rollDice(); });
+    expect(result.current.clockOffset).toBe(-600_000);
+  });
+
+  test("a pull-to-refresh re-anchors as well", async () => {
+    const { result } = await load({ ...baseGame, server_now: new Date(NOW).toISOString() });
+
+    games.fetchGame.mockResolvedValue({
+      ...baseGame,
+      server_now: new Date(NOW + 45 * 60_000).toISOString(),
+    });
+    await act(async () => { await result.current.refresh(); });
+    expect(result.current.clockOffset).toBe(45 * 60_000);
+  });
+});
+
+/*
+ * The claim-vs-move race: a move and the opponent's inactivity claim cross in
+ * flight, and the server answers the move with a 400 saying the game was
+ * already claimed. Mirrored in frontend/src/hooks/__tests__/useGame.test.js.
+ */
+describe("useGame timeout-claim race", () => {
+  const RACE = new Error("Your opponent claimed a timeout win before this move arrived.");
+  const CLAIMED = {
+    ...baseGame,
+    status: "finished",
+    winner: "p2",
+    win_type: "timeout",
+    points_value: 1,
+    turn_deadline: null,
+    turn_waiting_seat: null,
+    updated_at: "t9",
+  };
+
+  test("a confirmed turn that lost the race flags it instead of shouting an error", async () => {
+    games.confirmTurn.mockRejectedValue(RACE);
+
+    const { result } = await mountLoaded();
+    await act(async () => { await result.current.confirmTurn(); });
+
+    expect(result.current.timeoutClaimed).toBe(true);
+    // The raw server sentence never reaches the player.
+    expect(result.current.actionError).toBeNull();
+  });
+
+  test("the finished game is pulled straight away, not left to the next poll", async () => {
+    games.fetchGame.mockResolvedValueOnce(baseGame).mockResolvedValue(CLAIMED);
+    games.confirmTurn.mockRejectedValue(RACE);
+
+    const { result } = await mountLoaded();
+    await act(async () => { await result.current.confirmTurn(); });
+
+    await waitFor(() => expect(result.current.game.status).toBe("finished"));
+    expect(result.current.game.win_type).toBe("timeout");
+    expect(result.current.timeoutClaimed).toBe(true);
+  });
+
+  test("a roll or a cube action that loses the same race is handled the same way", async () => {
+    for (const action of ["rollDice", "offerDouble"]) {
+      jest.clearAllMocks();
+      games.fetchGame.mockResolvedValue({ ...baseGame, dice_values: [] });
+      games[action].mockRejectedValue(RACE);
+
+      const { result, unmount } = await mountLoaded();
+      await act(async () => { await result.current[action](); });
+
+      expect(result.current.timeoutClaimed).toBe(true);
+      expect(result.current.actionError).toBeNull();
+      unmount();
+    }
+  });
+
+  test("ordinary refusals are untouched — they still speak for themselves", async () => {
+    games.confirmTurn.mockRejectedValue(new Error("Illegal move."));
+
+    const { result } = await mountLoaded();
+    await act(async () => { await result.current.confirmTurn(); });
+
+    expect(result.current.timeoutClaimed).toBe(false);
+    expect(result.current.actionError).toBe("Illegal move.");
+  });
+
+  test("claimTimeout's own refusals are never mistaken for the race", async () => {
+    // This one mentions claims and timeouts, and means the opposite thing: the
+    // claim was refused, so the game is still very much on.
+    games.claimTimeout.mockRejectedValue(
+      new Error(
+        "One account holds both seats in this game, so there is nobody to claim a timeout against."
+      )
+    );
+
+    const { result } = await mountLoaded();
+    await act(async () => { await result.current.claimTimeout(); });
+
+    expect(result.current.timeoutClaimed).toBe(false);
+    expect(result.current.actionError).toMatch(/nobody to claim a timeout against/);
+  });
+});
+
 describe("useGame abandon", () => {
   // The deadlocked payload the escape hatch exists for: p2 deleted their
   // account and it is p2's turn, so nothing can ever move.

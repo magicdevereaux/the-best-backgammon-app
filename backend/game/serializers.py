@@ -3,10 +3,11 @@ from django.contrib.auth.models import User
 from django.contrib.auth.tokens import default_token_generator
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db.models import Sum
+from django.utils import timezone
 from django.utils.http import urlsafe_base64_decode
 from rest_framework import serializers
 
-from .models import Game, Match
+from .models import Game, Match, UserPreferences
 
 
 def normalise_email(value):
@@ -49,6 +50,27 @@ class GameSerializer(serializers.ModelSerializer):
     # `turn_deadline`, and a null deadline is the "no claim here, ever" signal.
     turn_waiting_seat = serializers.SerializerMethodField()
     turn_deadline = serializers.SerializerMethodField()
+
+    # The server's own clock, as of the instant this response was serialised.
+    #
+    # `turn_deadline` is useless to a client that cannot trust its own clock,
+    # and a device clock hours out of step is ordinary — a phone that lost the
+    # network, a desktop with no NTP, a deliberately shifted one. Compared
+    # against a skewed device the countdown either shows the claim control
+    # early (and the button then eats a 400 that reads like a server bug) or
+    # tells a player their time is up while the server disagrees. With
+    # `server_now` in the same payload a client computes one offset —
+    # `server_now - Date.now()` at receipt — and ticks the countdown against
+    # the corrected clock, so the display is right no matter how wrong the
+    # device is.
+    #
+    # **Always present, never null**, including on finished games and games
+    # with no clock at all. The offset is what the client caches, and it must
+    # not depend on whether the game it happened to fetch has a deadline; a
+    # sometimes-null field would force clients to carry a "have we ever seen
+    # one?" fallback for no gain. Read-only for the obvious reason — a
+    # client-supplied "now" would be a client-supplied deadline.
+    server_now = serializers.SerializerMethodField()
 
     class Meta:
         model = Game
@@ -108,6 +130,12 @@ class GameSerializer(serializers.ModelSerializer):
         # Python's "+00:00" spelling of the same instant.
         return serializers.DateTimeField().to_representation(deadline)
 
+    def get_server_now(self, obj):
+        # Rendered through the same DRF DateTimeField as `turn_deadline`, so
+        # the two are byte-comparable formats ("2026-08-04T10:00:00Z") and a
+        # client can subtract one from the other after a single parse.
+        return serializers.DateTimeField().to_representation(timezone.now())
+
 
 class MatchSerializer(serializers.ModelSerializer):
     current_game_id = serializers.SerializerMethodField()
@@ -140,6 +168,20 @@ class UserSerializer(serializers.ModelSerializer):
     # guest-friendly "pick a name, start playing" path this app is built around.
     email = serializers.EmailField(required=False, allow_blank=True)
 
+    # Turn-reminder mail opt-out. Writable, like `email`, and through the same
+    # endpoint — `PATCH /api/auth/me/ {"turn_reminder_emails": false}` is the
+    # only way to switch it off, and both clients render it as a checkbox.
+    #
+    # `default=True` is doing real work in *both* directions: on read it is what
+    # a user with no UserPreferences row reports (every pre-existing account, by
+    # design — see the model), instead of the field vanishing from the payload
+    # as an un-defaulted dotted source would; on a PUT it restores the default,
+    # which is the right reading of a full replace. DRF skips defaults entirely
+    # on PATCH, so a partial update that omits the field leaves it alone.
+    turn_reminder_emails = serializers.BooleanField(
+        source="preferences.turn_reminder_emails", required=False, default=True
+    )
+
     wins = serializers.SerializerMethodField()
     losses = serializers.SerializerMethodField()
     total_games = serializers.SerializerMethodField()
@@ -153,20 +195,59 @@ class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = [
-            "id", "username", "email",
+            "id", "username", "email", "turn_reminder_emails",
             "wins", "losses", "total_games",
             "total_gammons", "total_backgammons",
             "total_points_won", "total_points_lost",
             "win_percentage", "gammon_rate",
         ]
-        # `email` is the *only* writable field. Username is identity here —
-        # games and matches carry a denormalised copy of it in
-        # player1_name/player2_name, so letting a PATCH rewrite it would put
-        # the profile and every historical scoresheet out of step.
+        # `email` and `turn_reminder_emails` are the *only* writable fields.
+        # Username is identity here — games and matches carry a denormalised
+        # copy of it in player1_name/player2_name, so letting a PATCH rewrite
+        # it would put the profile and every historical scoresheet out of step.
         read_only_fields = ["username"]
 
     def validate_email(self, value):
         return normalise_email(value)
+
+    def to_representation(self, instance):
+        """
+        Answer the preference from ``reminders_enabled``, not from the dotted
+        source.
+
+        DRF's ``default=`` applies to *deserialisation*; on the way out, a
+        dotted source with no related row simply reads ``None``. That is not a
+        cosmetic difference for this particular field: both clients render it as
+        a checkbox, ``None`` is falsy, and so every account that had never
+        touched its settings — which is all of them, since the row is created
+        lazily — would have been shown "turn reminders: off" while the command
+        happily mailed them. A consent control that misreports consent is worse
+        than no control.
+
+        Routing the read through the same helper the command asks means the
+        answer cannot drift from the behaviour it describes.
+        """
+        data = super().to_representation(instance)
+        data["turn_reminder_emails"] = UserPreferences.reminders_enabled(instance)
+        return data
+
+    def update(self, instance, validated_data):
+        """
+        Split the one writable field that does not live on ``User``.
+
+        ``ModelSerializer.update`` refuses dotted sources outright
+        (``raise_errors_on_nested_writes``), so the preference has to be lifted
+        out before the base class sees it, and written to its own row after —
+        ``for_user`` rather than a plain save because the row is optional and
+        this may be the first time this account has had one.
+        """
+        prefs = validated_data.pop("preferences", None)
+        user = super().update(instance, validated_data)
+        if prefs and "turn_reminder_emails" in prefs:
+            row = UserPreferences.for_user(user)
+            row.turn_reminder_emails = prefs["turn_reminder_emails"]
+            row.save(update_fields=["turn_reminder_emails", "updated_at"])
+        return user
 
     def _stats(self, obj):
         if not hasattr(obj, "_serializer_stats_cache"):

@@ -115,6 +115,96 @@ describe("ProfilePage email settings", () => {
   });
 });
 
+/*
+ * The turn-reminder opt-out. Addresses are collected for password reset, so the
+ * only thing that makes game mail legitimate is a switch the recipient can
+ * actually reach — which means this control has to work, explain the cost of
+ * switching it off, and never claim a state the server didn't confirm.
+ * Behaviour parity with mobile/src/components/__tests__/TurnReminderSection.test.jsx.
+ */
+describe("ProfilePage turn reminders", () => {
+  const reminderBox = () =>
+    screen.getByRole("checkbox", { name: /turn reminder emails/i });
+
+  test("renders the saved preference when it is on", async () => {
+    await renderProfile({ email: "alice@example.com", turn_reminder_emails: true });
+    expect(reminderBox()).toBeChecked();
+    expect(screen.getByText(/forfeited without ever hearing about it/i)).toBeInTheDocument();
+  });
+
+  test("renders the saved preference when it is off", async () => {
+    await renderProfile({ email: "alice@example.com", turn_reminder_emails: false });
+    expect(reminderBox()).not.toBeChecked();
+  });
+
+  test("switching it off PATCHes false and reflects the response", async () => {
+    authApi.updateTurnReminders.mockResolvedValue({
+      ...STATS, email: "alice@example.com", turn_reminder_emails: false,
+    });
+    await renderProfile({ email: "alice@example.com", turn_reminder_emails: true });
+
+    await userEvent.click(reminderBox());
+
+    await waitFor(() =>
+      expect(authApi.updateTurnReminders).toHaveBeenCalledWith(false)
+    );
+    expect(await screen.findByText(/turn reminder emails are off/i)).toBeInTheDocument();
+    expect(reminderBox()).not.toBeChecked();
+  });
+
+  test("switching it back on PATCHes true", async () => {
+    authApi.updateTurnReminders.mockResolvedValue({
+      ...STATS, email: "alice@example.com", turn_reminder_emails: true,
+    });
+    await renderProfile({ email: "alice@example.com", turn_reminder_emails: false });
+
+    await userEvent.click(reminderBox());
+
+    await waitFor(() =>
+      expect(authApi.updateTurnReminders).toHaveBeenCalledWith(true)
+    );
+    expect(await screen.findByText(/turn reminder emails are on/i)).toBeInTheDocument();
+    expect(reminderBox()).toBeChecked();
+  });
+
+  test("shows the server's answer, not the click", async () => {
+    // The server is authoritative: if it comes back still enabled, the box has
+    // to say enabled rather than the state the user asked for.
+    authApi.updateTurnReminders.mockResolvedValue({
+      ...STATS, email: "alice@example.com", turn_reminder_emails: true,
+    });
+    await renderProfile({ email: "alice@example.com", turn_reminder_emails: true });
+
+    await userEvent.click(reminderBox());
+
+    await waitFor(() => expect(authApi.updateTurnReminders).toHaveBeenCalled());
+    expect(reminderBox()).toBeChecked();
+  });
+
+  test("surfaces a save error and leaves the setting where it was", async () => {
+    authApi.updateTurnReminders.mockRejectedValue(new Error("Could not save your reminder setting."));
+    await renderProfile({ email: "alice@example.com", turn_reminder_emails: true });
+
+    await userEvent.click(reminderBox());
+
+    expect(await screen.findByText("Could not save your reminder setting.")).toBeInTheDocument();
+    expect(reminderBox()).toBeChecked();
+    expect(screen.queryByText(/turn reminder emails are off/i)).not.toBeInTheDocument();
+  });
+
+  test("explains that an address is needed when none is on file", async () => {
+    await renderProfile({ turn_reminder_emails: true }); // STATS has no email key
+    expect(screen.getByText(/no email address is saved on your account/i)).toBeInTheDocument();
+    expect(reminderBox()).toBeDisabled();
+  });
+
+  test("drops the no-address explanation once an address is on file", async () => {
+    await renderProfile({ email: "alice@example.com", turn_reminder_emails: true });
+    expect(screen.queryByText(/no email address is saved on your account/i)).not.toBeInTheDocument();
+    expect(reminderBox()).toBeEnabled();
+  });
+});
+
 describe("ProfilePage danger zone", () => {
   test("does not show the password field until deletion is requested", async () => {
     await renderProfile();

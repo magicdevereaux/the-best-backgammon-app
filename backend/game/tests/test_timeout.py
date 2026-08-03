@@ -20,7 +20,7 @@ Run with:
     cd backend && venv/Scripts/python.exe manage.py test game.tests.test_timeout
 """
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from django.contrib.auth.models import User
 from django.test import TestCase, override_settings
@@ -350,6 +350,97 @@ class TurnDeadlineSerializerTest(TestCase):
         self.assertLess(game.turn_started_at, timezone.now() + timedelta(minutes=1))
 
 
+def parse_iso(value):
+    """Read back a DRF-rendered timestamp ("...Z", not "+00:00")."""
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+class ServerNowFieldTest(TestCase):
+    """
+    `server_now` is the clock offset that makes `turn_deadline` trustworthy on
+    a device whose own clock is wrong. Its contract is narrow and total: same
+    format as every other timestamp, present on every game, never null.
+    """
+
+    def setUp(self):
+        self.alice = make_user("alice")
+        self.bob = make_user("bob")
+
+    def payload(self, game):
+        return GameSerializer(game).data
+
+    def test_it_is_the_moment_of_serialisation(self):
+        game = make_game(None, self.alice, self.bob)
+        before = timezone.now()
+        data = self.payload(game)
+        after = timezone.now()
+
+        self.assertIn("server_now", data)
+        self.assertIsNotNone(data["server_now"])
+        self.assertTrue(
+            before <= parse_iso(data["server_now"]) <= after,
+            data["server_now"],
+        )
+
+    def test_it_uses_the_same_format_as_turn_deadline(self):
+        """
+        A client subtracts one from the other, so they must parse identically:
+        DRF's "...Z" spelling, not Python's "+00:00".
+        """
+        data = self.payload(make_game(None, self.alice, self.bob))
+        self.assertTrue(data["server_now"].endswith("Z"))
+        self.assertTrue(data["turn_deadline"].endswith("Z"))
+        self.assertLess(parse_iso(data["server_now"]), parse_iso(data["turn_deadline"]))
+
+    def test_present_on_a_finished_game(self):
+        """
+        The offset is what a client caches, so it must not depend on the game
+        it happened to fetch still being live.
+        """
+        game = make_game(
+            None, self.alice, self.bob, status="finished", winner="p1",
+            win_type="single", points_value=1,
+        )
+        data = self.payload(game)
+        self.assertIsNone(data["turn_deadline"])
+        self.assertIsNotNone(data["server_now"])
+
+    def test_present_on_a_game_with_no_clock(self):
+        game = make_game(None, self.alice, None, status="waiting", turn_started_at=None)
+        data = self.payload(game)
+        self.assertIsNone(data["turn_waiting_seat"])
+        self.assertIsNone(data["turn_deadline"])
+        self.assertIsNotNone(data["server_now"])
+
+    def test_present_over_the_api_for_an_anonymous_reader(self):
+        game = make_game(None, self.alice, self.bob)
+        resp = APIClient().get(f"/api/games/{game.id}/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIsNotNone(resp.json()["server_now"])
+
+    def test_present_on_every_game_in_a_list_response(self):
+        make_game(None, self.alice, self.bob)
+        make_game(None, self.alice, self.bob, status="finished", winner="p1")
+        resp = auth("alice").get("/api/games/")
+        self.assertEqual(resp.status_code, 200)
+        games = resp.json()  # bare array — the list endpoint has no envelope
+        self.assertTrue(games)
+        for entry in games:
+            self.assertIsNotNone(entry["server_now"], entry)
+
+    def test_it_is_read_only(self):
+        """A client-supplied "now" would be a client-supplied deadline."""
+        resp = auth("alice").post(
+            "/api/games/",
+            {"player2_name": "Guest 2", "server_now": "2099-01-01T00:00:00Z"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 201)
+        self.assertLess(
+            parse_iso(resp.json()["server_now"]), timezone.now() + timedelta(minutes=1)
+        )
+
+
 # ---------------------------------------------------------------------------
 # The claim
 # ---------------------------------------------------------------------------
@@ -649,6 +740,109 @@ class ClaimTimeoutRejectionTest(TestCase):
         self.assertIn("still has time", resp.json()["error"])
         game.refresh_from_db()
         self.assertEqual(game.status, "active")
+
+
+class ClaimRaceMessageTest(TestCase):
+    """
+    The photo finish: `claim_timeout` takes the row lock first, so an action
+    issued in the same instant blocks on it and then wakes to a finished game.
+    The claimant genuinely won the race — the fix is telling the loser *what
+    happened* instead of the bare "Game is not active.", which reads to a
+    player who did move in time like a server bug.
+
+    Every gameplay action can lose this race, so every one of them is checked.
+    The status stays 400 throughout: the request really is invalid against the
+    current state, and the clients pattern-match on 400.
+    """
+
+    EXPECTED = (
+        "Your opponent claimed a timeout win before this action reached the "
+        "server, so the game is already finished."
+    )
+
+    def setUp(self):
+        self.alice = make_user("alice")
+        self.bob = make_user("bob")
+
+    def claimed_game(self, **kwargs):
+        """A game bob has just won on time, with alice still holding p1."""
+        game = make_game(None, self.alice, self.bob, current_turn="p1", **kwargs)
+        expire(game)
+        resp = auth("bob").post(f"/api/games/{game.id}/claim_timeout/", {}, format="json")
+        self.assertEqual(resp.status_code, 200, resp.json())
+        game.refresh_from_db()
+        self.assertEqual(game.win_type, "timeout")
+        return game
+
+    def assert_race_message(self, resp):
+        self.assertEqual(resp.status_code, 400, resp.json())
+        self.assertEqual(resp.json()["error"], self.EXPECTED)
+
+    def test_confirm_turn_explains_the_race(self):
+        game = self.claimed_game(dice_values=OPENING_DICE)
+        self.assert_race_message(
+            auth("alice").post(
+                f"/api/games/{game.id}/confirm_turn/",
+                {"moves": OPENING_MOVES},
+                format="json",
+            )
+        )
+
+    def test_roll_dice_explains_the_race(self):
+        game = self.claimed_game()
+        self.assert_race_message(
+            auth("alice").post(f"/api/games/{game.id}/roll_dice/", {}, format="json")
+        )
+
+    def test_offer_double_explains_the_race(self):
+        game = self.claimed_game()
+        self.assert_race_message(
+            auth("alice").post(f"/api/games/{game.id}/offer_double/", {}, format="json")
+        )
+
+    def test_respond_to_double_explains_the_race(self):
+        """
+        With an offer pending the waiting seat is the *responder*, so here it
+        is the responder who is timed out and the offerer who claims — and the
+        responder's answer is what loses the race.
+        """
+        game = make_game(
+            None, self.alice, self.bob, current_turn="p1", double_offered_by="p1"
+        )
+        expire(game)
+        claim = auth("alice").post(f"/api/games/{game.id}/claim_timeout/", {}, format="json")
+        self.assertEqual(claim.status_code, 200, claim.json())
+
+        self.assert_race_message(
+            auth("bob").post(
+                f"/api/games/{game.id}/respond_to_double/", {"accept": True}, format="json"
+            )
+        )
+
+    def test_a_game_finished_any_other_way_keeps_the_generic_message(self):
+        """
+        The special case is keyed on `win_type == "timeout"` alone. A stale tab
+        on an ordinarily finished game is not a race and must not be told it
+        was one.
+        """
+        game = make_game(
+            None, self.alice, self.bob, current_turn="p1", status="finished",
+            winner="p2", win_type="single", points_value=1, dice_values=OPENING_DICE,
+        )
+        resp = auth("alice").post(
+            f"/api/games/{game.id}/confirm_turn/", {"moves": OPENING_MOVES}, format="json"
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.json()["error"], "Game is not active.")
+
+    def test_an_abandoned_game_keeps_the_generic_message(self):
+        game = make_game(
+            None, self.alice, self.bob, current_turn="p1", status="finished",
+            win_type="abandoned", points_value=0,
+        )
+        resp = auth("alice").post(f"/api/games/{game.id}/roll_dice/", {}, format="json")
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.json()["error"], "Game is not active.")
 
 
 class TimeoutStatsTest(TestCase):

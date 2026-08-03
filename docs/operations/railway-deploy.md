@@ -185,9 +185,11 @@ the request log line for the exact `Host` value it sent and add that.
 | `WEB_CONCURRENCY` | `3` | Gunicorn workers. Lower it to `2` on a small instance. See the [throttling caveat](#known-caveats-on-railway). |
 | `REDIS_URL` | `${{Redis.REDIS_URL}}` | **Turns the throttle limits global.** Unset → `LocMemCache`, per worker, wiped every deploy. Add *New → Database → Add Redis* to the project and use the reference form, exactly as with Postgres. See the [throttling caveat](#known-caveats-on-railway). |
 | `SENTRY_DSN` | your project's DSN | **[OWNER]** The only thing standing between a 500 and someone hearing about it. Nothing is sent when it's empty — `sentry_sdk.init()` isn't even called. Pair with `SENTRY_ENVIRONMENT=production` and, optionally, `SENTRY_RELEASE=${{RAILWAY_GIT_COMMIT_SHA}}`. |
-| `EMAIL_HOST` (+ `EMAIL_PORT`, `EMAIL_HOST_USER`, `EMAIL_HOST_PASSWORD`, `EMAIL_USE_TLS`, `DEFAULT_FROM_EMAIL`) | your SMTP provider | **[OWNER]** **Password-reset mail does not leave the box without this.** With `EMAIL_HOST` empty the app uses Django's *console* backend and prints the reset link into the Railway deploy log. Plain SMTP, so SES / Postmark / Resend / Mailgun all work; nothing in the code names a provider. |
+| `EMAIL_HOST` (+ `EMAIL_PORT`, `EMAIL_HOST_USER`, `EMAIL_HOST_PASSWORD`, `EMAIL_USE_TLS`, `DEFAULT_FROM_EMAIL`) | your SMTP provider | **[OWNER]** **No mail leaves the box without this** — and there are now **two** kinds: the password-reset link, and the turn reminder from [step 8](#8-schedule-the-turn-reminder-cron). With `EMAIL_HOST` empty the app uses Django's *console* backend and prints both into the Railway log. Plain SMTP, so SES / Postmark / Resend / Mailgun all work; nothing in the code names a provider. |
 | `TURN_TIMEOUT_HOURS` | `48` (the default) | How long a player may leave a game waiting on them before the opponent can claim an inactivity forfeit (`POST /api/games/{id}/claim_timeout/`). **Nothing breaks if you never set it** — it is listed here because it is the one gameplay rule you can retune on a running service without a deploy, and 48 hours is a guess until real players pace real games. Lower it for a fast-play launch, raise it if people complain about losing to the clock. See [going-live.md 3.35](going-live.md#3-done). |
-| `FRONTEND_BASE_URL` | `https://backgammon.example.com` | **Set this the moment mail is on.** It is the origin of the link in the reset email (`{FRONTEND_BASE_URL}/reset-password/{uid}/{token}`) and it defaults to `http://localhost:3000` — wrong *silently*, since the mail still sends. It is the **web client's** origin, not the API's: the web router serves that exact path and nothing else does, so a mobile user who requests a reset also finishes it in a browser. Verify it with [smoke test step 5](#first-deploy-smoke-test). |
+| `TURN_REMINDER_LEAD_HOURS` | `12` (the default) | How long *before* `turn_deadline` the `send_turn_reminders` command mails the player on the clock. Read only by that command, so it does nothing at all until you schedule it — [step 8](#8-schedule-the-turn-reminder-cron). Keep it comfortably below `TURN_TIMEOUT_HOURS`, or the reminder window opens the moment the turn starts and the mail stops being a warning. |
+| `DEFAULT_FROM_EMAIL` | `Backgammon <no-reply@your-domain>` | The `From:` on both outgoing mails. Defaults to `Backgammon <no-reply@localhost>`, which most providers will reject or bin. **`send_turn_reminders` hard-refuses to send while this is at the default** — [step 8](#8-schedule-the-turn-reminder-cron). |
+| `FRONTEND_BASE_URL` | `https://backgammon.example.com` | **Set this the moment mail is on**, and **required before the reminder cron will send anything at all** ([step 8](#8-schedule-the-turn-reminder-cron)). It is the origin of the link in **both** outgoing mails — `{FRONTEND_BASE_URL}/reset-password/{uid}/{token}` and the turn reminder's `{FRONTEND_BASE_URL}/game/{id}` — and it defaults to `http://localhost:3000` — wrong *silently*, since the mail still sends. It is the **web client's** origin, not the API's: the web router serves that exact path and nothing else does, so a mobile user who requests a reset also finishes it in a browser. Verify it with [smoke test step 5](#first-deploy-smoke-test). |
 
 ### Optional (defaults are sane — omit unless you need to change them)
 
@@ -269,6 +271,184 @@ tree.
 **[OWNER]** Enable the Postgres service's automated backups in its settings, and
 **restore one once to prove it works**. An untested backup is not a backup.
 Nothing in this repo can do this for you.
+
+## 8. Schedule the turn-reminder cron
+
+`manage.py send_turn_reminders` emails the player on the clock before their
+inactivity deadline expires. **The command exists; nothing calls it.** Until you
+schedule it here it is dormant, exactly like `REDIS_URL` and `SENTRY_DSN` —
+players still get forfeited with no warning ([going-live.md
+2.3](going-live.md#23-polish-and-hygiene)).
+
+**Why it is a platform cron and not application code.** There is no Celery and
+no in-process scheduler in this stack, and the obvious shortcut — mailing from
+inside a `GET` — is a write-on-read that only fires when the **opponent** polls,
+i.e. exactly the player who does *not* need reminding. A player whose opponent
+stopped opening the app would never be mailed at all. So the trigger has to come
+from outside the request cycle, and Railway supports cron jobs natively.
+
+> **Do this first: set `FRONTEND_BASE_URL` and `DEFAULT_FROM_EMAIL`.**
+>
+> **The command refuses to send while either is at its dev default**, and it
+> refuses *before it touches a single row* — this is a precondition on the whole
+> run, not a per-row skip. A cron scheduled ahead of those two values would mail
+> every waiting player at once, from `Backgammon <no-reply@localhost>`, with a
+> link to `http://localhost:3000`. That mail is unrecallable and it goes to
+> everybody, so an unset variable is a hard exit rather than a warning.
+>
+> Both defaults live in [`settings.py`](../../backend/backgammon/settings.py) as
+> the named constants `DEV_DEFAULT_FRONTEND_BASE_URL` / `DEV_DEFAULT_FROM_EMAIL`,
+> and the command compares against *those*, not against literals of its own — so
+> the two modules cannot drift about what "unset" looks like.
+>
+> **What the failure looks like.** The run exits non-zero (a `CommandError`) with
+> the offending names in the message, and sends nothing:
+>
+> ```
+> CommandError: Refusing to send: FRONTEND_BASE_URL and DEFAULT_FROM_EMAIL are
+> still at the dev default, so every reminder would carry a dead link or a bogus
+> sender. Set FRONTEND_BASE_URL and DEFAULT_FROM_EMAIL in the environment, or
+> pass --dry-run to rehearse or --allow-dev-defaults to send anyway.
+> ```
+>
+> On Railway a cron run that exits non-zero shows as a **failed** run in the
+> service's deploy list with that line in its log — which is the intended
+> outcome, not a problem to work around. Set the variables (step 3) on the **cron
+> service**, not just the API service; they are separate services with separate
+> variable sets, and this is the mistake to expect.
+>
+> Two escape hatches, both deliberate:
+> - **`--dry-run` still runs on dev defaults.** It sends nothing, so rehearsing
+>   the command locally or against the deployed database is always allowed — and
+>   is the rehearsal step, substep 5 below.
+> - **`--allow-dev-defaults` sends anyway.** For testing real delivery against a
+>   local mail catcher. **Never put it in a cron start command**; if you find
+>   yourself reaching for it there, the variables are what need fixing.
+
+1. **[OWNER]** **Add a second service from the same repo**, e.g. `reminders`.
+   Railway's cron runs *a service's own start command* on a schedule, and the
+   API service's start command is gunicorn — schedule that and you get a second
+   web server every ten minutes, not a reminder. The cron therefore needs its
+   own service. Same repo, same root directory, same Dockerfile; only the start
+   command and the schedule differ.
+
+2. On that service, set **Settings → Deploy → Custom Start Command**:
+
+   ```
+   python manage.py send_turn_reminders
+   ```
+
+   A cron service must **exit** when it is finished, which this command does.
+
+3. Set **Settings → Cron Schedule** on the same service:
+
+   ```
+   */10 * * * *
+   ```
+
+   Ten minutes is the recommended interval, and the reasoning has not changed:
+   the mail is **at most one per turn** (see below), so the frequency only
+   controls how close to `turn_deadline − TURN_REMINDER_LEAD_HOURS` the mail
+   actually goes out. Running it often costs a handful of indexed reads and buys
+   punctuality. **Duplicates are impossible even if a run overruns its own
+   interval and two invocations overlap** — the row is claimed by a conditional
+   UPDATE before the mail is composed into an SMTP session, and the database
+   picks the winner. So there is no need to pad the schedule against a slow run.
+
+4. **Give it the same variables as the API service** — at minimum
+   `DATABASE_URL=${{Postgres.DATABASE_URL}}`, `SECRET_KEY`, `DEBUG=False`, the
+   `EMAIL_*` set, **`FRONTEND_BASE_URL` and `DEFAULT_FROM_EMAIL`** (without which
+   the run refuses to send at all, per the box above), and
+   `TURN_REMINDER_LEAD_HOURS` if you are not taking the
+   default. It talks to the same database and sends through the same provider;
+   it needs no `ALLOWED_HOSTS` and no domain, because it serves nothing.
+
+   > **Trap: [`railway.json`](../../railway.json) is repo-level, so the second
+   > service reads it too.** It pins `deploy.healthcheckPath: "/healthz/"`, and a
+   > container that exits without ever answering HTTP fails that check — every
+   > run would be marked unhealthy and `restartPolicyType: ON_FAILURE` would keep
+   > retrying it. **Clear the health check on the cron service in the dashboard**
+   > (dashboard settings override the file per service). The custom start command
+   > from step 2 likewise replaces the Dockerfile's `CMD`, so the cron does *not*
+   > re-run `migrate` — which is correct; the API service already does that on
+   > every deploy.
+
+5. **Rehearse, then verify.** The command has flags for exactly this, and the
+   order matters — dry-run first, because it is the only one that works before
+   the variables above are set:
+
+   ```bash
+   railway run python backend/manage.py send_turn_reminders --dry-run
+   railway run python backend/manage.py send_turn_reminders --limit 1
+   ```
+
+   `--dry-run` lists every recipient and game id it *would* mail, sends nothing,
+   and **leaves `turn_reminder_sent_at` untouched** — so a real run afterwards
+   still mails everything it listed. `--limit N` caps the number of reminders
+   **sent**, not rows examined, so a first run against a backlog can be spread
+   over several invocations instead of arriving as one blast. Both print a
+   one-line summary: candidates considered, sent, skipped, errors.
+
+   A row that fails for any reason is logged with its game id and **stepped
+   over**, never allowed to end the run — a cron job that dies on one bad row
+   stops mailing everybody. Note the contrast with the dev-defaults check above:
+   *that* one takes the whole run down on purpose, because a partial blast of
+   useless mail is not better than none.
+
+**It is safe to run when nothing is configured — because it declines to.** The
+refusal above is the first thing that happens, so an unconfigured real run mails
+nobody and says why. Under `--dry-run` (or `--allow-dev-defaults`) it proceeds,
+and with no `EMAIL_*` variables set the mail goes to Django's console backend and
+lands in the cron container's log — informative, not harmful. With no eligible
+games it processes nothing and exits.
+
+**Who it will and will not mail.** Only a **registered** waiting seat, with an
+**email address on file**, who has **not opted out**
+(`UserPreferences.turn_reminder_emails`, default on, toggled at
+`PATCH /api/auth/me/` — see
+[api.md](../architecture/api.md#patch-apiauthme)), on a game that is genuinely
+timeout-eligible: the SQL filter is an optimisation, and the verdict comes from
+`Game.timeout_deadline()` — the same method the serializer's `turn_deadline` and
+`claim_timeout` use — rather than being reimplemented, so the reminder can never
+fire for a game nobody could claim. Every mail closes with a footer naming the
+setting and where to switch it off; there is no tokenised unsubscribe link,
+deliberately, because that would be a new unauthenticated write surface to save
+one tap behind a login the recipient already has.
+
+**Every decision is re-read per row, and that is why a slow run stays honest.**
+The candidate query yields **primary keys only, on purpose** — a run over a large
+backlog can outlive the truth of its own snapshot, so `_process` is given nothing
+to work from but a fresh read of the row and a fresh `now`. A game won, claimed,
+abandoned or simply played on since the run started is dropped rather than mailed
+"move now or lose", and the countdown quoted in the body cannot be stale by the
+run's own duration.
+
+**The mail links back to the web client**, `{FRONTEND_BASE_URL}/game/{id}`
+(`build_game_url`, built exactly as the reset link is and from the same
+setting). That is the **second** consumer of `FRONTEND_BASE_URL`: a wrong value
+now produces two kinds of useless mail, not one. There is still no mobile deep
+link, so a mobile player follows it in a browser. It also mails a game whose
+deadline has *already* passed — with different wording, because the claim is
+pull-based and an expired game just sits there until the opponent asks.
+
+**It cannot spam.** `Game.turn_reminder_sent_at` records the send, and
+`_begin_turn()` clears it whenever the waiting seat changes, so it is at most
+one reminder per turn no matter how often the cron runs. The stamp is written
+**before** the mail, by a conditional UPDATE that re-asserts in its WHERE clause
+that nobody else claimed this turn, that the turn is unchanged, and that the game
+is still active; `.update()`'s affected-row count decides which of two racing
+processes sends. **The trade-off, so nobody "fixes" it later: at most one lost
+reminder, never a duplicate.** Un-claiming after a failed send looks like an
+improvement and is not — `send_mail` can raise after the message was already
+accepted, so the retry would double-mail. That column arrived in
+migration `0006_game_turn_reminder_sent_at` — see
+[data-model.md](../architecture/data-model.md#the-turn-reminder-stamp-turn_reminder_sent_at).
+
+**What it does not do:** it does not forfeit anything. Timeout claims stay
+pull-based ([ADR-002](../decisions/adr-002-inactivity-forfeit.md)) and this
+command never writes a game result. It also does not reach a player who set no
+email address, and there is **no push notification** — see
+[going-live.md 2.3](going-live.md#23-polish-and-hygiene).
 
 ---
 
@@ -481,3 +661,11 @@ future session can tell "already handled" from "still open".
   are dormant until the owner creates the accounts. See
   [going-live.md 1.6](going-live.md#16-backups-admin-credentials-and-the-three-dormant-subsystems)
   and [2.3](going-live.md#23-polish-and-hygiene).
+- **No cron service, so no turn reminders are sent.** `send_turn_reminders`
+  exists and is tested, but no Railway service, start command or schedule has
+  been created for it — [step 8](#8-schedule-the-turn-reminder-cron) has never
+  been executed. Until it is, a player is only warned about their clock while
+  the game screen is open. **Mobile push notifications are a separate, larger
+  gap that no amount of Railway configuration closes** — they need EAS
+  credentials and a device-token system, and neither exists
+  ([going-live.md 2.3](going-live.md#23-polish-and-hygiene)).

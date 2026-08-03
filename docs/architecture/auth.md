@@ -19,9 +19,14 @@ rates) is **computed on read** by `UserSerializer`, never stored. See
 constraint, and adding one would turn registration into a "is this address already
 registered?" oracle), so every lookup uses `email__iexact` and a reset mails *each*
 matching account its own token. It is the account's only route to password recovery:
-without one, `POST /api/auth/password-reset/` can never reach it. `email` is the sole
-writable field on `UserSerializer` — `username` is read-only because games and
-matches carry a denormalised copy of it in `player1_name`/`player2_name`.
+without one, `POST /api/auth/password-reset/` can never reach it. `email` and
+`turn_reminder_emails` are the **only two writable fields** on `UserSerializer` —
+`username` is read-only because games and
+matches carry a denormalised copy of it in `player1_name`/`player2_name`, and
+everything else on the payload is a computed stat. `turn_reminder_emails` is the
+turn-reminder opt-out; it does not live on `User` at all but on an optional
+[`UserPreferences`](data-model.md#userpreferences) row, and is described with the
+endpoint in [api.md](api.md#patch-apiauthme).
 
 ## Endpoints
 
@@ -31,7 +36,7 @@ matches carry a denormalised copy of it in `player1_name`/`player2_name`.
 | `POST /api/auth/login/` | SimpleJWT `TokenObtainPairView` | `{ access, refresh }` |
 | `POST /api/auth/refresh/` | SimpleJWT `TokenRefreshView` | `{ access, refresh }` (rotated) |
 | `GET /api/auth/me/` | `MeView` (`IsAuthenticated`) | current user + computed stats |
-| `PATCH /api/auth/me/` | `MeView` (`IsAuthenticated`) | sets/clears `email` (send `""` to clear) |
+| `PATCH /api/auth/me/` | `MeView` (`IsAuthenticated`) | sets/clears `email` (send `""` to clear); toggles `turn_reminder_emails` |
 | `DELETE /api/auth/me/` | `MeView.destroy` (`IsAuthenticated`) | 204; requires the caller's current password |
 | `POST /api/auth/password-reset/` | `PasswordResetRequestView` | flat 200 whether or not the address matches |
 | `POST /api/auth/password-reset/confirm/` | `PasswordResetConfirmView` | 200; `{uid, token, new_password}` |
@@ -55,6 +60,37 @@ matches carry a denormalised copy of it in `player1_name`/`player2_name`.
   from the attacker's refresh payload without ever consulting the password. Full
   request/response detail, including the anti-enumeration properties, is in
   [api.md](api.md#post-apiauthpassword-reset).
+
+**Outbound mail: there are two kinds now, and they share one configuration.**
+The password-reset link is no longer the only thing this app sends. `manage.py
+send_turn_reminders` mails the player on the clock before an inactivity forfeit
+becomes claimable ([ADR-002](../decisions/adr-002-inactivity-forfeit.md),
+[railway-deploy.md step 8](../operations/railway-deploy.md#8-schedule-the-turn-reminder-cron)).
+Consequences for anyone reasoning about auth:
+
+- **The same `EMAIL_*` settings gate both.** With `EMAIL_HOST` unset both land in
+  Django's console backend; configuring SMTP switches on both at once.
+- **`User.email` now has a second consumer.** It was purely a recovery address;
+  it is also the reminder address. The field is still **optional**, still
+  unverified, and still not unique — an account without one simply gets neither
+  mail. Nothing about the auth flow changed to accommodate this.
+- **The reminder is not an auth surface.** Its only link is
+  `{FRONTEND_BASE_URL}/game/{id}` (`build_game_url`, built exactly as
+  `build_password_reset_url` is) — a plain game URL that authenticates nobody and
+  grants nothing a game id does not already grant. Only the reset mail contains a
+  credential. Note this makes **`FRONTEND_BASE_URL` load-bearing for both mails**.
+- **Only the reminder is refusable, and that asymmetry is deliberate.** A reset
+  mail is sent *because the recipient just asked for it*; a reminder is
+  unsolicited, to an address collected for recovery. So the reminder honours
+  `UserPreferences.reminders_enabled(user)` (default **on**, switched at
+  `PATCH /api/auth/me/`) and carries a footer naming the setting, while the reset
+  mail has no opt-out and should not grow one — suppressing it would silently
+  disable account recovery.
+- **The reminder is dormant** until the owner schedules a cron, so today the
+  reset mail remains the only thing this app actually sends. It also refuses to
+  send at all while `FRONTEND_BASE_URL` or `DEFAULT_FROM_EMAIL` are still at their
+  dev defaults; the reset mail carries no such guard, and would happily ship a
+  `localhost` link.
 
 Token lifetimes are set in [`settings.py`](../../backend/backgammon/settings.py):
 **access 1 hour, refresh 7 days**. The auth routes also carry scoped DRF throttles —

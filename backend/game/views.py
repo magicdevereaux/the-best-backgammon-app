@@ -342,6 +342,19 @@ def build_password_reset_url(user):
     return f"{settings.FRONTEND_BASE_URL}/reset-password/{uid}/{token}"
 
 
+def build_game_url(game):
+    """
+    The link that goes in a turn-reminder email.
+
+    Shape: ``{FRONTEND_BASE_URL}/game/{id}`` — the web client's ``/game/:id``
+    route. Deliberately built the same way ``build_password_reset_url`` builds
+    its link, from the same setting, for the same reason: the server cannot
+    know where a client is served from, and there is no mobile deep link, so
+    every outbound link in this app points at the web client.
+    """
+    return f"{settings.FRONTEND_BASE_URL}/game/{game.pk}"
+
+
 def send_password_reset_email(user):
     """
     Mail one account its reset link. Never raises.
@@ -441,6 +454,44 @@ class PasswordResetConfirmView(generics.GenericAPIView):
 # Game helpers
 # ---------------------------------------------------------------------------
 
+# What a player sees when their move lost a photo finish against the
+# opponent's timeout claim. See `_inactive_game_error`.
+TIMEOUT_RACE_ERROR = (
+    "Your opponent claimed a timeout win before this action reached the "
+    "server, so the game is already finished."
+)
+
+
+def _inactive_game_error(game):
+    """
+    The message for a gameplay action that arrived at a game which is no longer
+    ``active`` — specialised for the claim-vs-move race.
+
+    ``claim_timeout`` takes the row lock first, so a ``confirm_turn`` (or roll,
+    or cube action) issued in the same instant blocks on that lock, then wakes
+    up to a row that says ``finished``. The generic "Game is not active."
+    that used to come back is *true* and completely misleading: the player did
+    move inside their window, from their point of view nothing was wrong, and
+    the next poll drops a loss on them with no explanation. The race is real
+    and unavoidable — someone has to win it, and the claimant did — so the fix
+    is to say so rather than to pretend it cannot happen.
+
+    ``win_type == "timeout"`` on a finished game is the exact and only
+    signature of that case: no other ending writes it, and it is set inside the
+    same locked transaction that finished the row, so by the time this runs it
+    is already visible. Everything else keeps the original wording, which is
+    the right answer for a genuinely stale client (a resumed tab, an
+    already-won game).
+
+    **Still a 400.** The request really is invalid against the current state
+    and the clients treat 4xx uniformly; a bespoke status code would buy
+    nothing and break every caller that pattern-matches on 400.
+    """
+    if game.win_type == "timeout":
+        return TIMEOUT_RACE_ERROR
+    return "Game is not active."
+
+
 def _begin_turn(game, seat):
     """
     Hand ``current_turn`` to `seat` **and** restart the inactivity clock, as one
@@ -465,9 +516,18 @@ def _begin_turn(game, seat):
     roll-and-move together, on purpose: if rolling started a fresh clock, a
     player could roll within the window and then stall forever on an untouched
     board, and the timeout would never be claimable.
+
+    Clearing ``turn_reminder_sent_at`` is part of the same indivisible write.
+    That field is the whole idempotency mechanism behind
+    ``manage.py send_turn_reminders`` — the command only considers rows where
+    it is null — so a turn flip that forgot to clear it would silence the
+    reminder for the incoming player *and* every turn after it, permanently.
+    Clearing it here (rather than in each caller) is what guarantees the reset
+    happens on every path that starts a clock, present and future.
     """
     game.current_turn = seat
     game.turn_started_at = timezone.now()
+    game.turn_reminder_sent_at = None
 
 
 def _turn_start_fields(seat):
@@ -476,11 +536,17 @@ def _turn_start_fields(seat):
     than mutate one (``serializer.save()`` / ``Model.objects.create()``).
 
     Built by running ``_begin_turn`` against a throwaway instance rather than
-    by restating the assignments, so this cannot drift from it.
+    by restating the assignments, so this cannot drift from it — including the
+    ``turn_reminder_sent_at`` reset, which matters here too: a freshly created
+    row must start with no reminder recorded against its first turn.
     """
     stub = Game()
     _begin_turn(stub, seat)
-    return {"current_turn": stub.current_turn, "turn_started_at": stub.turn_started_at}
+    return {
+        "current_turn": stub.current_turn,
+        "turn_started_at": stub.turn_started_at,
+        "turn_reminder_sent_at": stub.turn_reminder_sent_at,
+    }
 
 
 def _apply_single_move(board, player, dice, from_point, to_point):
@@ -1136,7 +1202,8 @@ class GameViewSet(
 
             if game.status != "active":
                 return Response(
-                    {"error": "Game is not active."}, status=status.HTTP_400_BAD_REQUEST
+                    {"error": _inactive_game_error(game)},
+                    status=status.HTTP_400_BAD_REQUEST,
                 )
 
             if game.double_offered_by:
@@ -1195,7 +1262,8 @@ class GameViewSet(
 
             if game.status != "active":
                 return Response(
-                    {"error": "Game is not active."}, status=status.HTTP_400_BAD_REQUEST
+                    {"error": _inactive_game_error(game)},
+                    status=status.HTTP_400_BAD_REQUEST,
                 )
 
             if game.double_offered_by:
@@ -1312,7 +1380,8 @@ class GameViewSet(
 
             if game.status != "active":
                 return Response(
-                    {"error": "Game is not active."}, status=status.HTTP_400_BAD_REQUEST
+                    {"error": _inactive_game_error(game)},
+                    status=status.HTTP_400_BAD_REQUEST,
                 )
 
             if game.crawford_game:
@@ -1378,7 +1447,8 @@ class GameViewSet(
 
             if game.status != "active":
                 return Response(
-                    {"error": "Game is not active."}, status=status.HTTP_400_BAD_REQUEST
+                    {"error": _inactive_game_error(game)},
+                    status=status.HTTP_400_BAD_REQUEST,
                 )
 
             if not game.double_offered_by:

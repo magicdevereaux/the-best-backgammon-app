@@ -1,22 +1,7 @@
 // Friendly readings of raw backend / network errors.
 //
-// `isTimeoutClaimedError` / `TIMEOUT_CLAIMED_MESSAGE` are mirrored in
-// frontend/src/api/errors.js — the two clients must tell a player the same story
-// about the same 400. Keep the predicate and the copy identical.
-
-// Map raw backend / network errors from a join attempt to a friendly message.
-// Backend join failures surface as Error(message) from the API client:
-//   - "Game is not open to join."          → already started or full
-//   - "player2_name is required ..."        → guest needs a name
-//   - "API error: 404"                      → no such game id
-export function friendlyJoinError(err) {
-  const m = (err && err.message) || "";
-  if (/not open to join/i.test(m)) return "That game has already started or is full.";
-  if (/404|not found/i.test(m)) return "No game found with that code.";
-  if (/player2_name/i.test(m)) return "Enter your name to join as a guest.";
-  if (/network|fetch|timeout/i.test(m)) return "Can't reach the server. Check your connection.";
-  return m || "Couldn't join that game.";
-}
+// Mirrors mobile/src/api/errors.js — the two clients must tell a player the same
+// story about the same 400. Keep the predicates and the copy identical.
 
 /*
  * The claim-vs-move race.
@@ -32,7 +17,7 @@ export function friendlyJoinError(err) {
  *
  * Matched on the message text because that is all the API gives us — every
  * refusal arrives as `{ "error": "..." }` and `request` throws it as an Error
- * (see api/client.js). Deliberately loose about the exact wording, and
+ * (see api/apiClient.js). Deliberately loose about the exact wording, and
  * deliberately applied ONLY to gameplay actions: `claim_timeout`'s own refusals
  * ("there is nobody to claim a timeout against") would otherwise match here and
  * mean something else entirely.

@@ -121,6 +121,40 @@ export async function updateEmail(email) {
   return data;
 }
 
+/**
+ * Switch turn-reminder emails on or off (`PATCH /api/auth/me/`).
+ *
+ * The other writable field on that endpoint, and the reason the reminder mail
+ * is legitimate at all: addresses were collected for password reset, so game
+ * mail needs a real opt-out and this is it. Sent on its own — a PATCH that
+ * omitted `email` leaves the address untouched, which is what lets this be a
+ * one-click toggle rather than a form submit.
+ *
+ * Resolves to the full UserSerializer payload, same shape as fetchMe(), whose
+ * `turn_reminder_emails` is always a real boolean (the server resolves the
+ * default), so callers should render the response rather than what they sent.
+ */
+export async function updateTurnReminders(enabled) {
+  const token = getAccessToken();
+  const res = await fetch(BASE_URL + "me/", {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify({ turn_reminder_emails: Boolean(enabled) }),
+  });
+  const data = await res.json().catch(() => null);
+  if (!res.ok) {
+    throw new Error(
+      data?.turn_reminder_emails?.[0] ||
+        data?.detail ||
+        "Could not save your reminder setting."
+    );
+  }
+  return data;
+}
+
 /** Pull the first message out of a DRF field error, which may be a list or a
  *  bare string (`password-reset/confirm/` returns `token` as a plain string). */
 function firstMessage(value) {

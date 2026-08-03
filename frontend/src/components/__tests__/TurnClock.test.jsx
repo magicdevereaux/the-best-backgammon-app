@@ -190,6 +190,140 @@ describe("TurnClock — you are the one on the clock", () => {
   });
 });
 
+/*
+ * Device clock skew. The tick samples this browser's clock, but every reading is
+ * corrected by `clockOffset` (useGame, from `server_now`) before it is compared
+ * with the deadline — so what the player sees is the server's clock, which is
+ * the one that decides the game.
+ *
+ * Mirrored in mobile/src/components/__tests__/TurnClockSection.test.jsx.
+ */
+describe("TurnClock — a device whose clock is wrong", () => {
+  const HOUR = 3600 * 1000;
+
+  test("a fast device counts down correctly instead of claiming early", () => {
+    // The browser reads two hours ahead of the server. Deadline 90s out in
+    // SERVER time, so an uncorrected clock would already offer the claim.
+    const deadline = inMs(-2 * HOUR + 90 * 1000);
+    render(
+      <TurnClock
+        game={{ ...BASE, turn_deadline: deadline }}
+        clockOffset={-2 * HOUR}
+        onClaimTimeout={jest.fn()}
+      />
+    );
+
+    expect(screen.getByText(/1m 30s until you can claim/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /claim the win on time/i })).not.toBeInTheDocument();
+
+    // ...and it still opens on time, ticking against the corrected clock.
+    act(() => { jest.advanceTimersByTime(90 * 1000); });
+    expect(screen.getByRole("button", { name: /claim the win on time/i })).toBeInTheDocument();
+  });
+
+  test("a slow device is not told it still has time it does not have", () => {
+    // The browser reads three hours behind. In server time the deadline passed
+    // a minute ago, so the claim is live.
+    const deadline = inMs(3 * HOUR - 60 * 1000);
+    render(
+      <TurnClock
+        game={{ ...BASE, turn_deadline: deadline }}
+        clockOffset={3 * HOUR}
+        onClaimTimeout={jest.fn()}
+      />
+    );
+
+    expect(screen.getByRole("button", { name: /claim the win on time/i })).toBeInTheDocument();
+    expect(screen.queryByText(/until you can claim/i)).not.toBeInTheDocument();
+  });
+
+  test("the seat on the clock is warned against the corrected clock too", () => {
+    // Bob's slow browser would otherwise think he had three more hours.
+    render(
+      <TurnClock
+        game={{ ...BASE, viewer_seat: "p2", turn_deadline: inMs(3 * HOUR - 60 * 1000) }}
+        clockOffset={3 * HOUR}
+        onClaimTimeout={jest.fn()}
+      />
+    );
+    expect(screen.getByText(/your time is up/i)).toBeInTheDocument();
+  });
+
+  test("the boundary is still inclusive once the offset is applied", () => {
+    const at = (deadlineMs, offset) =>
+      render(
+        <TurnClock
+          game={{ ...BASE, turn_deadline: inMs(deadlineMs) }}
+          clockOffset={offset}
+          onClaimTimeout={jest.fn()}
+        />
+      );
+
+    // Corrected now === deadline exactly.
+    const exact = at(-HOUR, -HOUR);
+    expect(screen.getByRole("button", { name: /claim the win on time/i })).toBeInTheDocument();
+    exact.unmount();
+
+    // One millisecond short of it.
+    at(-HOUR + 1, -HOUR);
+    expect(screen.queryByRole("button", { name: /claim the win on time/i })).not.toBeInTheDocument();
+  });
+
+  test("a missing or unusable offset falls back to the device clock, unbroken", () => {
+    // No prop at all (an older caller), and a garbage one.
+    const plain = renderClock();
+    expect(screen.getByText(/1m 30s until you can claim/i)).toBeInTheDocument();
+    plain.unmount();
+
+    render(
+      <TurnClock game={{ ...BASE }} clockOffset={NaN} onClaimTimeout={jest.fn()} />
+    );
+    expect(screen.getByText(/1m 30s until you can claim/i)).toBeInTheDocument();
+  });
+
+  test("a gross disagreement is explained, and says which way round it is", () => {
+    const fast = render(
+      <TurnClock game={{ ...BASE }} clockOffset={-2 * HOUR} onClaimTimeout={jest.fn()} />
+    );
+    expect(screen.getByTestId("clock-skew-notice")).toHaveTextContent(
+      /this device's clock is 2h 0m ahead of the server's/i
+    );
+    expect(screen.getByTestId("clock-skew-notice")).toHaveTextContent(/follows the server/i);
+    fast.unmount();
+
+    render(<TurnClock game={{ ...BASE }} clockOffset={2 * HOUR} onClaimTimeout={jest.fn()} />);
+    expect(screen.getByTestId("clock-skew-notice")).toHaveTextContent(
+      /this device's clock is 2h 0m behind the server's/i
+    );
+  });
+
+  test("a small, ordinary offset is not worth mentioning — five minutes is the line", () => {
+    const FIVE = 5 * 60 * 1000;
+    const under = render(
+      <TurnClock game={{ ...BASE }} clockOffset={FIVE - 1000} onClaimTimeout={jest.fn()} />
+    );
+    expect(screen.queryByTestId("clock-skew-notice")).not.toBeInTheDocument();
+    under.unmount();
+
+    render(<TurnClock game={{ ...BASE }} clockOffset={FIVE} onClaimTimeout={jest.fn()} />);
+    expect(screen.getByTestId("clock-skew-notice")).toBeInTheDocument();
+  });
+
+  test("the notice reaches the seat on the clock as well as the one waiting", () => {
+    renderClock({ viewer_seat: "p2" });
+    expect(screen.queryByTestId("clock-skew-notice")).not.toBeInTheDocument();
+
+    render(
+      <TurnClock
+        game={{ ...BASE, viewer_seat: "p2" }}
+        clockOffset={6 * HOUR}
+        onClaimTimeout={jest.fn()}
+      />
+    );
+    expect(screen.getByTestId("clock-skew-notice")).toBeInTheDocument();
+  });
+});
+
 describe("TurnClock — claiming", () => {
   const elapsed = { turn_deadline: inMs(-60 * 1000) };
 

@@ -5,6 +5,79 @@ from django.contrib.auth.models import User
 from django.db import models
 
 
+class UserPreferences(models.Model):
+    """
+    Per-account settings that are not part of *identity*.
+
+    This is the first of these, and it exists because `AUTH_USER_MODEL` is
+    Django's stock `User`: there is nowhere to hang a column without swapping
+    the user model out from under six migrations' worth of FKs, which is a far
+    larger change than one boolean is worth. A `OneToOneField` is the standard
+    answer and the least invasive one — nothing that reads a `User` today has
+    to change.
+
+    **The row is optional.** Every account predating this table has none, and
+    `User.objects.create_user` (used directly all over the tests, and by
+    `RegisterSerializer`) does not make one. Absence therefore has to *mean*
+    something, and it means "all defaults" — which is why every field here must
+    keep a sensible default, and why `reminders_enabled` answers True for a user
+    with no row at all. `UserSerializer` reads the field back through that same
+    helper in `to_representation` — a declared `default=` does **not** do this,
+    because DRF applies defaults on the way *in*, so a dotted source with no row
+    serialises as `None` and the clients' checkbox would show "off" for every
+    account that had never opened its settings.
+    The row is created lazily by the first PATCH that changes something
+    (`UserSerializer.update` → `for_user`), so no data migration has to walk
+    the user table and a plain GET of a profile stays a read.
+    """
+
+    user = models.OneToOneField(
+        User, on_delete=models.CASCADE, related_name="preferences"
+    )
+    # Turn-reminder mail from `manage.py send_turn_reminders`.
+    #
+    # **Default on, deliberately.** This is transactional in character — it is
+    # about a live game the recipient is already playing, on a clock that can
+    # forfeit their position while they are not looking — and it is how
+    # correspondence chess sites behave. But an address is collected as
+    # *optional, for password reset*, so silently treating "gave us an email"
+    # as "wants game mail" would be an unsolicited enrolment with no way out.
+    # This field is the way out: writable on /api/auth/me/, and named in the
+    # footer of every reminder so the mail itself says where the switch is.
+    turn_reminder_emails = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"Preferences for {self.user}"
+
+    class Meta:
+        verbose_name_plural = "user preferences"
+
+    @classmethod
+    def for_user(cls, user):
+        """The user's row, created with defaults if this is the first look."""
+        prefs, _ = cls.objects.get_or_create(user=user)
+        return prefs
+
+    @staticmethod
+    def reminders_enabled(user):
+        """
+        Whether `user` wants turn-reminder mail. Never creates a row.
+
+        Read on a hot path (once per candidate game, on every cron tick), so it
+        must not write, and it must survive a null user. A missing row is the
+        default-on case; `User.preferences` raises `RelatedObjectDoesNotExist`
+        for it, which is what is caught here.
+        """
+        if user is None:
+            return False
+        try:
+            return user.preferences.turn_reminder_emails
+        except UserPreferences.DoesNotExist:
+            return True
+
+
 class Match(models.Model):
     player1_user = models.ForeignKey(
         User, null=True, blank=True, on_delete=models.SET_NULL, related_name="matches_as_p1"
@@ -89,6 +162,14 @@ class Game(models.Model):
     # row created before this field existed). Always written together with
     # `current_turn` through `_begin_turn` in views.py, so the two cannot drift.
     turn_started_at = models.DateTimeField(null=True, blank=True)
+    # When a "your clock is running" reminder was mailed for the turn that is
+    # currently in progress. Null = none sent yet for this turn, and that is
+    # the *only* thing stopping `manage.py send_turn_reminders` from mailing
+    # the same player on every cron tick: the command's candidate query filters
+    # on it being null and stamps it after a successful send. `_begin_turn`
+    # clears it alongside `turn_started_at`, which is what scopes it to a
+    # single turn — one reminder per turn, forever, without storing a log.
+    turn_reminder_sent_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

@@ -336,6 +336,75 @@ describe("GamePage inactivity forfeit", () => {
     expect(claimButton()).toBeInTheDocument();
   });
 
+  /*
+   * The claim-vs-move race, end to end. Mirrors the hook-level coverage in
+   * frontend/src/hooks/__tests__/useGame.test.js; mobile's equivalent lives in
+   * src/game/__tests__/useGame.test.js plus the TimeoutClaimedNotice suite,
+   * since the mobile game screen has no render tests of its own.
+   */
+  const RACE_400 = "Your opponent claimed a timeout win before this move arrived.";
+
+  test("a move that crossed with the opponent's claim is explained, not shouted", async () => {
+    gameApi.rollDice.mockRejectedValue(new Error(RACE_400));
+    await renderGame({
+      current_turn: "p1", dice_values: [], viewer_seat: "p1",
+      turn_waiting_seat: "p1", turn_deadline: future(),
+    });
+
+    await userEvent.click(screen.getByRole("button", { name: /roll dice/i }));
+
+    const notice = await screen.findByTestId("timeout-claimed-notice");
+    expect(notice).toHaveTextContent(/claimed the win on time/i);
+    expect(notice).toHaveTextContent(/already over/i);
+    // The raw server sentence never reaches the player.
+    expect(screen.queryByText(RACE_400)).not.toBeInTheDocument();
+  });
+
+  test("the explanation still reads true once the finished game lands under it", async () => {
+    // The immediate re-fetch brings back the game the opponent already won, so
+    // the page shows a coherent game-over rather than a live board under a
+    // message saying the game is over.
+    const claimed = {
+      ...BASE, status: "finished", winner: "p2", win_type: "timeout", points_value: 1,
+      turn_waiting_seat: null, turn_deadline: null,
+    };
+    authApi.fetchMe.mockResolvedValue(null);
+    gameApi.fetchGame
+      .mockResolvedValueOnce({
+        ...BASE, current_turn: "p1", dice_values: [], viewer_seat: "p1",
+        turn_waiting_seat: "p1", turn_deadline: future(),
+      })
+      .mockResolvedValue(claimed);
+    gameApi.rollDice.mockRejectedValue(new Error(RACE_400));
+
+    render(
+      <MemoryRouter>
+        <AuthProvider>
+          <GamePage />
+        </AuthProvider>
+      </MemoryRouter>
+    );
+    await screen.findByRole("heading", { name: /alice vs bob/i });
+
+    await userEvent.click(screen.getByRole("button", { name: /roll dice/i }));
+
+    expect(await screen.findByText(/bob wins on time!/i)).toBeInTheDocument();
+    expect(screen.getByTestId("timeout-claimed-notice")).toBeInTheDocument();
+    expect(screen.queryByText(RACE_400)).not.toBeInTheDocument();
+    // ...and the clock that was ticking a moment ago is gone with it.
+    expect(screen.queryByText(/you're on the clock/i)).not.toBeInTheDocument();
+  });
+
+  test("an ordinary refusal is still shown verbatim", async () => {
+    gameApi.rollDice.mockRejectedValue(new Error("It is not your turn."));
+    await renderGame({ current_turn: "p1", dice_values: [], viewer_seat: "p1" });
+
+    await userEvent.click(screen.getByRole("button", { name: /roll dice/i }));
+
+    expect(await screen.findByText("It is not your turn.")).toBeInTheDocument();
+    expect(screen.queryByTestId("timeout-claimed-notice")).not.toBeInTheDocument();
+  });
+
   test("a deadlocked game shows the closed-seat exit, not a clock", async () => {
     // Belt and braces: the server nulls turn_deadline on a closed seat anyway.
     await renderGame({ current_turn: "p2", player2_user: null, player2_deleted: true, viewer_seat: "p1" });

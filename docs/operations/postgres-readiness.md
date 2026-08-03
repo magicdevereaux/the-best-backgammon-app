@@ -16,11 +16,16 @@ pointed at it, using `psycopg2 2.9.12` / `Django 4.2.30`. Re-run in full on
 
 | Check | Result |
 |-------|--------|
-| All 35 migrations against an **empty** database | applied clean — zero warnings, zero errors |
+| All 37 migrations against an **empty** database | applied clean — zero warnings, zero errors |
 | `makemigrations --check --dry-run` | "No changes detected" — no model/migration drift |
 | `0005` backfill against **real rows** (see below) | correct on all three assertions |
 | `0005` reverse (`migrate game 0004`) | clean; column dropped, rows untouched; re-applies forward again |
-| `python manage.py test game` | **531 passing**, zero failures, `check` reports 0 issues |
+| `python manage.py test game` | **596 passing**, zero failures, `check` reports 0 issues |
+
+Re-run on **2026-08-03** after `0006_game_turn_reminder_sent_at` and
+`0007_userpreferences` landed: 37 migrations clean on an empty database, 596
+tests green. Both are plain additive schema changes — a nullable column and a new
+table — with no data migration between them.
 
 Both signals matter: the test runner builds its own `test_` database, so a clean
 plain `migrate` against the real database was confirmed separately.

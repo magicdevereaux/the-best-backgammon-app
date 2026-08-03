@@ -12,8 +12,10 @@ the last of the substantial code work: match-list scoping, the password-reset
 client UI at both ends, the `abandon` control on both clients, and the
 generalisation of the higher-die rule with a port into both JS engines. Line
 numbers in `views.py` moved and were re-read for this pass; `settings.py`,
-`serializers.py` and `models.py` are untouched since the previous audit, so their
-citations below still hold as written.
+`serializers.py` and `models.py` were untouched *at that point*, so their
+citations below were exact as written. **Later work in this file's notes has
+since moved all three** — see the addenda below; the symbols they name are still
+correct, the line numbers may be a few off.
 
 > **Added after that pass:** the inactivity forfeit ([3.35](#3-done)) — a
 > `turn_started_at` column, `TURN_TIMEOUT_HOURS`, `POST /claim_timeout/`, and a
@@ -21,6 +23,29 @@ citations below still hold as written.
 > game could become permanently unplayable with nobody at fault. `models.py`,
 > `serializers.py` and `settings.py` all moved with it, so line citations naming
 > those three may sit a few lines off; the symbols they name are unchanged.
+>
+> **And after *that*:** three follow-ups to the forfeit, all in
+> [section 3](#3-done) — the `server_now` field that stops a skewed device clock
+> mis-timing a claim ([3.36](#3-done)), the `send_turn_reminders` command and its
+> `TURN_REMINDER_LEAD_HOURS` / `turn_reminder_sent_at` supporting cast
+> ([3.37](#3-done)), and a specific error message for the claim-vs-move race
+> ([3.38](#3-done)). Two of the three residues recorded against the forfeit are
+> closed by them; **the reminder is dormant until a cron is scheduled**, and
+> **push notifications still do not exist** — both in
+> [2.3](#23-polish-and-hygiene). `views.py` line citations moved again with this
+> work; the symbols they name did not.
+>
+> **And after *that*: the reminder was hardened, not extended.** An adversarial
+> review of the command produced an opt-out (`UserPreferences`, migration
+> `0007_userpreferences`, writable on `PATCH /api/auth/me/`), a refusal to send
+> while `FRONTEND_BASE_URL` / `DEFAULT_FROM_EMAIL` sit at their dev defaults, a
+> claim-before-send stamp, and a per-row re-read — all itemised in
+> [3.37](#3-done). `models.py`, `serializers.py` and the migration set moved with
+> it, so citations naming those may again sit a few lines off; the symbols do
+> not. **Nothing here changes the two statements above**: the reminder is still
+> dormant until a cron is scheduled, and push still does not exist. The privacy
+> policy changed with it ([1.5](#15-publish-the-legal-documents)) — an
+> unsolicited second mail type needed describing, and an opt-out to describe.
 
 ## Current state
 
@@ -35,10 +60,12 @@ three copies; legal drafts exist.
 
 What remains splits two ways, and only the first is substantial. **Decisions and
 credentials only the owner can supply** ([section 1](#1-blocked-on-the-owner)) —
-now the bulk of the remaining work, and it includes three subsystems that are
+now the bulk of the remaining work, and it includes **four** things that are
 *coded and dormant*: `REDIS_URL`, `SENTRY_DSN` and the `EMAIL_*` vars are all read
 by `settings.py` and set nowhere, so throttle counters are still per-worker, a 500
-still notifies nobody, and reset mail still goes to Django's console backend.
+still notifies nobody, and outbound mail still goes to Django's console backend —
+and the fourth, `manage.py send_turn_reminders` ([3.37](#3-done)), is a command
+with no scheduler calling it, so nobody is warned that their clock is running.
 **Real code gaps** ([section 2](#2-still-open-in-code)) are down to three, none of
 them a bug: a deliberate design trade-off
 ([2.1](#21-guest-seats-are-unverifiable-by-design)), admin login hardening
@@ -58,14 +85,17 @@ System check identified no issues (0 silenced).
 ```
 
 Six warnings → zero. All three suites are green as of **2026-08-02**:
-**backend 531**, **web 364**, **mobile 247** (1142 total), and
+**backend 596**, **web 411**, **mobile 292** (1299 total), and
 [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) runs each on every
 push. Those numbers moved on all three clients in this pass — from 450 / 312 /
 190 (952) — and the inactivity forfeit ([3.35](#3-done)) is what moved them:
 `test_timeout.py` on the server plus the turn-clock and claim-control suites on
-web and mobile. The backend figure had itself already grown from 441 with the
+web and mobile. A follow-up pass then hardened that feature — server-time
+countdowns, the claim-vs-move race message, and `send_turn_reminders` — taking
+the three suites from 531 / 364 / 247 to their current figures. The backend had
+itself already grown from 441 with the
 `ADMIN_URL` tests in [2.2](#22-django-admin-has-no-2fa-ip-allowlist-or-lockout)
-and the transaction tests. **The backend's 531 are also green against real
+and the transaction tests. **The backend's 596 are also green against real
 Postgres**, not only SQLite — see
 [postgres-readiness.md](postgres-readiness.md) and
 [1.1](#11-pick-a-host-and-provision-postgresql).
@@ -128,8 +158,8 @@ Heroku-style hosts. Nothing host-specific is committed, on purpose.
 The owner must provision a managed Postgres and set `DATABASE_URL`. The old
 warning here — *"verify the migrations apply cleanly on an empty Postgres before
 cutting over, they have only ever been run against SQLite"* — is **discharged as
-of 2026-08-02**, and fully so: all **35** migrations in the tree apply clean to
-an empty Postgres 16 and the full **531**-test backend suite passes there. That
+of 2026-08-02**, and fully so: all **37** migrations in the tree apply clean to
+an empty Postgres 16 and the full **596**-test backend suite passes there. That
 now includes `0005_game_turn_started_at` ([3.35](#3-done)), whose `RunPython`
 backfill was exercised against **real rows** rather than the zero rows an empty
 database offers it — `active` games took `updated_at` exactly, `waiting` and
@@ -157,11 +187,12 @@ in [`backend/.env.example`](../../backend/.env.example):
 | `SECURE_HSTS_SECONDS` | **Caution.** Defaults to 1 year *with* `includeSubDomains` and `preload`. Set it to `60` for the first deploys and ramp — HSTS is very hard to undo. |
 | `THROTTLE_RATE_*` | Optional; defaults are sane. |
 | `TURN_TIMEOUT_HOURS` | Optional; **defaults to 48**. How long a seat may leave a game waiting on it before the opponent can claim an inactivity forfeit ([3.35](#3-done)). Env-driven so it can be retuned on a live deployment without a deploy — worth revisiting once real players show you how they actually pace a game. |
+| `TURN_REMINDER_LEAD_HOURS` | Optional; **defaults to 12**. How long before that deadline `manage.py send_turn_reminders` mails the seat on the clock ([3.37](#3-done)). Read by the command only, so it has no effect until the command is scheduled — see [1.6](#16-backups-admin-credentials-and-the-three-dormant-subsystems) and [railway-deploy.md step 8](railway-deploy.md#8-schedule-the-turn-reminder-cron). Keep it well below `TURN_TIMEOUT_HOURS`. |
 | `REDIS_URL` | **Optional, strongly recommended.** Unset → `LocMemCache`, so DRF's throttle counters are per gunicorn worker and reset on deploy. Set → `RedisCache` and the limits become global ([`settings.py:63–90, 196–204`](../../backend/backgammon/settings.py)). Provisioning is owner work; see [3.22](#3-done). |
 | `SENTRY_DSN` | **Optional, strongly recommended.** Unset → `sentry_sdk.init()` is never called and a 500 reports nowhere. Set → errors ship, tagged by `SENTRY_ENVIRONMENT` / `SENTRY_RELEASE` ([`settings.py:445–473`](../../backend/backgammon/settings.py)). See [3.25](#3-done). |
 | `ADMINS` | Optional. `Name <addr>` pairs, comma-separated; attaches Django's `mail_admins` handler to `django.request` ([`settings.py:429–443`](../../backend/backgammon/settings.py)). Needs `EMAIL_HOST` to actually send. |
 | `EMAIL_HOST` + `EMAIL_PORT` / `EMAIL_HOST_USER` / `EMAIL_HOST_PASSWORD` / `EMAIL_USE_TLS` / `DEFAULT_FROM_EMAIL` | **Required for password reset to leave the box.** With `EMAIL_HOST` unset the backend is Django's **console** backend — the reset mail is printed to the log and never delivered ([`settings.py:317–345`](../../backend/backgammon/settings.py)). |
-| `FRONTEND_BASE_URL` | The origin the reset link points at. Defaults to `http://localhost:3000`, which is wrong in production and silently so — the email will contain a link nobody can open ([`settings.py:348–352`](../../backend/backgammon/settings.py)). |
+| `FRONTEND_BASE_URL` | The origin **every emailed link** points at — the reset link `/reset-password/{uid}/{token}` and, since [3.37](#3-done), the turn reminder's `/game/{id}` (`build_game_url`). Defaults to `http://localhost:3000`, which is wrong in production and silently so — the mail still sends, carrying a link nobody can open ([`settings.py:348–352`](../../backend/backgammon/settings.py)). |
 
 ### 1.3 Store the mobile API URL and submission credentials
 
@@ -231,7 +262,23 @@ listings.
 > `[TODO — REQUIRED BEFORE STORE SUBMISSION]` notice on the deletion section,
 > which waits on a hosted web-accessible deletion-request URL.
 
+> **And a fourth correction, applied with the reminder opt-out.** The policy said
+> an address is used *"only to send password-reset links"* and, under "How we use
+> what we collect", *"We send no other mail."* Both were **false** the moment
+> `send_turn_reminders` ([3.37](#3-done)) existed. The policy now describes
+> **two** outbound mail types, says the reminder is **on by default** for any
+> account that has supplied an address, names the exact control that switches it
+> off (`turn_reminder_emails` on the profile, `PATCH /api/auth/me/`), and repeats
+> that no address is required to play at all. That opt-out is the thing that makes
+> sending unsolicited mail to an address collected *for password reset*
+> defensible, so the policy and the code have to keep agreeing about it — see
+> [3.37](#3-done).
+
 ### 1.6 Backups, admin credentials, and the three dormant subsystems
+
+> **There are four now.** The heading is left exactly as it was because
+> [railway-deploy.md](railway-deploy.md) anchors to it in two places; the fourth
+> is the turn-reminder cron, last bullet below.
 
 - Enable the managed database's automated backups and **test a restore once**.
   Untested backups are not backups. Nothing in the repo can do this.
@@ -255,7 +302,34 @@ listings.
   Pick any SMTP-speaking provider (SES, Postmark, Resend, Mailgun), set the
   `EMAIL_*` vars, and set `FRONTEND_BASE_URL` to the web client's origin — the
   link is served by the web router and by nothing else, so a wrong value produces
-  mail nobody can act on.
+  mail nobody can act on. **The same `EMAIL_*` values now carry a second kind of
+  mail**, the turn reminder below, so switching them on buys two features rather
+  than one.
+- **A cron schedule for `send_turn_reminders`.** The fourth dormant subsystem,
+  and the newest. The command is written and tested ([3.37](#3-done)) but
+  **nothing invokes it** — there is no Celery and no in-process scheduler by
+  design, so the trigger has to be a platform cron. Create a second Railway
+  service from the same repo with the start command
+  `python manage.py send_turn_reminders` and a `*/10 * * * *` schedule;
+  the full step, including the shared-`railway.json` health-check trap, is
+  [railway-deploy.md step 8](railway-deploy.md#8-schedule-the-turn-reminder-cron).
+  Tune the lead time with `TURN_REMINDER_LEAD_HOURS` (default **12**).
+
+  > **Set `FRONTEND_BASE_URL` and `DEFAULT_FROM_EMAIL` on that service *before*
+  > you schedule it.** The command **hard-refuses to send** while either is still
+  > at its dev default — a `CommandError` naming them, before a single row is
+  > touched — because a cron scheduled ahead of those values would mail every
+  > waiting player at once, from `no-reply@localhost`, with a dead
+  > `http://localhost:3000` link. Unrecallable, and to everybody. `--dry-run`
+  > still rehearses on defaults; `--allow-dev-defaults` is the escape hatch and
+  > belongs in no cron start command. This is the one ordering constraint in the
+  > step.
+
+  Until this
+  is done, players are still forfeited without warning
+  ([2.3](#23-polish-and-hygiene)) — and note this closes only the *email* half:
+  **push notifications remain absent and are blocked on the owner too**, needing
+  EAS credentials and a device-token system that no coding session can supply.
 
 ### 1.7 Link the EAS update channels so OTA actually publishes
 
@@ -381,13 +455,39 @@ treat the four items above as the real fix.
   [`frontend/public/index.html`](../../frontend/public/index.html) (still present,
   re-read this pass). Same comment notes the missing PNG/ICO favicon fallback and
   the 192/512px manifest icons.
-- **Nothing tells a player their clock is running.** The inactivity forfeit
-  ([3.35](#3-done)) is fully built and both clients render a countdown, but only
-  *while the game screen is open*. There is no push notification, no email, and
-  no badge, so a player who doesn't open the app can be forfeited without ever
-  having seen the clock. Mitigated by the 48-hour default rather than solved.
-  Closing it needs a notification channel that does not exist anywhere in the
-  tree — the same missing "presence" layer that defers live clocks
+- **Nothing tells a player their clock is running *yet* — the email half is
+  built but unscheduled, and the push half does not exist.** The inactivity
+  forfeit ([3.35](#3-done)) is fully built and both clients render a countdown,
+  but only *while the game screen is open*. Two things changed and neither is
+  finished:
+  - **Email: coded, hardened, still dormant.** `manage.py send_turn_reminders`
+    ([3.37](#3-done))
+    mails the seat on the clock `TURN_REMINDER_LEAD_HOURS` (default 12) before
+    the deadline, at most once per turn. **Nothing schedules it**, so today it
+    sends nothing at all; it becomes real the moment the owner adds the cron
+    service in
+    [railway-deploy.md step 8](railway-deploy.md#8-schedule-the-turn-reminder-cron)
+    — and only for players who have set an email address, since the app never
+    requires one, **and who have not opted out** (`turn_reminder_emails`, default
+    on, on `PATCH /api/auth/me/`). A subsequent hardening pass added that opt-out,
+    a refusal to send while `FRONTEND_BASE_URL` / `DEFAULT_FROM_EMAIL` are at
+    their dev defaults, a claim-before-send stamp that makes overlapping cron runs
+    duplicate-proof, and a per-row re-read so a slow run cannot mail a stale
+    countdown about a finished game — all in [3.37](#3-done). None of that changes
+    the status here: unscheduled is unscheduled. Tracked as owner work in
+    [1.6](#16-backups-admin-credentials-and-the-three-dormant-subsystems).
+  - **Push: does not exist, and is owner-blocked rather than code-blocked.**
+    Re-checked and still true. There is no `expo-notifications` dependency, no
+    device-token column, no
+    registration endpoint and no APNs/FCM credential anywhere in the tree. It is
+    not a small coding task hidden behind an env var like the reminder is: it
+    needs **EAS push credentials** (an Apple push key, an FCM server key) that
+    only the owner can create, *and then* a device-token system to store and
+    target. Nobody should read the reminder command as having closed this.
+  So a player who never opens the app and never set an email can still be
+  forfeited without ever having seen the clock — mitigated by the 48-hour default
+  rather than solved. The badge/in-app-presence side remains the same missing
+  "presence" layer that defers live clocks
   ([ADR-002](../decisions/adr-002-inactivity-forfeit.md)).
 - **No load testing.** Nobody knows what concurrency this survives. One `k6` or
   `locust` run against the deployed API is cheap insurance.
@@ -883,7 +983,8 @@ each was verified by reading the file, not by trusting a changelog.
     Both clients render a countdown **in both directions** (the seat on the clock
     sees its own time draining; the opponent sees when a claim opens),
     extrapolated locally on a 1 s interval from the serializer's `turn_deadline` —
-    polling only reconciles it.
+    polling only reconciles it. (Against a *device* clock when this landed;
+    against a server-corrected one since [3.36](#3-done).)
     [`TurnClock.jsx`](../../frontend/src/components/TurnClock.jsx) +
     [`ClaimTimeoutPanel.jsx`](../../frontend/src/components/ClaimTimeoutPanel.jsx)
     on web, [`TurnClockSection.jsx`](../../mobile/src/components/TurnClockSection.jsx)
@@ -895,5 +996,147 @@ each was verified by reading the file, not by trusting a changelog.
     [`test_timeout.py`](../../backend/game/tests/test_timeout.py) and the clock
     suites in both clients.
 
-    **One residue, in [2.3](#23-polish-and-hygiene):** nothing notifies a player
-    that their clock is running unless the game screen is open.
+    **Three residues were recorded against this item, and two are now closed:**
+    the device-clock assumption in the countdown ([3.36](#3-done)) and the
+    misleading error when a claim beat a move to the row ([3.38](#3-done)). The
+    third — nothing notifies a player that their clock is running unless the game
+    screen is open — is only *half* closed: the email path exists
+    ([3.37](#3-done)) but is dormant until a cron is scheduled, and push
+    notifications do not exist at all. Both halves are tracked in
+    [2.3](#23-polish-and-hygiene).
+36. **A skewed device clock no longer mis-times a claim.** The countdown and the
+    claim button were computed against `Date.now()` on the device, so a machine
+    whose clock ran fast offered the claim button **before** the server's
+    deadline — and the resulting request 400ed
+    (`"Your opponent still has time to move — …"`) *every* time, because the two
+    conditions differed by a fixed offset the client had no way to detect. A slow
+    clock produced the mirror bug: the seat on the clock was shown time it no
+    longer had.
+
+    `GameSerializer` now emits **`server_now`** — the serialization instant, same
+    ISO format as `turn_deadline`, **always present and never null**, including on
+    finished games and on games with no clock running (it answers "what time is it
+    on the server", which is not conditional on anything). Each client computes
+    `server_now − device_now` once per fetch and applies that offset as a constant
+    correction wherever a time is needed: the local 1 s countdown tick and the
+    `now` passed to `canClaimTimeout`. **`canClaimTimeout`'s signature is
+    unchanged** — it always took `now` as a parameter precisely so the caller
+    decides what "now" means; only the callers changed.
+
+    Three details that make it safe rather than merely correct: the derivation
+    lives in `serverClockOffset`, a **fourth** member of the `seats.js` /
+    `gating.js` stay-in-sync set; a new offset is adopted only when it moves by
+    `OFFSET_EPSILON_MS` (1 s), so latency jitter cannot re-render the tree every
+    poll; and any unusable `server_now` yields offset `0`, i.e. exactly the old
+    device-clock behaviour rather than a broken clock. Past five minutes of
+    disagreement both clients also *tell* the player their device is out of step
+    and that the displayed time follows the server. Documented in
+    [api.md](../architecture/api.md#server_now--the-clients-clock-is-not-trusted)
+    and [clients.md](../architecture/clients.md#the-countdown-is-extrapolated-not-polled).
+
+    The server stays authoritative regardless — this removes a class of
+    *guaranteed-to-fail affordance*, it does not move any decision to the client.
+37. **A turn reminder exists, and is dormant until a cron is scheduled.**
+    `manage.py send_turn_reminders` emails the player on the clock
+    `TURN_REMINDER_LEAD_HOURS` (**default 12**) before their deadline expires.
+
+    **The architecture is the interesting part.** There is no Celery and no
+    in-process scheduler in this stack, and mailing from inside a `GET` would be a
+    write-on-read that fires only when the **opponent** polls — i.e. never for the
+    player who most needs the mail. So this is a command a **platform cron**
+    invokes; Railway supports cron jobs, and the runbook step is
+    [railway-deploy.md step 8](railway-deploy.md#8-schedule-the-turn-reminder-cron).
+    It is therefore *coded and dormant*, exactly like `REDIS_URL` and
+    `SENTRY_DSN` — [1.6](#16-backups-admin-credentials-and-the-three-dormant-subsystems).
+
+    It **cannot spam**: `Game.turn_reminder_sent_at` (nullable, migration
+    `0006_game_turn_reminder_sent_at`) records the send and `_begin_turn()` clears
+    it whenever the waiting seat changes, so it is at most one reminder per turn
+    no matter how often the cron runs — a ten-minute schedule is safe. It fires
+    only for a **registered** waiting seat **with an
+    email address**, on a game that is genuinely timeout-eligible, and it
+    establishes that eligibility by calling `Game.timeout_deadline()` rather than
+    reimplementing it (the SQL filter is only an optimisation), so it can never
+    mail about a game nobody could claim. `--dry-run` lists recipients and writes
+    nothing; `--limit N` caps mail *sent*, not rows examined; a row that raises is
+    logged and stepped over rather than ending the run. The mail links to
+    `{FRONTEND_BASE_URL}/game/{id}`, making that
+    setting load-bearing for a second reason ([1.2](#12-domain-tls-and-the-production-environment)).
+
+    **An adversarial review then found four things, all since fixed**, and a
+    fifth surfaced by a test. They are the difference between a command that
+    works and one that is safe to point at real inboxes:
+
+    - **There is an opt-out.** `UserPreferences` (a `OneToOneField` on Django's
+      stock `User`, migration `0007_userpreferences`) carries
+      `turn_reminder_emails`, **default true**, exposed as a **writable** field on
+      `GET`/`PATCH /api/auth/me/` alongside `email` — the only two writable fields
+      there. The row is **optional and lazily created**, so absence means "all
+      defaults" and `UserPreferences.reminders_enabled(user)` is the single source
+      of truth both the command and the serializer read. Every reminder carries a
+      footer naming the setting and where to switch it off. An address is
+      collected for password reset, not for game mail, so this is what makes
+      sending the mail at all legitimate — and why the privacy policy had to
+      change with it ([1.5](#15-publish-the-legal-documents)).
+    - **The fifth, and it was a real bug caught by a test.** The serializer
+      resolves that field in `to_representation` via `reminders_enabled`, **not**
+      via a DRF `default=`. DRF applies defaults on the way *in*, so a dotted
+      source with no row serialises as `None` — and the clients' checkbox would
+      have read "off" for every account that had never opened its settings, while
+      the command mailed them anyway. A consent control misreporting consent.
+      Do not refactor it back.
+    - **It refuses to send on dev defaults.** If `FRONTEND_BASE_URL` or
+      `DEFAULT_FROM_EMAIL` are still at their dev values the run exits with a
+      `CommandError` naming them, **before touching a single row** — a precondition
+      on the whole run, not a per-row skip, because a cron scheduled ahead of
+      those values would mail every waiting player a dead `localhost` link from a
+      bogus sender, in bulk and unrecallably. `--dry-run` still rehearses on
+      defaults; `--allow-dev-defaults` is the escape hatch.
+    - **Claim, then send.** The stamp is written *before* the mail, by a
+      conditional UPDATE whose WHERE clause re-asserts that nobody else claimed
+      this turn, that the turn is unchanged, and that the game is still active;
+      `.update()`'s affected-row count decides the winner, so overlapping crons
+      cannot double-mail. **Documented trade-off: at most one lost reminder, never
+      a duplicate.** Un-claiming on a send failure looks like an improvement and
+      is not — `send_mail` can raise after the message was accepted.
+    - **Every decision is re-read per row.** `_candidates()` yields **ids only, on
+      purpose**, so `_process` has nothing to work from but a fresh read and a
+      fresh `now`. A long run would otherwise mail "move now or lose" about a game
+      already lost, quoting a countdown minutes stale.
+
+    Consequence for the runbook: with **no `EMAIL_*` configured a real run now
+    declines to send rather than printing to the console backend** — the
+    console-backend path is reached under `--dry-run` or `--allow-dev-defaults`,
+    or once the two mail settings are real. Running it unconfigured is still
+    harmless; it is just louder.
+
+    **It forfeits nothing.** Timeout claims stay pull-based
+    ([ADR-002](../decisions/adr-002-inactivity-forfeit.md)); this command never
+    writes a game result. And it is email only — **push notifications remain
+    absent** ([2.3](#23-polish-and-hygiene)).
+38. **The claim-vs-move race says what actually happened.** `claim_timeout` locks
+    the row inside `transaction.atomic()`, so it wins any tie with a gameplay
+    action arriving in the same instant. The loser re-read a `finished` game and
+    was told **`"Game is not active."`** — true, and indistinguishable from a bug
+    to the player who *did* move in time.
+
+    `roll_dice`, `confirm_turn`, `offer_double` and `respond_to_double` now test
+    for `status="finished"` **with `win_type="timeout"`** specifically, ahead of
+    the generic branch, and return a message that names the forfeit. **It is still
+    a 400**: the request genuinely cannot be performed, nothing was written, and a
+    409 or a 200 would mean a new client code path for a state the next poll
+    reveals anyway. Only the message changed (`_inactive_game_error`), and every
+    other route to `"Game is not active."` — including `abandon`'s and
+    `claim_timeout`'s own — is untouched.
+
+    Both clients recognise it through a **new mirrored pair**,
+    `frontend/src/api/errors.js` and `mobile/src/api/errors.js`, which share
+    `isTimeoutClaimedError` and `TIMEOUT_CLAIMED_MESSAGE` verbatim and must stay
+    that way (the file used to be mobile-only). Each renders a
+    `TimeoutClaimedNotice` beside the turn clock in ordinary text rather than red
+    error styling, suppresses `actionError` from then on, and re-fetches
+    immediately so a live board is never left under a message saying the game is
+    over. `claimTimeout` deliberately does **not** route through that handler —
+    its own refusals mention claims and clocks and mean something else. See
+    [api.md](../architecture/api.md#the-claim-vs-move-race) and
+    [clients.md](../architecture/clients.md#when-a-claim-beats-your-move).

@@ -29,6 +29,12 @@ export async function rollDice(id) {
   return request(`${BASE}${id}/roll_dice/`, { method: "POST" });
 }
 
+/**
+ * Commit a staged turn. One 400 here is not really a rejection of the moves:
+ * if the opponent's inactivity claim landed first, the server says the game was
+ * already claimed. `api/errors.isTimeoutClaimedError` recognises it and useGame
+ * shows an explanation instead — see components/TimeoutClaimedNotice.jsx.
+ */
 export async function confirmTurn(id, moves) {
   return request(`${BASE}${id}/confirm_turn/`, {
     method: "POST",
@@ -70,11 +76,15 @@ export async function abandonGame(id) {
  * applied to the match (see docs/decisions/adr-002-inactivity-forfeit.md).
  *
  * The server is the authority on the clock. It refuses with 400 when the
- * deadline has not actually passed (a client whose clock runs ahead of the
- * server's can get here early), when the game isn't in a claimable state, or
+ * deadline has not actually passed, when the game isn't in a claimable state, or
  * when a seat is a guest; and 403 when the caller doesn't hold the claiming
  * seat. All of them arrive as ordinary `{ error }` bodies, which `request`
  * turns into the thrown message.
+ *
+ * The control is gated on the server-corrected clock (`server_now`, see
+ * utils/seats.serverClockOffset), so "too early" should no longer be the
+ * chronic outcome for a browser whose own clock is wrong — but the server still
+ * owns the deadline, so it stays a reachable answer.
  */
 export async function claimTimeout(id) {
   return request(`${BASE}${id}/claim_timeout/`, { method: "POST" });

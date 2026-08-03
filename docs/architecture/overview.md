@@ -166,7 +166,10 @@ Three properties are worth carrying around:
 
 - **It is pull-based.** There is no scheduler in this stack, so nothing forfeits
   an idle game in the background — the opponent has to ask. For a live game the
-  other client's ~3.5 s poll effectively is the sweeper.
+  other client's ~3.5 s poll effectively is the sweeper. (One thing *is* meant to
+  run on a schedule: `manage.py send_turn_reminders`, which mails a warning and
+  forfeits nothing. It needs a platform cron and none is configured yet — see
+  [railway-deploy.md step 8](../operations/railway-deploy.md#8-schedule-the-turn-reminder-cron).)
 - **Registered seats only.** Both seats need real user FKs, since a guest seat is
   unverifiable and a hotseat player could otherwise farm their own second seat.
   Guest/hotseat games are unaffected.
@@ -176,7 +179,11 @@ Three properties are worth carrying around:
 
 The serializer publishes `turn_waiting_seat` and `turn_deadline` (null whenever a
 claim is impossible in principle), and both clients render a countdown
-extrapolated locally from the deadline rather than from the poll.
+extrapolated locally from the deadline rather than from the poll. It also
+publishes **`server_now`** on every game payload, so the clients can correct for
+a skewed device clock instead of comparing the deadline to whatever time the
+device thinks it is — see
+[api.md](api.md#server_now--the-clients-clock-is-not-trusted).
 
 ### Deadlock derivation (shared by both clients)
 
@@ -240,9 +247,13 @@ poll of either client.
   per-player accumulated-time state, and no clock mode chosen at game creation —
   deferred until presence exists
   ([ADR-002](../decisions/adr-002-inactivity-forfeit.md)).
-- **A background sweeper, or any out-of-app notice that a clock is running.**
-  Timeout claims are pull-based, and there is no push notification or email — a
-  player who never opens the app never sees the countdown.
+- **A background sweeper.** Timeout claims remain pull-based; nothing forfeits an
+  idle game on its own.
+- **Push notifications.** No `expo-notifications`, no device tokens, no APNs/FCM
+  credential — nothing in the tree can reach a player who isn't looking at the
+  app. (An out-of-app notice *by email* now exists: `manage.py
+  send_turn_reminders`, which is written but **dormant until a cron schedules
+  it** and only reaches players who set an address.)
 - **Chat.** Not implemented anywhere.
 - **httpOnly cookie auth.** Auth is Bearer tokens in `localStorage`/SecureStore, not
   cookies.

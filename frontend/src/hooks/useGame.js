@@ -15,11 +15,20 @@ import {
   maxMovesUsable,
   higherDieRequiredMoves,
 } from "../utils/gameLogic";
-import { canAbandon, isDeadlocked, isOnlineGame } from "../utils/seats";
+import { canAbandon, isDeadlocked, isOnlineGame, serverClockOffset } from "../utils/seats";
+import { isTimeoutClaimedError } from "../api/errors";
 
 // How often to re-fetch the game to pick up the opponent's moves. Matches the
 // mobile client's cadence (mobile/src/game/useGame.js).
 const POLL_MS = 3500;
+
+// Smallest change in the server/device clock offset worth re-rendering for.
+// Every poll re-derives the offset and network latency jitters it by tens of
+// milliseconds; adopting each of those would re-render the tree every 3.5s and
+// undo the "identical payload changes nothing" guarantee below. One second is
+// also the countdown's own resolution, so a smaller correction is invisible
+// anyway. Mirrored in mobile/src/game/useGame.js.
+const OFFSET_EPSILON_MS = 1000;
 
 function cloneBoard(boardState) {
   return {
@@ -53,16 +62,69 @@ export function useGame(gameId, viewerUserId) {
 
   const [reloadToken, setReloadToken] = useState(0);
 
+  // How far this browser's clock is behind the server's, from the `server_now`
+  // on the last payload we saw. Every countdown and every claim check is made
+  // against `Date.now() + clockOffset`, never the raw device clock — see
+  // utils/seats.serverClockOffset. Zero until the first payload lands, and zero
+  // again for any payload without a usable `server_now`.
+  const [clockOffset, setClockOffset] = useState(0);
+
+  // The opponent's inactivity claim beat this player's move to the server.
+  // Sticky for the life of this game view: the game is over, and the calm
+  // explanation replaces the raw 400 (see api/errors.js).
+  const [timeoutClaimed, setTimeoutClaimed] = useState(false);
+
+  // Re-anchor the clock from a payload that has just arrived, then adopt it.
+  // Split out because every path that produces a game — the initial load, a
+  // poll tick, and each action's response — has to re-anchor, not just the load.
+  const syncClock = useCallback((payload) => {
+    setClockOffset((cur) => {
+      const next = serverClockOffset(payload);
+      return Math.abs(next - cur) >= OFFSET_EPSILON_MS ? next : cur;
+    });
+  }, []);
+
+  const adoptGame = useCallback(
+    (payload) => {
+      syncClock(payload);
+      setGame(payload);
+    },
+    [syncClock]
+  );
+
   useEffect(() => {
     if (!gameId) return;
     setLoading(true);
+    setTimeoutClaimed(false);
     fetchGame(gameId)
-      .then(setGame)
+      .then(adoptGame)
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
-  }, [gameId, reloadToken]);
+  }, [gameId, reloadToken, adoptGame]);
 
   const reload = useCallback(() => setReloadToken((t) => t + 1), []);
+
+  // Shared failure path for the *gameplay* actions — roll, confirm, and the two
+  // cube actions. Any of them can lose a race to the opponent's inactivity
+  // claim, in which case the server's 400 is not the player's fault and is
+  // about to be contradicted by a finished game; swap it for the explanation
+  // and pull the finished state immediately, so the screen never shows a live
+  // board under a message saying the game is over.
+  //
+  // `claimTimeout` deliberately does NOT route through here: its own refusals
+  // talk about claims and clocks too, and mean something quite different.
+  const handleActionError = useCallback(
+    (err) => {
+      if (isTimeoutClaimedError(err)) {
+        setTimeoutClaimed(true);
+        setActionError(null);
+        fetchGame(gameId).then(adoptGame).catch(() => {});
+        return;
+      }
+      setActionError(err.message);
+    },
+    [gameId, adoptGame]
+  );
 
   // The turn sits on a seat closed by account deletion: nothing on the server
   // can change it, so the banner says so and the poll below stops.
@@ -89,7 +151,8 @@ export function useGame(gameId, viewerUserId) {
   // an active online game where the *opponent* is idle. That keeps polling, so a
   // move by the idle player retracts the claim control within a tick. The
   // countdown itself does not depend on this: TurnClock extrapolates locally
-  // from `turn_deadline`, and polling only reconciles it.
+  // from `turn_deadline`, and polling only reconciles it — plus the `server_now`
+  // anchor that keeps this browser's clock honest.
   useEffect(() => {
     if (!gameId) return;
     const interval = setInterval(() => {
@@ -97,12 +160,16 @@ export function useGame(gameId, viewerUserId) {
       if (statusRef.current === "finished" || pendingRef.current > 0) return;
       fetchGame(gameId)
         .then((fresh) => {
+          // Re-anchor the clock even when the payload is otherwise identical:
+          // `server_now` is fresh on every response, and it is the only thing
+          // keeping the countdown honest on a device whose clock drifts.
+          syncClock(fresh);
           setGame((cur) => (cur && fresh.updated_at === cur.updated_at ? cur : fresh));
         })
         .catch(() => {});
     }, POLL_MS);
     return () => clearInterval(interval);
-  }, [gameId]);
+  }, [gameId, syncClock]);
 
   // Whenever the authoritative game state changes (initial load, a dice
   // roll, or a confirmed turn), start a fresh staged turn from it.
@@ -117,11 +184,11 @@ export function useGame(gameId, viewerUserId) {
     try {
       setActionError(null);
       const updated = await apiRollDice(gameId);
-      setGame(updated);
+      adoptGame(updated);
     } catch (err) {
-      setActionError(err.message);
+      handleActionError(err);
     }
-  }, [gameId]);
+  }, [gameId, adoptGame, handleActionError]);
 
   // Single-die moves plus combined (multi-die) moves through legal
   // intermediates. Combined entries carry an array `path` as their third
@@ -220,33 +287,33 @@ export function useGame(gameId, viewerUserId) {
     try {
       setActionError(null);
       const updated = await apiConfirmTurn(gameId, pendingMoves);
-      setGame(updated);
+      adoptGame(updated);
     } catch (err) {
-      setActionError(err.message);
+      handleActionError(err);
     }
-  }, [gameId, pendingMoves]);
+  }, [gameId, pendingMoves, adoptGame, handleActionError]);
 
   const offerDouble = useCallback(async () => {
     try {
       setActionError(null);
       const updated = await apiOfferDouble(gameId);
-      setGame(updated);
+      adoptGame(updated);
     } catch (err) {
-      setActionError(err.message);
+      handleActionError(err);
     }
-  }, [gameId]);
+  }, [gameId, adoptGame, handleActionError]);
 
   const respondToDouble = useCallback(
     async (accept) => {
       try {
         setActionError(null);
         const updated = await apiRespondToDouble(gameId, accept);
-        setGame(updated);
+        adoptGame(updated);
       } catch (err) {
-        setActionError(err.message);
+        handleActionError(err);
       }
     },
-    [gameId]
+    [gameId, adoptGame, handleActionError]
   );
 
   // Close out a game that can never move again. The 400 ("not abandoned") and
@@ -256,17 +323,19 @@ export function useGame(gameId, viewerUserId) {
     try {
       setActionError(null);
       const updated = await apiAbandonGame(gameId);
-      setGame(updated);
+      adoptGame(updated);
     } catch (err) {
       setActionError(err.message);
     }
-  }, [gameId]);
+  }, [gameId, adoptGame]);
 
   // Claim the win against an opponent who let the turn clock run out. Scores
-  // normally, unlike abandonGame. The 400s (too early — a client clock running
-  // ahead of the server's is the likely cause — wrong game state, guest seat)
-  // and the 403 (not your seat) all land in `actionError` like every other
+  // normally, unlike abandonGame. The 400s (too early, wrong game state, guest
+  // seat) and the 403 (not your seat) all land in `actionError` like every other
   // rejected action, and the game is left untouched so the control can retry.
+  // "Too early" should now be rare rather than chronic — the control is gated on
+  // the server-corrected clock (`clockOffset`), not this browser's — but the
+  // server still owns the deadline, so the message must never be swallowed.
   //
   // Deliberately no `canClaimTimeout` here to match `canAbandon`: the answer
   // depends on the wall clock, so it would be stale the moment it was computed.
@@ -275,11 +344,11 @@ export function useGame(gameId, viewerUserId) {
     try {
       setActionError(null);
       const updated = await apiClaimTimeout(gameId);
-      setGame(updated);
+      adoptGame(updated);
     } catch (err) {
       setActionError(err.message);
     }
-  }, [gameId]);
+  }, [gameId, adoptGame]);
 
   // Doubling is legal on your turn before rolling, with the cube centered or
   // yours, outside the Crawford game and below the 64 cap. The server
@@ -316,6 +385,8 @@ export function useGame(gameId, viewerUserId) {
     abandonGame,
     canAbandon: canAbandon(game),
     claimTimeout,
+    clockOffset,
+    timeoutClaimed,
     reload,
   };
 }

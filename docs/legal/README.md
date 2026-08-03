@@ -10,8 +10,12 @@ Two drafts live here:
 They were written against the code as it actually exists — what
 [`backend/game/models.py`](../../backend/game/models.py) stores, what
 [`RegisterSerializer`](../../backend/game/serializers.py) collects (username and
-password, plus an **optional** email used only for password reset), and what the
-clients keep on-device. They deliberately
+password, plus an **optional** email), and what the
+clients keep on-device. That address is used for **two** things — password reset
+and the turn reminder `manage.py send_turn_reminders` sends — and the privacy
+policy has to keep saying both, along with the opt-out
+(`UserPreferences.turn_reminder_emails`, default on, writable at
+`PATCH /api/auth/me/`) that makes the second one defensible. They deliberately
 do **not** describe analytics, advertising, tracking, crash reporting, payments,
 or third-party SDKs, because none of those exist in this app. If any of those are
 ever added, **both documents must be corrected before that ship** — the honesty
@@ -44,7 +48,9 @@ the liability, governing-law, and GDPR/CCPA sections.
 
 ### 3. Fix the blocking gaps in the product
 
-One item remains; two that used to be listed here have shipped.
+One item remains. The rest of this list records gaps that have since shipped, and
+the claims the drafts now make because of them — each of which becomes a false
+statement if the feature behind it changes.
 
 - **Account deletion is implemented** (as of 2026-07-26) — `DELETE /api/auth/me/`
   requires the account's current password, with a danger-zone control on the web
@@ -62,6 +68,17 @@ One item remains; two that used to be listed here have shipped.
   account with **no address on file** still cannot be recovered. (The emailed
   link points at the *web* client only — there is no mobile deep link yet — but
   that is a product gap, not a claim either document makes.)
+- **A second outbound mail exists, and it is opt-out.** The turn reminder is
+  unsolicited in a way the reset link is not, so the policy now describes it
+  explicitly: on by default for accounts with an address, off from the profile in
+  either app, named in a footer on every message, and irrelevant to anyone who
+  never supplied an address — because none is required to play. **If that opt-out
+  is ever removed, weakened, or defaulted differently, the policy is false the
+  same day.** Server side it is `UserPreferences.turn_reminder_emails`
+  ([data-model.md](../architecture/data-model.md#userpreferences)); the mail is
+  [`send_turn_reminders`](../../backend/game/management/commands/send_turn_reminders.py),
+  which is dormant until a cron is scheduled
+  ([railway-deploy.md step 8](../operations/railway-deploy.md#8-schedule-the-turn-reminder-cron)).
 - **The remaining API limitation is read access, and it is disclosed, not
   hidden** — anyone holding a game's link or id can read that game's full state,
   which is how online games are shared and joined, and guest seats carry no

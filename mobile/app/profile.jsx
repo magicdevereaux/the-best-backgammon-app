@@ -5,6 +5,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { useAuth } from "../src/context/AuthContext";
 import { fetchMe } from "../src/api/auth";
 import EmailSection from "../src/components/EmailSection";
+import TurnReminderSection from "../src/components/TurnReminderSection";
 import DeleteAccountSection from "../src/components/DeleteAccountSection";
 import { colors } from "../src/theme";
 
@@ -114,6 +115,18 @@ export default function ProfileScreen() {
         </View>
 
         <EmailSection
+          email={stats.email}
+          onUpdated={(me) => {
+            setStats(me);
+            updateUser(me);
+          }}
+        />
+
+        {/* Directly below the email field on purpose: it is the same address,
+            and saving one there re-renders this with `stats` fresh from the
+            server — so adding an address enables the switch immediately. */}
+        <TurnReminderSection
+          enabled={stats.turn_reminder_emails}
           email={stats.email}
           onUpdated={(me) => {
             setStats(me);

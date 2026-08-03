@@ -136,7 +136,8 @@ single-use.
 
 `MeView`, `IsAuthenticated`. Returns `UserSerializer` for the bearer's user.
 
-**200** → `id`, `username`, `email` (`""` when never set), plus stats **computed
+**200** → `id`, `username`, `email` (`""` when never set),
+`turn_reminder_emails` (**bool**, see below), plus stats **computed
 on read** (never stored): `wins`, `losses`, `total_games`, `total_gammons`,
 `total_backgammons`, `total_points_won`, `total_points_lost`, `win_percentage`,
 `gammon_rate`. Only `status="finished"` games count, across both seats —
@@ -149,6 +150,26 @@ Excluding it from `total_games` too keeps `wins + losses == total_games`, which
 sides, and no stats code changed to support it. It never counts as a
 gammon/backgammon, since those filter on `win_type`.
 
+#### `turn_reminder_emails` — always a real boolean
+
+The opt-out for the turn-reminder mail that `manage.py send_turn_reminders`
+sends ([railway-deploy.md step 8](../operations/railway-deploy.md#8-schedule-the-turn-reminder-cron)).
+It is **`true` by default**, and it is **always a real `true`/`false`** on read —
+never `null`, never absent — including for the overwhelmingly common case of an
+account with no `UserPreferences` row at all.
+
+That last guarantee is not free, and is the point of the field's implementation.
+The row is created lazily on the first `PATCH` that changes something, so a
+freshly registered account has none; the serializer declares the field with
+`source="preferences.turn_reminder_emails"`, and a dotted source with no related
+row serialises as `None`. `UserSerializer.to_representation` therefore overrides
+it with `UserPreferences.reminders_enabled(user)` — the same helper the command
+consults — instead of relying on DRF's `default=`, which applies only to
+deserialisation. Without that override every never-configured account would
+report "off" while still being mailed, i.e. a consent control misreporting
+consent. See
+[data-model.md](data-model.md#userpreferences).
+
 **401** when the header is missing or the token is invalid/expired.
 
 ### `PATCH /api/auth/me/`
@@ -157,28 +178,42 @@ gammon/backgammon, since those filter on `win_type`.
 email address — the account's only route to password recovery, and the reason
 this exists: email is optional at registration, so an account created without
 one (or created before the field existed) would otherwise be permanently
-unrecoverable.
+unrecoverable — and toggles the turn-reminder opt-out.
 
 | Field | Type | Required |
 |-------|------|----------|
 | `email` | string, valid address | no — send `""` to **clear** it |
+| `turn_reminder_emails` | bool | no — `false` stops turn-reminder mail |
 
-**`email` is the only writable field on `UserSerializer`.** `username` is in
+**`email` and `turn_reminder_emails` are the only writable fields on
+`UserSerializer`.** `username` is in
 `read_only_fields` and a PATCH naming it is silently ignored (**200**, username
 unchanged): games and matches carry a *denormalised copy* of the username in
 `player1_name`/`player2_name`, so rewriting the profile would put it out of step
 with every historical scoresheet. Everything else on the payload is a computed
 stat and read-only by construction.
 
+`turn_reminder_emails` does not live on `User`, so `UserSerializer.update` lifts
+it out of `validated_data` before the base class sees it
+(`ModelSerializer.update` refuses dotted sources outright) and writes it through
+`UserPreferences.for_user()`, which **creates the row on first use**. Sending
+`{"turn_reminder_emails": false}` on an account that has never had a preferences
+row is therefore a normal, supported first write, not an error.
+
 **200** → the full `UserSerializer` payload (same shape as `GET`).
 
 | Status | Trigger |
 |--------|---------|
 | 400 | `{"email": ["Enter a valid email address."]}` — malformed address |
+| 400 | `{"turn_reminder_emails": ["Must be a valid boolean."]}` — non-boolean value |
 | 401 | missing/invalid bearer token |
 
-`PUT` is routed too (`RetrieveUpdateDestroyAPIView`), but with one writable
-field it is equivalent to `PATCH`; both clients would use `PATCH`.
+`PUT` is routed too (`RetrieveUpdateDestroyAPIView`) and is **not** quite
+equivalent any more: DRF skips declared defaults on `PATCH`, so a partial update
+omitting `turn_reminder_emails` leaves the stored preference alone, while a `PUT`
+omitting it applies the serializer's `default=True` and **restores the default** —
+which is the right reading of a full replace, but is a real difference. Both
+clients use `PATCH`.
 
 ### `DELETE /api/auth/me/`
 
@@ -248,6 +283,15 @@ link) — and defaults to `http://localhost:3000`. With `EMAIL_HOST` unset Djang
 **console** backend prints the mail to stdout, so the whole flow works in dev
 with no `.env` and no mail provider.
 
+This is no longer the app's only outbound mail: `manage.py send_turn_reminders`
+([railway-deploy.md step 8](../operations/railway-deploy.md#8-schedule-the-turn-reminder-cron))
+sends a turn reminder through the same `EMAIL_*` configuration. It is the only
+other one, it carries no token or credential, and it is dormant until a cron
+schedules it. Unlike the reset — which is only ever sent because the recipient
+just asked for it — the reminder is unsolicited, so it has an opt-out
+(`turn_reminder_emails`, [above](#turn_reminder_emails--always-a-real-boolean))
+and every message carries a footer naming that setting.
+
 Django's HTML `PasswordResetView` is deliberately not used: this project has no
 session login, no templates and no server-rendered pages, so the HTML flow would
 be a second, unreachable auth surface.
@@ -308,8 +352,9 @@ and never branch on hit-vs-miss — there is no such distinction to render.
 
 ### The `Game` payload
 
-`GameSerializer` is `fields = "__all__"` over the `Game` model plus four computed
-fields. Key fields:
+`GameSerializer` is `fields = "__all__"` over the `Game` model plus five computed
+fields (`viewer_seat`, `viewer_is_participant`, `turn_waiting_seat`,
+`turn_deadline`, `server_now`). Key fields:
 
 | Field | Type | Notes |
 |-------|------|-------|
@@ -335,6 +380,7 @@ fields. Key fields:
 | `viewer_is_participant` | bool | `viewer_seat is not None` |
 | `turn_waiting_seat` | `"p1"`/`"p2"`/null | computed; the seat the game is waiting on, or null unless `status="active"` |
 | `turn_deadline` | ISO datetime \| null | computed; when [`claim_timeout`](#post-apigamesidclaim_timeout) becomes available. **Null whenever a claim is impossible in principle** |
+| `server_now` | ISO datetime | computed; the instant this response was serialized. **Always present, never null** — see [`server_now`](#server_now--the-clients-clock-is-not-trusted) |
 
 Everything except `player1_name`/`player2_name` is in `read_only_fields`, so a
 write request can only ever set those two. `player1_deleted`/`player2_deleted`
@@ -382,10 +428,43 @@ Three fields carry the inactivity clock ([ADR-002](../decisions/adr-002-inactivi
   `abandon`'s deadlock, deliberately non-scoring), either seat is a guest (null
   user FK, hence unverifiable), or no clock has been recorded.
 
-**Clients compare their own `now()` to `turn_deadline` and never re-derive
-eligibility.** There is deliberately no `can_claim` boolean: it would be stale
-the instant it was serialised, and both clients want a live countdown anyway. A
-null deadline is the "no claim here, ever" signal.
+**Clients compare a *server-corrected* `now()` to `turn_deadline` and never
+re-derive eligibility.** There is deliberately no `can_claim` boolean: it would
+be stale the instant it was serialised, and both clients want a live countdown
+anyway. A null deadline is the "no claim here, ever" signal. Where "now" comes
+from is the subject of the next section.
+
+#### `server_now` — the client's clock is not trusted
+
+Every game payload carries **`server_now`**: an ISO 8601 timestamp, in the same
+format as `turn_deadline` (DRF's `DateTimeField`, e.g. `2026-08-04T10:00:00Z`),
+recording the moment the response was serialized. It is **always present and
+never null** — on finished games, on `waiting` games, on hotseat games, and on
+every game whose `turn_deadline` is null. It answers "what time is it *there*",
+which has nothing to do with whether a clock is running.
+
+**Why it exists.** Both clients used to compare `turn_deadline` against the
+*device* clock, so a skewed device produced two distinct, user-visible bugs:
+
+- **A clock running fast** showed the claim button before the deadline had
+  actually passed. The claim then 400ed
+  (`"Your opponent still has time to move — …"`) *permanently*, because the
+  button's condition and the server's condition disagreed by a fixed amount and
+  the client had no way to notice.
+- **A clock running slow** told the seat on the clock it had time left after the
+  server had already opened a claim against it.
+
+**How clients use it.** On each fetch a client computes an offset —
+`server_now − device_now` — and adds it to the device clock everywhere a time is
+needed: the countdown it ticks locally between polls, and the `now` it hands to
+`canClaimTimeout`. The offset is a constant correction re-measured on every
+poll, not a substitute for local ticking. See
+[clients.md](clients.md#the-countdown-is-extrapolated-not-polled).
+
+**`canClaimTimeout`'s signature did not change.** It has always taken `now` as a
+parameter precisely so the caller decides what "now" means; what changed is what
+the callers pass. The server remains authoritative either way — a claim is
+re-checked against the server's own clock.
 
 ### `GET /api/games/`
 
@@ -471,6 +550,48 @@ On success sets `player2_user` (or null), `player2_name`, and
 | 400 | `"player2_name is required when joining as a guest."` — anonymous and no name |
 | 404 | unknown id |
 
+### The claim-vs-move race
+
+A specific 400 that every gameplay action can now return, and the reason it has
+its own message.
+
+[`claim_timeout`](#post-apigamesidclaim_timeout) runs inside
+`transaction.atomic()` on a **locked** row, so it wins any tie against a
+gameplay action arriving in the same instant. The loser then re-reads a game
+that is already `finished` — and used to be told
+**`"Game is not active."`**, which is technically true and reads to the player
+who *did* move in time like a bug in the app. Nothing in that message says an
+opponent claimed a forfeit a fraction of a second earlier.
+
+So the gameplay actions — `roll_dice`, `confirm_turn`, `offer_double` and
+`respond_to_double` — now route their not-active branch through
+`_inactive_game_error(game)`, which tests for `win_type == "timeout"` on the
+finished row and returns
+
+> `"Your opponent claimed a timeout win before this action reached the server, so the game is already finished."`
+
+`win_type="timeout"` is the exact and only signature of the race: no other
+ending writes it, and it is set inside the same locked transaction that finished
+the row, so it is already visible by the time the loser reads it.
+
+**It is still a 400**, and deliberately so: the request genuinely cannot be
+performed, nothing was written, and inventing a 409 or a 200 here would mean
+inventing a new client code path for a state the client can already see in the
+very next poll. Only the *message* changed. Both clients render it as a calm
+explanation of a finished game rather than as a raw action error — see
+[clients.md](clients.md#the-countdown-is-extrapolated-not-polled).
+
+Every other route to `"Game is not active."` (a `waiting` game, a game won on
+the board, a dropped double, an abandoned game) is untouched and still returns
+the generic message — that wording is the right answer for a genuinely stale
+client, e.g. a resumed tab on a game that finished hours ago.
+
+**`abandon` and `claim_timeout` are deliberately not included.** Both already
+run their state checks in a different order and have their own, more specific
+messages (a second claim on a finished game still gets
+`"Game is not active."` from `claim_timeout`'s own check), and a claim losing to
+a claim is not the confusion this addresses.
+
 ### `POST /api/games/{id}/roll_dice/`
 
 No body. Rolls for `current_turn`; doubles produce four identical values. The
@@ -486,6 +607,7 @@ changed, and one deadline is meant to cover rolling *and* moving — see
 | Status | Trigger |
 |--------|---------|
 | 403 | seat enforcement (see below) — checked first |
+| 400 | the [claim-vs-move race](#the-claim-vs-move-race) — the game finished as a `timeout` first |
 | 400 | `"Game is not active."` |
 | 400 | `"A double has been offered. The opponent must accept or drop first."` |
 | 400 | `"Dice have already been rolled for this turn."` (`dice_values` non-empty) |
@@ -521,6 +643,7 @@ finishes if the last checker came off.
 | Status | Trigger |
 |--------|---------|
 | 403 | seat enforcement — checked first |
+| 400 | the [claim-vs-move race](#the-claim-vs-move-race) — the game finished as a `timeout` first |
 | 400 | `"Game is not active."` |
 | 400 | pending double (`"...accept or drop first."`) |
 | 400 | `"No dice rolled for this turn."` — `dice_values` empty |
@@ -565,6 +688,7 @@ No body. Sets `double_offered_by` to the current-turn seat. While that is set,
 | Status | Trigger |
 |--------|---------|
 | 403 | seat enforcement against `current_turn` (opponent gets `"It's not your turn."`) |
+| 400 | the [claim-vs-move race](#the-claim-vs-move-race) — the game finished as a `timeout` first |
 | 400 | `"Game is not active."` |
 | 400 | `"The doubling cube is disabled during the Crawford game."` |
 | 400 | `"A double has already been offered."` |
@@ -591,6 +715,7 @@ owner may redouble.
 
 | Status | Trigger |
 |--------|---------|
+| 400 | the [claim-vs-move race](#the-claim-vs-move-race) — the game finished as a `timeout` first |
 | 400 | `"Game is not active."` |
 | 400 | `"No double has been offered."` |
 | 403 | seat enforcement against the **responder** seat (`opponent(double_offered_by)`) — the offerer answering their own double gets `"It's not your turn."` |
@@ -726,7 +851,8 @@ writes — a replayed request loses.
 **Both clients offer it to the claimant seat only**, behind a `canClaimTimeout`
 predicate that is the **third** member of the `seats.js` / `gating.js`
 stay-in-sync obligation, and render a countdown extrapolated from
-`turn_deadline` rather than from the poll — see
+`turn_deadline` against a [`server_now`](#server_now--the-clients-clock-is-not-trusted)-corrected
+clock rather than from the poll or the raw device clock — see
 [clients.md](clients.md#closed-seats-and-the-inactivity-clock-the-predicates-both-clients-share).
 As everywhere else, the predicate is affordance; the server re-checks all six
 preconditions.
@@ -933,10 +1059,17 @@ Not in the code today — do not assume them:
   case — via [`abandon`](#post-apigamesidabandon), which is *not* a resign: it
   scores nothing. There is no way to **concede** points to an opponent, and no
   route to replay a finished match.
-- **A background sweeper for expired turns.** Timeout claims are pull-based;
-  nothing forfeits an idle game until the opponent calls `claim_timeout`. There
-  is no Celery/cron/management-command sweep, by design
-  ([ADR-002](../decisions/adr-002-inactivity-forfeit.md)).
+- **A background sweeper for expired turns.** Timeout claims are still
+  pull-based; **nothing forfeits an idle game until the opponent calls
+  `claim_timeout`**, by design ([ADR-002](../decisions/adr-002-inactivity-forfeit.md)).
+  There is no Celery and no in-process scheduler. What *does* exist now is a
+  management command, `manage.py send_turn_reminders`, which **mails** the seat
+  on the clock before its deadline and forfeits nothing — see
+  [railway-deploy.md](../operations/railway-deploy.md#8-schedule-the-turn-reminder-cron).
+  It is inert until a platform cron invokes it.
+- **Push notifications.** The reminder above is email only. There is no device
+  token, no APNs/FCM registration and no notification endpoint anywhere in the
+  tree, so a player with no address on file is still told nothing.
 - **Live chess-style clocks.** `turn_deadline` is a single per-turn deadline.
   There is no reserve time, no Fischer/Bronstein increment, no per-player
   accumulated-time field, and no clock mode at game creation — deferred until

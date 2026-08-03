@@ -25,9 +25,9 @@
 //   4. default     — unknown, single-device: both seats interactive.
 //
 // Stay-in-sync obligation: `isSeatClosed` / `blockedSeat` / `isDeadlocked` /
-// `canClaimTimeout`, plus the `toMillis` helper the last of those is built on,
-// are mirrored verbatim in frontend/src/utils/seats.js and **must stay identical
-// to it**. `computeGating` itself is deliberately NOT ported — the web client is
+// `canClaimTimeout` / `serverClockOffset`, plus the `toMillis` helper the last
+// two are built on, are mirrored verbatim in frontend/src/utils/seats.js and
+// **must stay identical to it**. `computeGating` itself is deliberately NOT ported — the web client is
 // ungated and lets the server's 403 speak for itself.
 
 // True when the seat is marked closed by account deletion. The flags are
@@ -81,6 +81,33 @@ function toMillis(value) {
   if (typeof value === "number") return Number.isFinite(value) ? value : null;
   const parsed = Date.parse(value);
   return Number.isNaN(parsed) ? null : parsed;
+}
+
+// How far this device's clock is behind the server's, in milliseconds: add it to
+// `Date.now()` to get the time the *server* thinks it is.
+//
+// Every game payload carries `server_now` — the instant the response was
+// serialised, always present, never null. The device clock is not trustworthy:
+// a phone running hours fast would show the claim control early and then eat a
+// 400 forever, and one running slow would promise a player time they do not
+// have. So no countdown and no `canClaimTimeout` comparison is made against
+// `Date.now()` directly; they all go through `Date.now() + offset`.
+//
+// Network latency is folded into this (the payload was serialised slightly
+// before it arrived), which biases the offset a few hundred ms *behind* the
+// server. That is the harmless direction: the claim opens a moment late rather
+// than a moment early, which is exactly the side the server would refuse.
+//
+// A missing, null, or unparseable `server_now` — an older cached payload, a
+// fixture — yields **0**: fall back to the device clock rather than break the
+// countdown. Ported verbatim into frontend/src/utils/seats.js.
+export function serverClockOffset(game, deviceNow = Date.now()) {
+  if (!game) return 0;
+  const server = toMillis(game.server_now);
+  if (server == null) return 0;
+  const device = toMillis(deviceNow);
+  if (device == null) return 0;
+  return server - device;
 }
 
 // Whether `viewerSeat` may claim an inactivity forfeit right now.

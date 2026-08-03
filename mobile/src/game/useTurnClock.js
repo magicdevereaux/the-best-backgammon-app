@@ -21,12 +21,19 @@ function toMillis(value) {
 /**
  * A live clock for an inactivity deadline.
  *
- * Returns `{ now, msRemaining, expired }`, where `now` is this device's wall
- * clock as of the last tick — feed it straight to canClaimTimeout so the button
- * and the countdown can never disagree about what time it is. `msRemaining` is
- * null when there is no deadline (the server sends `turn_deadline: null`
- * whenever a claim is impossible in principle, so that is the whole "show
- * nothing" signal).
+ * Returns `{ now, msRemaining, expired }`, where `now` is the time **the server
+ * thinks it is** as of the last tick: this device's wall clock plus
+ * `offsetMs` — feed it straight to canClaimTimeout so the button and the
+ * countdown can never disagree about what time it is, and so neither disagrees
+ * with the server. `msRemaining` is null when there is no deadline (the server
+ * sends `turn_deadline: null` whenever a claim is impossible in principle, so
+ * that is the whole "show nothing" signal).
+ *
+ * `offsetMs` comes from useGame, which derives it from the `server_now` on
+ * every payload (see gating.serverClockOffset). It defaults to 0, so a caller
+ * that does not pass one — or a payload with no usable `server_now` — simply
+ * falls back to the device clock rather than losing its countdown. A change in
+ * the offset resyncs immediately, exactly like a change in the deadline.
  *
  * Lifecycle, matching useGame's poller: the interval is torn down on unmount
  * AND whenever the app leaves the foreground, so nothing ticks in the
@@ -36,13 +43,17 @@ function toMillis(value) {
  * `msRemaining` is pinned at 0 from then on and re-rendering every second would
  * buy nothing.
  */
-export function useTurnClock(deadline) {
+export function useTurnClock(deadline, offsetMs = 0) {
   const deadlineMs = useMemo(() => toMillis(deadline), [deadline]);
-  const [now, setNow] = useState(() => Date.now());
+  // A garbage offset would be worse than none at all.
+  const offset = Number.isFinite(offsetMs) ? offsetMs : 0;
+  const [now, setNow] = useState(() => Date.now() + offset);
 
   // Read inside the interval so the callback never closes over a stale value.
   const deadlineRef = useRef(deadlineMs);
   deadlineRef.current = deadlineMs;
+  const offsetRef = useRef(offset);
+  offsetRef.current = offset;
 
   useEffect(() => {
     if (deadlineMs == null) return undefined;
@@ -55,14 +66,14 @@ export function useTurnClock(deadline) {
       }
     };
     const start = () => {
-      // Resync to the wall clock first: this runs on mount, on any deadline
-      // change, and on every foreground resume.
-      const current = Date.now();
+      // Resync to the wall clock first: this runs on mount, on any deadline or
+      // offset change, and on every foreground resume.
+      const current = Date.now() + offsetRef.current;
       setNow(current);
       if (deadlineRef.current != null && current >= deadlineRef.current) return;
       if (interval != null) return;
       interval = setInterval(() => {
-        const t = Date.now();
+        const t = Date.now() + offsetRef.current;
         setNow(t);
         if (deadlineRef.current != null && t >= deadlineRef.current) stop();
       }, TICK_MS);
@@ -82,7 +93,7 @@ export function useTurnClock(deadline) {
       stop();
       sub?.remove?.();
     };
-  }, [deadlineMs]);
+  }, [deadlineMs, offset]);
 
   if (deadlineMs == null) return { now, msRemaining: null, expired: false };
   const msRemaining = Math.max(0, deadlineMs - now);

@@ -15,10 +15,11 @@ gammon/backgammon detection. Both clients talk to the same backend.
 - **Doubling cube** — offer/accept/drop before rolling, cube ownership, redoubles to 64, points multiplied by cube value, Crawford rule in match play
 - **Game over screen** — shows win type, points awarded, and running match score
 - **User accounts** — register/login, JWT auth, win/loss and stats tracking, and self-serve account deletion (your games are anonymised, not destroyed, so opponents keep their history)
-- **Password recovery** — add an email address at signup or later on your profile, then reset a forgotten password by emailed link
+- **Password recovery** — add an email address at signup or later on your profile, then reset a forgotten password by emailed link. An address is entirely optional: you can register and play with just a username and password
+- **Turn reminders** — if you've saved an email address, you get a heads-up before your clock runs out in an online game. On by default, switched off any time from your profile
 - **Profile page** — lifetime stats: games, wins, losses, gammons, backgammons, points won/lost, win %, gammon rate
 - **Online play** — create an online game, share a deep link, join by code, open-games list, with both clients polling for the opponent's moves
-- **Nobody gets stranded** — if an opponent walks away mid-game, a countdown appears for both players, and after 48 hours the one still at the board can claim the win. Only between registered players, and you always see your own clock before it runs out
+- **Nobody gets stranded** — if an opponent walks away mid-game, a countdown appears for both players, and after 48 hours the one still at the board can claim the win. Only between registered players, and you always see your own clock before it runs out. Countdowns follow the server's clock, so a device with the wrong time still shows you the truth. A reminder email can be sent before your time runs out, once the deploy schedules it
 - **Turn-ownership security** — the server rejects gameplay actions (403) from anyone who doesn't own the current seat; online, the mobile app also gates its UI so a device only acts on the seat it owns and only on its turn (read-only "waiting"/"spectating" views otherwise)
 - **Graceful exit from a dead game** — if your opponent deletes their account mid-game, both apps say so and offer to close the game out unscored rather than leaving you stuck
 - **Mobile app** — native SVG board, tap-to-roll, per-move undo, pull-to-refresh, opponent move sync
@@ -53,7 +54,7 @@ This README is the setup and feature tour. Deeper reference lives in
 
 ## Project status
 
-Feature-complete for local and link-based online play, with **1142 passing tests**
+Feature-complete for local and link-based online play, with **1299 passing tests**
 and CI running all three suites on every push. The backend suite is green on
 Postgres as well as SQLite, so the database move for hosting is de-risked.
 
@@ -172,7 +173,7 @@ auto-incrementing version).
 
 ## Running tests
 
-### Backend (531 tests)
+### Backend (596 tests)
 
 ```bash
 cd backend
@@ -299,10 +300,16 @@ All win values are multiplied by the **doubling cube**: a gammon at cube value 4
 
 ---
 
-_Last updated 2026-08-02. Test counts (531 / 364 / 247 = 1142) verified green on that
-date, on both SQLite and Postgres 16. The most recent pass shipped the inactivity
-forfeit — a per-turn clock, a claim endpoint, and a countdown on both clients —
-so a walked-away opponent no longer strands a game. Before that, the same day: every
+_Last updated 2026-08-03. Test counts (596 / 411 / 292 = 1299) verified green on that
+date, on both SQLite and Postgres 16. The most recent pass hardened the inactivity
+forfeit: countdowns now follow the server's clock rather than the device's, the
+claim-vs-move race explains itself instead of reading like a bug, and a
+`send_turn_reminders` command can email the player on the clock once a deploy
+schedules it — with an opt-out on the profile, a footer on every mail, and a
+refusal to send at all while the mail settings are still at their dev defaults.
+Before that: the inactivity
+forfeit itself shipped — a per-turn clock, a claim endpoint, and a countdown on both
+clients — so a walked-away opponent no longer strands a game; every
 mutating endpoint became transactional and row-locked, the Django admin path became
 configurable, and two false statements in the legal drafts were corrected. Earlier still: the
 higher-die rule went general and was mirrored in both clients, `GET /api/matches/`

@@ -25,6 +25,7 @@ rules engine itself see [game-logic.md](game-logic.md); for tokens and login see
 | Turn gating | **none** client-side; server 403 surfaces as an error | `gating.js` + `seatRegistry.js` hide controls |
 | Closed-seat handling | `seats.js` — deadlock banner + abandon panel | `gating.js` — same, in `AbandonGameSection` |
 | Inactivity clock | `TurnClock.jsx` (own 1 s interval) + `ClaimTimeoutPanel.jsx` | `TurnClockSection.jsx` + the `useTurnClock` hook |
+| Clock source | both: a **1 s local tick** on a device clock corrected by the payload's `server_now` offset ([below](#server_now--the-offset-not-the-device-clock)) | same |
 | Tests | 312, `__tests__/` beside sources | 190, `src/**/__tests__/` |
 
 Orientation and packaging are mobile-only concerns: `app.json` locks the app to
@@ -56,6 +57,8 @@ Rows are counterparts — same job, one file per client.
 | Abandon a deadlocked game | [`src/components/AbandonGamePanel.jsx`](../../frontend/src/components/AbandonGamePanel.jsx) | [`src/components/AbandonGameSection.jsx`](../../mobile/src/components/AbandonGameSection.jsx) |
 | Inactivity countdown + claim | [`src/components/TurnClock.jsx`](../../frontend/src/components/TurnClock.jsx) + [`ClaimTimeoutPanel.jsx`](../../frontend/src/components/ClaimTimeoutPanel.jsx) | [`src/components/TurnClockSection.jsx`](../../mobile/src/components/TurnClockSection.jsx) (countdown + claim in one) |
 | Closed-seat + clock predicates | [`src/utils/seats.js`](../../frontend/src/utils/seats.js) | the top half of [`src/game/gating.js`](../../mobile/src/game/gating.js) |
+| Friendly error readings | [`src/api/errors.js`](../../frontend/src/api/errors.js) (`isTimeoutClaimedError`, `TIMEOUT_CLAIMED_MESSAGE`) | [`src/api/errors.js`](../../mobile/src/api/errors.js) (those two, **kept identical**, plus mobile-only `friendlyJoinError`) |
+| Claim-beat-your-move notice | [`src/components/TimeoutClaimedNotice.jsx`](../../frontend/src/components/TimeoutClaimedNotice.jsx) | [`src/components/TimeoutClaimedNotice.jsx`](../../mobile/src/components/TimeoutClaimedNotice.jsx) |
 | Board | [`src/components/Board.jsx`](../../frontend/src/components/Board.jsx) | [`src/components/Board.jsx`](../../mobile/src/components/Board.jsx) |
 | Dice / Cube / Controls / Game over / Match score | `src/components/{Dice,DoublingCube,GameControls,GameOverScreen,MatchScore}.jsx` | same five filenames under `mobile/src/components/` |
 
@@ -64,9 +67,9 @@ Rows are counterparts — same job, one file per client.
 | File | Purpose |
 |------|---------|
 | [`src/game/seatRegistry.js`](../../mobile/src/game/seatRegistry.js) | Device-local record of which seat(s) this device owns per game |
-| [`src/game/useTurnClock.js`](../../mobile/src/game/useTurnClock.js) | 1 s countdown hook + `formatDuration`; torn down when the app backgrounds. Web keeps the equivalent interval inside `TurnClock.jsx` |
+| [`src/game/useTurnClock.js`](../../mobile/src/game/useTurnClock.js) | `useTurnClock(deadline, offsetMs)` — 1 s countdown hook + `formatDuration`; torn down when the app backgrounds. Web keeps the equivalent interval inside `TurnClock.jsx` |
 | [`src/api/config.js`](../../mobile/src/api/config.js) | Resolves the backend host from Metro (`MANUAL_OVERRIDE` to pin it) |
-| [`src/api/errors.js`](../../mobile/src/api/errors.js) | `friendlyJoinError()` — maps raw join failures to user-facing text |
+| `friendlyJoinError()` in [`src/api/errors.js`](../../mobile/src/api/errors.js) | Maps raw join failures to user-facing text. The **file** is no longer mobile-only — its timeout-race half is mirrored on web — but this function is |
 
 `gating.js`'s `computeGating()` is also mobile-only; only its **closed-seat half** is
 ported to web (see [Turn gating](#turn-gating)).
@@ -309,6 +312,12 @@ with the same name, signature and semantics in `seats.js` and `gating.js`. Both
 copies carry a header comment saying so. Change one, change the other — and check
 the server, which is the third copy of the underlying rule.
 
+> **The set has since grown to four.** `serverClockOffset(game, deviceNow)`
+> joined it with the `server_now` work and shares `canClaimTimeout`'s private
+> `toMillis` helper, so the two are ported together —
+> [below](#server_now--the-offset-not-the-device-clock). The heading above is
+> left as written because other docs anchor to it.
+
 **It does not re-derive eligibility, and must not start.** The server publishes
 the whole question in two fields: `turn_waiting_seat` (the seat on the clock) and
 `turn_deadline`, which is **null whenever a claim is impossible in principle** —
@@ -317,8 +326,10 @@ deadline is a complete answer: render nothing. A client that instead inspected
 `status` / user FKs / the closure flags would be a fourth copy of the rule, in two
 languages, that drifts the moment the rule is tuned.
 
-What the predicate adds is only what the server cannot know: **what time it is on
-this device**, and **which seat is looking**. It is true only when the deadline
+What the predicate adds is only what the server cannot know: **what time it is
+now** — the device clock corrected by the `server_now` offset, see
+[below](#server_now--the-offset-not-the-device-clock) — and **which seat is
+looking**. It is true only when the deadline
 has passed *and* the viewer holds the **opposite** seat — you claim against the
 idle player, never yourself, so a player who is themselves out of time gets
 `false`, not a button that forfeits their own game.
@@ -339,11 +350,13 @@ is a helper, not part of the sync obligation.
 #### The countdown is extrapolated, not polled
 
 Both clients tick a **1 s local interval** against `turn_deadline` and render the
-remaining time. **Polling only reconciles**: the ~3.5 s `useGame` poll refreshes
-the *deadline*, it is not the tick source — driving a countdown off it would
-stutter and lag by up to 3.5 s. When the idle player finally moves, the fresh
-payload carries a new deadline (or none) and the clock re-derives from that,
-which is also how the claim control retracts within a tick.
+remaining time, using a clock corrected by the payload's `server_now`
+([below](#server_now--the-offset-not-the-device-clock)). **Polling only
+reconciles**: the ~3.5 s `useGame` poll refreshes the *deadline* and the
+*offset*, it is not the tick source — driving a countdown off it would stutter
+and lag by up to 3.5 s. When the idle player finally moves, the fresh payload
+carries a new deadline (or none) and the clock re-derives from that, which is
+also how the claim control retracts within a tick.
 
 Both clocks show the countdown **in both directions**: the seat on the clock sees
 its own time draining, with the consequence spelled out; the opponent sees how
@@ -363,10 +376,118 @@ shown.
   is pinned at 0 from then on.
 
 The same `now` the countdown rendered is the `now` handed to `canClaimTimeout`,
-so the button and the clock can never disagree about the time. A device clock
-running ahead of the server's can therefore offer the button early — the server
-400s, and that message surfaces through the normal `actionError` path. Affordance,
-as everywhere else.
+so the button and the clock can never disagree about the time. Which raises the
+question of *whose* time it is.
+
+##### `server_now` — the offset, not the device clock
+
+Both clients used to tick against `Date.now()` straight from the device. That
+made every countdown and every claim check only as accurate as the user's system
+clock, and produced two distinct bugs:
+
+- **A clock running fast** offered the claim button before the server's deadline
+  had passed. The claim then 400ed — *permanently*, not transiently, because the
+  button's condition and the server's differed by a constant the client had no
+  way to observe. The user saw a button that never worked.
+- **A clock running slow** told the seat on the clock it still had time after the
+  opponent's claim had already opened.
+
+The fix is a single extra field. Every game payload carries
+[`server_now`](api.md#server_now--the-clients-clock-is-not-trusted) — the instant
+the response was serialized, always present and never null, in the same ISO
+format as `turn_deadline`. **`serverClockOffset(game, deviceNow = Date.now())`**
+turns it into a correction, and is the **fourth** member of the `seats.js` /
+`gating.js` stay-in-sync set (with `isSeatClosed`/`blockedSeat`/`isDeadlocked`,
+`canAbandon`, and `canClaimTimeout`); both copies share the `toMillis` helper:
+
+```
+offset = server_now − deviceNow      // add it to Date.now() to get server time
+```
+
+`useGame` holds the result as **`clockOffset`** and every countdown and claim
+check runs against `Date.now() + clockOffset`, never the raw device clock. Five
+properties are worth stating plainly:
+
+- **The offset is a correction, not a clock.** Ticking still happens locally at
+  1 s; `server_now` is not a time *source* and polling it at 3.5 s could never
+  drive a countdown. It is a constant added to a locally-ticking value.
+- **It is re-anchored on every payload — including action responses.** `useGame`
+  routes the initial load, each poll tick, and every action's 200 through one
+  `adoptGame`/`syncClock` pair, so a device whose clock is adjusted mid-game
+  self-corrects. It is **not** adopted on every jitter: `OFFSET_EPSILON_MS`
+  (**1000 ms**, defined identically in both hooks) requires the new offset to
+  differ by at least a second, or latency noise would re-render the tree every
+  3.5 s and destroy the "identical payload changes nothing" guarantee.
+- **Latency is folded in and biases the offset the safe way.** The payload was
+  serialized slightly *before* it arrived, so the derived offset sits a few
+  hundred ms behind the server. That makes a claim open a moment late rather
+  than a moment early — the side the server would refuse anyway. No handshake,
+  no round-trip estimate, no drift model: the error is milliseconds against a
+  deadline measured in hours.
+- **Every fallback lands on the old behaviour, never on a broken clock.** A
+  missing, null or unparseable `server_now` yields offset `0`; so does a
+  non-finite `clockOffset` reaching a component. The clock then ticks on the
+  device clock exactly as it used to — degraded, never blank and never throwing.
+- **A gross disagreement is shown to the player.** Both clocks render a skew
+  notice past `SKEW_NOTICE_MS` (**5 minutes**, the same constant in
+  `TurnClock.jsx` and `TurnClockSection.jsx`) saying how far this device is
+  ahead of or behind the server and that the displayed time follows the server.
+  Nothing is *wrong* at that point — the countdown is already corrected — but
+  numbers that disagree with the user's own clock read as a bug unless named.
+
+Plumbing, one prop deep in both clients: `useGame` exposes `clockOffset`, the
+game screen passes it to `TurnClock` (web) / `TurnClockSection` (mobile), and
+mobile's hook signature widened to `useTurnClock(deadline, offsetMs = 0)` —
+which resyncs on an offset change exactly as it does on a deadline change, and
+keeps the live value in a ref so the 1 s interval never has to re-subscribe.
+
+`canClaimTimeout`'s **signature did not change**: it always took `now` as a
+parameter, specifically so the caller decides what "now" means. Only what the
+callers pass changed. The predicate remains an affordance either way — the
+server re-checks the deadline against its own clock, and a claim that slips
+through still 400s.
+
+##### When a claim beats your move
+
+`claim_timeout` locks the row, so a gameplay action sent in the same instant
+loses the race and comes back **400** on a game that is already `finished` with
+`win_type="timeout"`. The server names that case specifically instead of
+returning the generic `"Game is not active."`
+([api.md](api.md#the-claim-vs-move-race)), and both clients turn it into a calm
+explanation rather than a red error. The machinery is a mirrored pair of files
+plus one component each:
+
+| Piece | Web | Mobile |
+|---|---|---|
+| Predicate + copy | [`src/api/errors.js`](../../frontend/src/api/errors.js) | [`src/api/errors.js`](../../mobile/src/api/errors.js) |
+| The notice | [`TimeoutClaimedNotice.jsx`](../../frontend/src/components/TimeoutClaimedNotice.jsx) | [`TimeoutClaimedNotice.jsx`](../../mobile/src/components/TimeoutClaimedNotice.jsx) |
+
+`isTimeoutClaimedError(err)` and `TIMEOUT_CLAIMED_MESSAGE` are **character-for-
+character identical in the two `errors.js` files** and must stay that way — the
+two clients have to tell a player the same story about the same 400. Four
+decisions in there are worth knowing:
+
+- **It matches on message text**, because that is all the API offers: every
+  refusal arrives as `{"error": "..."}` and `request()` throws it as an `Error`.
+  The predicate is deliberately *loose* about the exact server wording (it looks
+  for a claim/forfeit word alongside a time/clock/deadline word) so a reworded
+  message does not silently fall back to the raw 400.
+- **It is applied to the gameplay actions only.** `useGame` routes roll, confirm
+  and the two cube actions through a shared `handleActionError`; `claimTimeout`
+  deliberately **does not** go through it, because its own refusals also talk
+  about claims and clocks and mean something entirely different.
+- **The copy lives in `errors.js`, not in the component**, so the two clients
+  cannot drift on wording. It is not the server's sentence — it is a friendlier
+  one: *"Your opponent claimed the win on time just before your move reached the
+  server — the two crossed in transit, so this game is already over."*
+- **The flag is sticky and suppresses `actionError`.** `useGame` exposes
+  `timeoutClaimed`, set once and held for the life of the game view, and both
+  screens render `TimeoutClaimedNotice` beside the turn clock (not down with the
+  errors) while hiding `actionError` entirely — every subsequent action on a
+  finished game would otherwise stack `"Game is not active."` under the
+  explanation. `useGame` also re-fetches immediately rather than waiting for the
+  poll, so the screen never shows a live board under a message saying the game
+  is over.
 
 Both hooks expose `claimTimeout()` → `POST /claim_timeout/` (`claimTimeout` in
 [`gameApi.js`](../../frontend/src/api/gameApi.js) /
@@ -484,9 +605,14 @@ every screen under `app/`, `Board`, `Dice`, `GameControls`, `games.js`, `matches
   deadline. There is no reserve time, no Fischer/Bronstein increment, no
   accumulated-time display, and no clock-mode picker at game creation — deferred
   until presence exists ([ADR-002](../decisions/adr-002-inactivity-forfeit.md)).
-- **A timeout notification.** Nothing tells a player their clock is running out
-  unless the game screen is open: there is no push notification, no email, and no
-  badge. A player can be forfeited without ever seeing the countdown.
+- **An in-client timeout notification.** Nothing *in either client* tells a
+  player their clock is running out unless the game screen is open: no push
+  notification, no local notification, no badge. Neither app depends on
+  `expo-notifications` or registers a device token, and closing that needs EAS
+  push credentials before it needs code. The server side has a **reminder email**
+  (`manage.py send_turn_reminders`, [ADR-002](../decisions/adr-002-inactivity-forfeit.md))
+  which is dormant until a cron is scheduled and reaches only players who set an
+  address — it changes nothing in these two codebases.
 - **A mobile reset-confirm screen.** Mobile can request a reset link, but the emailed
   link is a web URL; there is no `backgammon://` deep-link route for
   `/reset-password/:uid/:token`.

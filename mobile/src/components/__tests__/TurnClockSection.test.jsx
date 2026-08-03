@@ -214,6 +214,130 @@ describe("TurnClockSection — you are on the clock", () => {
   });
 });
 
+/*
+ * Device clock skew. The tick samples this device's clock, but every reading is
+ * corrected by `clockOffset` (useGame, from `server_now`) before it is compared
+ * with the deadline — so what the player sees is the server's clock, which is
+ * the one that decides the game.
+ *
+ * Mirrored in frontend/src/components/__tests__/TurnClock.test.jsx.
+ */
+describe("TurnClockSection — a device whose clock is wrong", () => {
+  const HOUR = 3600_000;
+
+  function renderSkewed(game, viewerSeat, clockOffset) {
+    return render(
+      <TurnClockSection
+        game={game}
+        viewerSeat={viewerSeat}
+        clockOffset={clockOffset}
+        onClaimTimeout={jest.fn()}
+      />
+    );
+  }
+
+  test("a fast device counts down correctly instead of claiming early", () => {
+    // The device reads two hours ahead of the server. Five minutes left in
+    // SERVER time, so an uncorrected clock would already offer the claim.
+    const game = clocked({ turn_deadline: new Date(NOW - 2 * HOUR + 5 * 60_000).toISOString() });
+    renderSkewed(game, "p1", -2 * HOUR);
+
+    expect(screen.getByText("Waiting on Bob — 5:00")).toBeTruthy();
+    expect(screen.queryByText(CLAIM_BTN)).toBeNull();
+
+    // ...and it still opens on time, ticking against the corrected clock.
+    act(() => { jest.advanceTimersByTime(5 * 60_000); });
+    expect(screen.getByText(CLAIM_BTN)).toBeTruthy();
+  });
+
+  test("a slow device is not told it still has time it does not have", () => {
+    // Three hours behind. In server time the deadline passed a minute ago.
+    const game = clocked({ turn_deadline: new Date(NOW + 3 * HOUR - 60_000).toISOString() });
+    renderSkewed(game, "p1", 3 * HOUR);
+
+    expect(screen.getByText("Bob ran out of time")).toBeTruthy();
+    expect(screen.getByText(CLAIM_BTN)).toBeTruthy();
+    expect(screen.queryByText(/Waiting on Bob/)).toBeNull();
+  });
+
+  test("the seat on the clock is warned against the corrected clock too", () => {
+    // Bob's slow device would otherwise think he had three more hours.
+    const game = clocked({ turn_deadline: new Date(NOW + 3 * HOUR - 60_000).toISOString() });
+    renderSkewed(game, "p2", 3 * HOUR);
+    expect(screen.getByText("You are out of time")).toBeTruthy();
+  });
+
+  test("the boundary is still inclusive once the offset is applied", () => {
+    // Corrected now === deadline exactly.
+    const exact = renderSkewed(
+      clocked({ turn_deadline: new Date(NOW - HOUR).toISOString() }),
+      "p1",
+      -HOUR
+    );
+    expect(screen.getByText(CLAIM_BTN)).toBeTruthy();
+    exact.unmount();
+
+    // One millisecond short of it.
+    renderSkewed(clocked({ turn_deadline: new Date(NOW - HOUR + 1).toISOString() }), "p1", -HOUR);
+    expect(screen.queryByText(CLAIM_BTN)).toBeNull();
+  });
+
+  test("a missing or unusable offset falls back to the device clock, unbroken", () => {
+    // No prop at all (an older caller), and a garbage one.
+    const plain = render(
+      <TurnClockSection game={clocked()} viewerSeat="p1" onClaimTimeout={jest.fn()} />
+    );
+    expect(screen.getByText("Waiting on Bob — 5:00")).toBeTruthy();
+    plain.unmount();
+
+    renderSkewed(clocked(), "p1", NaN);
+    expect(screen.getByText("Waiting on Bob — 5:00")).toBeTruthy();
+  });
+
+  test("a gross disagreement is explained, and says which way round it is", () => {
+    const fast = renderSkewed(clocked(), "p1", -2 * HOUR);
+    expect(screen.getByText(/this device's clock is 2h 0m ahead of the server's/i)).toBeTruthy();
+    expect(screen.getByText(/follows the server/i)).toBeTruthy();
+    fast.unmount();
+
+    renderSkewed(clocked(), "p1", 2 * HOUR);
+    expect(screen.getByText(/this device's clock is 2h 0m behind the server's/i)).toBeTruthy();
+  });
+
+  test("a small, ordinary offset is not worth mentioning — five minutes is the line", () => {
+    const FIVE = 5 * 60_000;
+    const under = renderSkewed(clocked(), "p1", FIVE - 1000);
+    expect(screen.queryByText(/this device's clock/i)).toBeNull();
+    under.unmount();
+
+    renderSkewed(clocked(), "p1", FIVE);
+    expect(screen.getByText(/this device's clock/i)).toBeTruthy();
+  });
+
+  test("the notice reaches every branch — waiting, claimable, and on the clock", () => {
+    const onClock = renderSkewed(clocked(), "p2", 6 * HOUR);
+    expect(screen.getByText(/this device's clock/i)).toBeTruthy();
+    onClock.unmount();
+
+    const claimable = renderSkewed(
+      clocked({ turn_deadline: new Date(NOW - 60_000).toISOString() }),
+      "p1",
+      6 * HOUR
+    );
+    expect(screen.getByText(/this device's clock/i)).toBeTruthy();
+    claimable.unmount();
+
+    // Still waiting: the deadline is beyond even the corrected clock.
+    renderSkewed(
+      clocked({ turn_deadline: new Date(NOW + 6 * HOUR + 5 * 60_000).toISOString() }),
+      "p1",
+      6 * HOUR
+    );
+    expect(screen.getByText("Waiting on Bob — 5:00")).toBeTruthy();
+    expect(screen.getByText(/this device's clock/i)).toBeTruthy();
+  });
+});
+
 describe("TurnClockSection claiming", () => {
   const expired = () => clocked({ turn_deadline: new Date(NOW - 1000).toISOString() });
 

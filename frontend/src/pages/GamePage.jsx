@@ -8,6 +8,7 @@ import GameOverScreen from "../components/GameOverScreen";
 import MatchScore from "../components/MatchScore";
 import AbandonGamePanel from "../components/AbandonGamePanel";
 import TurnClock from "../components/TurnClock";
+import TimeoutClaimedNotice from "../components/TimeoutClaimedNotice";
 import { useGame } from "../hooks/useGame";
 import { blockedSeat } from "../utils/seats";
 import { useAuth } from "../context/AuthContext";
@@ -35,6 +36,7 @@ export default function GamePage() {
     stageMove, resetTurn, confirmTurn,
     offerDouble, respondToDouble, canOfferDouble,
     deadlocked, abandonGame, canAbandon, claimTimeout, reload,
+    clockOffset, timeoutClaimed,
   } = useGame(id, user?.id);
 
   const [guestJoinName, setGuestJoinName] = useState("");
@@ -137,7 +139,13 @@ export default function GamePage() {
           past: a player must never lose to a clock they were never shown. Renders
           nothing unless the server sent a `turn_deadline`, which it withholds
           whenever a claim is impossible — including on a deadlocked game. */}
-      <TurnClock game={game} onClaimTimeout={claimTimeout} />
+      <TurnClock game={game} clockOffset={clockOffset} onClaimTimeout={claimTimeout} />
+
+      {/* A move that crossed with the opponent's inactivity claim. Sits here,
+          beside the clock it belongs to, rather than down with actionError —
+          the game is over, so the explanation has to be visible without
+          scrolling past a board that no longer matters. */}
+      {timeoutClaimed && <TimeoutClaimedNotice />}
 
       <div style={{ overflowX: "auto" }}>
         <Board
@@ -177,7 +185,10 @@ export default function GamePage() {
         </>
       )}
 
-      {actionError && <p style={T.err}>{actionError}</p>}
+      {/* Suppressed once the timeout notice is up: every action after the game
+          was claimed fails with "Game is not active.", and stacking that under
+          the explanation would only muddy it. */}
+      {actionError && !timeoutClaimed && <p style={T.err}>{actionError}</p>}
     </div>
   );
 }

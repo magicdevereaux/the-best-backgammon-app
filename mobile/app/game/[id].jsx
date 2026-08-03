@@ -14,6 +14,7 @@ import GameOverScreen from "../../src/components/GameOverScreen";
 import MatchScore from "../../src/components/MatchScore";
 import AbandonGameSection from "../../src/components/AbandonGameSection";
 import TurnClockSection from "../../src/components/TurnClockSection";
+import TimeoutClaimedNotice from "../../src/components/TimeoutClaimedNotice";
 import { useGame } from "../../src/game/useGame";
 import { computeGating } from "../../src/game/gating";
 import { useSeatInfo, recordOnlineSeat } from "../../src/game/seatRegistry";
@@ -33,7 +34,7 @@ export default function GameScreen() {
     pendingMoves, legalMoves, mustUseMoreDice, mustPlayHigherDie, stageMove,
     resetTurn, undoMove, confirmTurn,
     offerDouble, respondToDouble, canOfferDouble,
-    abandonGame, claimTimeout,
+    abandonGame, claimTimeout, clockOffset, timeoutClaimed,
     reload, refresh, refreshing,
   } = useGame(id);
 
@@ -228,8 +229,15 @@ export default function GameScreen() {
         <TurnClockSection
           game={game}
           viewerSeat={viewerSeat}
+          clockOffset={clockOffset}
           onClaimTimeout={claimTimeout}
         />
+
+        {/* A move that crossed with the opponent's inactivity claim. Sits here,
+            beside the clock it belongs to, rather than down with actionError —
+            the game is over, so the explanation has to be visible without
+            scrolling past a board that no longer matters. */}
+        {timeoutClaimed && <TimeoutClaimedNotice />}
 
         <Board
           boardState={stagedBoard}
@@ -274,7 +282,10 @@ export default function GameScreen() {
           />
         )}
 
-        {actionError && <Text style={styles.error}>{actionError}</Text>}
+        {/* Suppressed once the timeout notice is up: every action after the
+            game was claimed fails with "Game is not active.", and stacking that
+            under the explanation would only muddy it. */}
+        {actionError && !timeoutClaimed && <Text style={styles.error}>{actionError}</Text>}
       </ScrollView>
     </SafeAreaView>
   );

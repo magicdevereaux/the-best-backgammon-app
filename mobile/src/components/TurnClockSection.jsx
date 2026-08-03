@@ -22,7 +22,15 @@ import { colors } from "../theme";
  * src/game/gating.js, and docs/decisions/adr-002-inactivity-forfeit.md.
  *
  * The countdown is extrapolated locally at 1s (useTurnClock), not driven by the
- * ~3.5s poll; the poll only reconciles the deadline.
+ * ~3.5s poll; the poll only reconciles the deadline — and the `server_now`
+ * anchor behind `clockOffset`.
+ *
+ * It ticks against the *server's* clock, not this device's: `clockOffset`
+ * (useGame, from the `server_now` on every payload) is added to `Date.now()`
+ * before any comparison. A phone hours fast would otherwise show the claim
+ * control early and then eat a 400 on every press, and one hours slow would
+ * promise a player time they did not have. If the two clocks still disagree
+ * grossly, say so — see SKEW_NOTICE_MS.
  *
  * Unlike the abandon control next door, a claim SCORES — a real winner, a
  * single game at the current cube value, into the match. So it confirms through
@@ -42,9 +50,16 @@ import { colors } from "../theme";
 // at a 48-hour default.
 const URGENT_MS = 60 * 60 * 1000; // 1 hour
 
-export default function TurnClockSection({ game, viewerSeat, onClaimTimeout }) {
+// Past this much disagreement between this device's clock and the server's,
+// tell the player. The countdown is already corrected, so nothing is *wrong* —
+// but the numbers here will not match their own clock, and an unexplained
+// mismatch reads as a bug. Below five minutes it isn't worth a line of text.
+// Shared with frontend/src/components/TurnClock.jsx.
+const SKEW_NOTICE_MS = 5 * 60 * 1000;
+
+export default function TurnClockSection({ game, viewerSeat, clockOffset = 0, onClaimTimeout }) {
   const [busy, setBusy] = useState(false);
-  const { now, msRemaining } = useTurnClock(game?.turn_deadline);
+  const { now, msRemaining } = useTurnClock(game?.turn_deadline, clockOffset);
 
   // No clock, or one that is none of this viewer's business.
   if (msRemaining == null) return null;
@@ -66,6 +81,19 @@ export default function TurnClockSection({ game, viewerSeat, onClaimTimeout }) {
   const idleName =
     (waitingSeat === "p1" ? game.player1_name : game.player2_name) || "Your opponent";
   const remaining = formatDuration(msRemaining);
+
+  // Only when the two clocks are grossly apart. Says which way, so a player can
+  // recognise their own device as the odd one out, and says that the number
+  // above it is the one that counts.
+  const offset = Number.isFinite(clockOffset) ? clockOffset : 0;
+  const skewNotice =
+    Math.abs(offset) >= SKEW_NOTICE_MS ? (
+      <Text style={styles.skew}>
+        {`Heads up: this device's clock is ${formatDuration(Math.abs(offset))} ${
+          offset < 0 ? "ahead of" : "behind"
+        } the server's. The time above follows the server, which is what decides the game.`}
+      </Text>
+    ) : null;
 
   async function performClaim() {
     setBusy(true);
@@ -111,6 +139,7 @@ export default function TurnClockSection({ game, viewerSeat, onClaimTimeout }) {
             ? `${opponentName} can claim this game at any moment. Move now — you keep playing until they do.`
             : `Play a turn before the clock runs out, or ${opponentName} can claim the win.`}
         </Text>
+        {skewNotice}
       </View>
     );
   }
@@ -136,6 +165,7 @@ export default function TurnClockSection({ game, viewerSeat, onClaimTimeout }) {
             {busy ? "Claiming…" : "Claim Win on Time"}
           </Text>
         </Pressable>
+        {skewNotice}
       </View>
     );
   }
@@ -147,6 +177,7 @@ export default function TurnClockSection({ game, viewerSeat, onClaimTimeout }) {
       <Text style={styles.body}>
         {`If ${idleName} hasn't moved by then, you'll be able to claim the win.`}
       </Text>
+      {skewNotice}
     </View>
   );
 }
@@ -164,6 +195,7 @@ const styles = StyleSheet.create({
   heading: { color: colors.text, fontSize: 15, fontWeight: "700", marginBottom: 4 },
   headingUrgent: { color: colors.danger },
   body: { color: colors.textMuted, fontSize: 13, lineHeight: 18 },
+  skew: { color: colors.textMuted, fontSize: 11, lineHeight: 15, marginTop: 8, fontStyle: "italic" },
   outlineBtn: {
     borderWidth: 1,
     borderColor: colors.danger,

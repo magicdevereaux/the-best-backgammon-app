@@ -11,6 +11,11 @@ countdown on both clients. The endpoint reference is
 statement about the future** — reserve time, increment, mode selection and clock
 UI do **not** exist, and the presence layer they depend on does not either.
 
+Three follow-ups have landed since — plus a hardening pass over the third, which
+gave the reminder mail an opt-out and three send-safety properties. Two of the
+gaps this ADR left open are closed and one is half-closed. See
+[What has been closed since](#what-has-been-closed-since-and-what-has-not).
+
 ## Context
 
 A player who walks away from an online game stalled it forever. There was no
@@ -41,8 +46,12 @@ All of this is built. Endpoint reference:
 [api.md](../architecture/api.md#post-apigamesidclaim_timeout).
 
 - **A per-turn deadline, evaluated on a pull-based claim.** There is no
-  scheduler in this stack — no Celery, no cron — so a deadline can only be
-  evaluated when someone hits the API. The opponent claims the win via
+  scheduler in this stack — no Celery, no in-process cron — so a deadline can
+  only be evaluated when someone hits the API. **This is still true of
+  forfeiting**; a *platform* cron has since been introduced for the reminder
+  mail, and it deliberately does not evaluate or write results
+  ([below](#what-has-been-closed-since-and-what-has-not)). The opponent claims
+  the win via
   `POST /api/games/{id}/claim_timeout/`; nothing sweeps in the background. This
   is how chess.com daily works too, and for live games the opponent's ~3.5s poll
   effectively *is* the sweeper.
@@ -151,7 +160,92 @@ One non-blocker worth recording, because it looks like one: a countdown can be
 **extrapolated client-side** from a server timestamp, so 3.5s polling is fine for
 clock *display*. Polling only reconciles. That is how real clock UIs work — and
 it is how the shipped countdown works: both clients tick locally against
-`turn_deadline`, and a poll response merely corrects the anchor.
+`turn_deadline`, and a poll response merely corrects the anchor. What that
+argument left implicit — that the client's own clock is trustworthy — was wrong,
+and is now handled by `server_now`
+([above](#what-has-been-closed-since-and-what-has-not)).
+
+## What has been closed since (and what has not)
+
+This ADR shipped with three known gaps. Recording their state here so nobody
+re-derives them from the code.
+
+**Closed — the countdown no longer trusts the device clock.** The original
+implementation compared `turn_deadline` to `Date.now()`, and the note above that
+"a countdown can be extrapolated client-side from a server timestamp" quietly
+assumed the two clocks agreed. They often do not. A device running fast offered
+the claim button early and then took a permanent 400 on it — the button's
+condition and the server's differed by a constant the client could not see; a
+device running slow told the seat on the clock it still had time after the
+server had opened a claim against it. `GameSerializer` now emits **`server_now`**
+on every game payload (always present, never null, same ISO format as
+`turn_deadline`), each client derives a `server_now − device_now` offset per
+fetch, and every countdown and claim check runs against the corrected time.
+**`canClaimTimeout`'s signature is unchanged** — `now` was always a parameter,
+precisely so the caller decides what "now" means. Details in
+[api.md](../architecture/api.md#server_now--the-clients-clock-is-not-trusted) and
+[clients.md](../architecture/clients.md#the-countdown-is-extrapolated-not-polled).
+
+**Closed — the claim-vs-move race reads as an explanation, not a bug.**
+`claim_timeout` takes a row lock, so it wins a tie against a gameplay action
+arriving in the same instant. The loser used to get `400 "Game is not active."`,
+which to the player who *did* move in time looks like the app malfunctioning.
+`roll_dice` / `confirm_turn` / `offer_double` / `respond_to_double` now detect
+`finished` **with `win_type="timeout"`** specifically and say so. It is **still a
+400** — nothing was written and the request genuinely cannot be performed — and
+both clients render it calmly. See
+[api.md](../architecture/api.md#the-claim-vs-move-race).
+
+**Half-closed — telling a player their clock is running.** `manage.py
+send_turn_reminders` mails the seat on the clock `TURN_REMINDER_LEAD_HOURS`
+(default 12) before the deadline, at most once per turn
+(`Game.turn_reminder_sent_at`,
+cleared by `_begin_turn()`), and only for a registered seat with an email address
+on a game that `Game.timeout_deadline()` says is genuinely claimable. It is a
+**platform-cron** command, for the reason this ADR gave for pull-based claims in
+the first place: mailing from inside a `GET` would only fire when the *opponent*
+polls, which is the wrong player.
+
+**Three pieces of that feature are load-bearing and are easy to mistake for
+polish**, so they are recorded here rather than only in the runbook:
+
+- **The reminder is opt-out, and the opt-out is part of the feature, not an
+  extra.** An address is collected as *optional, for password reset*; treating
+  "gave us an email" as "wants game mail" would be an unsolicited enrolment with
+  no way out. `UserPreferences.turn_reminder_emails` (default **on**, a lazily
+  created one-to-one row, writable at `PATCH /api/auth/me/`) is the way out, and
+  every reminder carries a footer naming it. The command and the serializer both
+  read `UserPreferences.reminders_enabled`, so the value a player is shown cannot
+  disagree with the value the mail obeys. See
+  [data-model.md](../architecture/data-model.md#userpreferences), and note the
+  privacy policy now describes this mail and its switch —
+  [going-live.md 1.5](../operations/going-live.md#15-publish-the-legal-documents).
+- **Send safety is what makes a cron acceptable at all.** Three defences, in the
+  order they fire: the run **refuses to start** while `FRONTEND_BASE_URL` or
+  `DEFAULT_FROM_EMAIL` sit at their dev defaults (a precondition on the whole
+  run — a partial blast of dead-link mail is not better than none); each row is
+  **claimed before it is mailed**, by a conditional UPDATE whose affected-row
+  count settles a race between overlapping runs; and every row is **re-read with
+  a fresh `now`**, because a long run must not tell a player to move in a game
+  that has since been won. The claim ordering buys **at most one lost reminder,
+  never a duplicate** — the deliberate direction, since for bulk mail duplicates
+  are the worse failure.
+- **A reminder is a statement about a deadline, so it must not outrun the
+  deadline's own rules.** Eligibility is never reimplemented in the command;
+  `Game.timeout_deadline()` — the same method `claim_timeout` and the serializer
+  use — issues the verdict, and the SQL filter is only an optimisation. A
+  reminder about a deadline nobody could enforce would be worse than silence.
+
+That leaves two things unfinished, and neither
+is a coding gap:
+
+- **The cron is not scheduled**, so the command sends nothing today —
+  [railway-deploy.md step 8](../operations/railway-deploy.md#8-schedule-the-turn-reminder-cron).
+- **Push notifications still do not exist**, anywhere in the tree — no
+  `expo-notifications`, no device-token storage, no APNs/FCM credential. That is
+  owner-blocked on EAS push credentials before it is a coding task at all, and it
+  is the same absent presence layer that
+  [defers live clocks](#why-live-clocks-are-deferred).
 
 ## Consequences
 

@@ -340,6 +340,18 @@ REST_FRAMEWORK = {
 # needs no .env file.
 TURN_TIMEOUT_HOURS = int(os.environ.get("TURN_TIMEOUT_HOURS", "48"))
 
+# How close to that deadline `manage.py send_turn_reminders` starts mailing the
+# waiting player. A game is a reminder candidate once its deadline is within
+# this many hours.
+#
+# 12 against a 48-hour default puts the mail three quarters of the way through
+# the window: late enough that it is a real warning rather than a notification
+# about a turn the player only just received, early enough to survive a night's
+# sleep. There is no scheduler in this stack, so nothing sends it on its own —
+# a platform cron has to invoke the command (see the docstring there). Env-
+# driven and defaulted, so local dev still needs no .env file.
+TURN_REMINDER_LEAD_HOURS = int(os.environ.get("TURN_REMINDER_LEAD_HOURS", "12"))
+
 SIMPLE_JWT = {
     "ACCESS_TOKEN_LIFETIME": timedelta(hours=1),
     "REFRESH_TOKEN_LIFETIME": timedelta(days=7),
@@ -368,9 +380,15 @@ EMAIL_PORT = int(os.environ.get("EMAIL_PORT", "587"))
 EMAIL_HOST_USER = os.environ.get("EMAIL_HOST_USER", "")
 EMAIL_HOST_PASSWORD = os.environ.get("EMAIL_HOST_PASSWORD", "")
 EMAIL_USE_TLS = env_bool("EMAIL_USE_TLS", True)
-DEFAULT_FROM_EMAIL = os.environ.get(
-    "DEFAULT_FROM_EMAIL", "Backgammon <no-reply@localhost>"
-)
+# The dev fallbacks are named constants, not inline literals, because one thing
+# other than this module needs to *recognise* them: `manage.py
+# send_turn_reminders` refuses to send bulk mail while either is still at its
+# default (a cron scheduled before the real values are set would ship dead
+# localhost links from a bogus sender, to every waiting player at once). A
+# command comparing against its own copy of the literal would drift the day one
+# of these is retuned, so both sides read the same constant.
+DEV_DEFAULT_FROM_EMAIL = "Backgammon <no-reply@localhost>"
+DEFAULT_FROM_EMAIL = os.environ.get("DEFAULT_FROM_EMAIL", DEV_DEFAULT_FROM_EMAIL)
 
 EMAIL_BACKEND = (
     "django.core.mail.backends.smtp.EmailBackend"
@@ -383,8 +401,10 @@ EMAIL_BACKEND = (
 # link — so it is configuration. Link shape:
 #   {FRONTEND_BASE_URL}/reset-password/{uid}/{token}
 # Trailing slashes are stripped so the joined URL never doubles one up.
+# Named for the same reason as DEV_DEFAULT_FROM_EMAIL above — see there.
+DEV_DEFAULT_FRONTEND_BASE_URL = "http://localhost:3000"
 FRONTEND_BASE_URL = os.environ.get(
-    "FRONTEND_BASE_URL", "http://localhost:3000"
+    "FRONTEND_BASE_URL", DEV_DEFAULT_FRONTEND_BASE_URL
 ).strip().rstrip("/")
 
 # --------------------------------------------------------------------------
