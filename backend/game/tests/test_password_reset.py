@@ -45,19 +45,52 @@ def uid_token_from_outbox(index=0):
 
 
 class RegistrationEmailTest(TestCase):
-    """Email is optional; registration without one must behave as it always has."""
+    """
+    An address is **required** at registration (ADR-003).
+
+    It was optional for most of this app's life, and the two tests below used
+    to assert the opposite of what they assert now. They were rewritten rather
+    than deleted because the inversion is the interesting part: the reasoning
+    that made it optional — "don't tax the pick-a-name-and-play path" — stopped
+    applying once guest seats served that path without an account at all, and
+    what is left behind an account is *online* play, which runs a 48-hour
+    forfeit clock whose only warning is email. An optional address there ships a
+    mechanic that loses you games with a notification layer you opt out of by
+    omission.
+    """
 
     def setUp(self):
         self.client = APIClient()
 
-    def test_register_without_email_still_works(self):
+    def test_register_without_email_is_rejected(self):
+        """
+        No address, no account — and specifically a field error on ``email``,
+        not a generic 400, because both clients render these per-field.
+        """
         resp = self.client.post(
             "/api/auth/register/",
             {"username": "alice", "password": PASSWORD},
             format="json",
         )
-        self.assertEqual(resp.status_code, 201)
-        self.assertEqual(User.objects.get(username="alice").email, "")
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("email", resp.json())
+        self.assertFalse(User.objects.filter(username="alice").exists())
+
+    def test_register_with_a_blank_email_is_rejected(self):
+        """
+        ``allow_blank=False`` matters as much as ``required``: both clients used
+        to send ``""`` for an untouched field, and a blank address is exactly as
+        unreachable as a missing one. Without this, the requirement would have
+        been satisfiable by every client that already existed.
+        """
+        resp = self.client.post(
+            "/api/auth/register/",
+            {"username": "alice", "password": PASSWORD, "email": ""},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("email", resp.json())
+        self.assertFalse(User.objects.filter(username="alice").exists())
 
     def test_register_with_email_stores_it(self):
         resp = self.client.post(
@@ -120,13 +153,40 @@ class MeEmailTest(TestCase):
         self.user.refresh_from_db()
         self.assertEqual(self.user.email, "Alice@example.com")
 
-    def test_patch_me_can_clear_email(self):
+    def test_patch_me_cannot_clear_email(self):
+        """
+        Blanking used to be allowed here and is now refused (ADR-003).
+
+        Letting a PATCH clear the address would walk an account into a state
+        the front door forbids, and it is the wrong tool for either thing a
+        user actually wants: "stop mailing me" is ``turn_reminder_emails`` on
+        this same endpoint, and "take my address out of your system" is DELETE
+        on it. Left in, it would also be a silent way to disarm the forfeit
+        clock's only warning.
+
+        ``required=False`` is untouched — a PATCH that only flips the reminder
+        preference must not have to resend the address — so this asserts the
+        *blank*, not the *absent*, case, and asserts the row is unchanged
+        afterwards rather than merely that the status was 400.
+        """
         self.user.email = "alice@example.com"
         self.user.save()
         resp = self.client.patch(ME_URL, {"email": ""}, format="json")
-        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("email", resp.json())
         self.user.refresh_from_db()
-        self.assertEqual(self.user.email, "")
+        self.assertEqual(self.user.email, "alice@example.com")
+
+    def test_patch_me_may_omit_email_entirely(self):
+        """The other half of the rule above: absent is fine, blank is not."""
+        self.user.email = "alice@example.com"
+        self.user.save()
+        resp = self.client.patch(
+            ME_URL, {"turn_reminder_emails": False}, format="json"
+        )
+        self.assertEqual(resp.status_code, 200, resp.json())
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.email, "alice@example.com")
 
     def test_patch_me_rejects_a_malformed_email(self):
         resp = self.client.patch(ME_URL, {"email": "nope"}, format="json")

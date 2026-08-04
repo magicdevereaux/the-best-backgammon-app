@@ -68,10 +68,19 @@ costume. ``now`` is likewise recomputed per row rather than frozen at
 ``handle()``, or a slow run's "you have 7h 12m left" would over-report by its
 own duration.
 
-Recipients can opt out: ``UserPreferences.turn_reminder_emails`` (default on,
-togglable at ``PATCH /api/auth/me/``) is honoured here, and every mail carries a
-footer saying so. An address is collected for password reset, not for game
-mail, so the opt-out is what makes sending this at all legitimate.
+**Only confirmed addresses are mailed.** ``EmailVerification.is_verified`` is
+checked per recipient, and it is what makes this command safe to point at a real
+provider (ADR-003): everything else in this app mails one person who just asked
+for it, whereas this is bulk, scheduled and unprompted, so every typo'd and
+abandoned address it hits comes back as a bounce or a spam complaint and takes
+the sending domain's reputation down with it — which lands the reminders in spam
+for the players who did confirm. Unverified accounts simply get no reminder,
+which is the state they were already in before this feature existed.
+
+Recipients can also opt out: ``UserPreferences.turn_reminder_emails`` (default
+on, togglable at ``PATCH /api/auth/me/``) is honoured here, and every mail
+carries a footer saying so. An address is collected for account recovery first
+and game mail second, so the opt-out is what makes sending this legitimate.
 
 Usage:
     python manage.py send_turn_reminders
@@ -89,7 +98,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db.models import F
 from django.utils import timezone
 
-from game.models import Game, UserPreferences
+from game.models import EmailVerification, Game, UserPreferences
 from game.views import build_game_url
 
 logger = logging.getLogger(__name__)
@@ -326,8 +335,20 @@ class Command(BaseCommand):
         in the meantime must not be mailed "move now or lose", nor should a
         countdown be quoted from a `now` that is minutes old.
         """
+        # The two verification rows are pulled in the same query: they are
+        # reverse one-to-ones, so without this each recipient check would be a
+        # second round trip per row, on a command whose whole shape is one row
+        # at a time. `preferences` is left alone deliberately — `reminders_enabled`
+        # catches DoesNotExist by design, and select_related on a missing reverse
+        # one-to-one is fine, but the two reads are one lookup apart and only one
+        # of them is on the path for every candidate.
         game = (
-            Game.objects.select_related("player1_user", "player2_user")
+            Game.objects.select_related(
+                "player1_user",
+                "player2_user",
+                "player1_user__email_verification",
+                "player2_user__email_verification",
+            )
             .filter(pk=game_id)
             .first()
         )
@@ -353,9 +374,24 @@ class Command(BaseCommand):
         seat = game.waiting_seat
         user = game.player1_user if seat == "p1" else game.player2_user
         if user is None or not (user.email or "").strip():
-            # A registered account with no address on file. Email is optional
-            # at registration on purpose (see RegisterSerializer), so this is
-            # an ordinary state, not an error.
+            # An account with no address on file. Email is required at
+            # registration now, but accounts predating that are not rewritten
+            # and a PATCH cannot blank one, so this is an ordinary state for an
+            # older account rather than an error.
+            return False
+
+        if not EmailVerification.is_verified(user):
+            # **The deliverability gate** (ADR-003), and the reason this command
+            # can be pointed at a real provider at all. This is the only thing
+            # in the app that mails in bulk, on a schedule, unprompted; sending
+            # it to addresses nobody has proven means bounces and spam
+            # complaints from every typo and every abandoned mailbox, and those
+            # sink the sending domain for the players who *did* confirm.
+            #
+            # Deliberately not stamped, for the same reason the opt-out below
+            # is not: the stamp means "already mailed for this turn", and
+            # recording a mail that never happened would silence the turn if the
+            # player confirmed their address a minute later.
             return False
 
         if not UserPreferences.reminders_enabled(user):

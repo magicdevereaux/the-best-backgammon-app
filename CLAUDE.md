@@ -62,6 +62,15 @@ now a **third** stay-in-sync pair: [`frontend/src/api/errors.js`](frontend/src/a
 and [`mobile/src/api/errors.js`](mobile/src/api/errors.js), which classify server
 error messages and must agree.
 
+A **fourth** pair is [`frontend/src/components/TurnReminderSettings.jsx`](frontend/src/components/TurnReminderSettings.jsx)
+and [`mobile/src/components/TurnReminderSection.jsx`](mobile/src/components/TurnReminderSection.jsx).
+This one is more than shared copy: both compute `deliverable = hasEmail &&
+emailVerified`, which is a mirror of the two preconditions `send_turn_reminders`
+checks before it will mail anyone. Either condition missing disables the toggle
+and explains *which* one is blocking, because a switch that silently does
+nothing is worse than no switch — and an unverified address is the dangerous
+case, since it looks like a working one on that screen.
+
 `canClaimTimeout` carries an extra rule: **it must never re-derive eligibility.**
 Whether a claim is possible at all (active game, no closed seat, no guest seat, a
 clock recorded) is decided *only* by the server returning a non-null
@@ -94,6 +103,13 @@ behaviours you can't read off that file:
   `.env`. See [ADR-002](docs/decisions/adr-002-inactivity-forfeit.md).
 - **`TURN_REMINDER_LEAD_HOURS` (default 12)** is how far ahead of that deadline
   `manage.py send_turn_reminders` warns the player on the clock. Also defaulted.
+- **`EMAIL_VERIFICATION_TIMEOUT_HOURS` (default 72)** is how long a verification
+  link stays good, and **`EMAIL_VERIFICATION_RESEND_COOLDOWN_SECONDS` (default
+  60)** is the smallest gap between two verification mails to one account. Both
+  defaulted. `EMAIL_VERIFICATION_SALT` is a fixed constant, deliberately *not*
+  env-driven — changing it invalidates every link already in flight, which is a
+  migration problem and not a knob. See
+  [ADR-003](docs/decisions/adr-003-email-verification.md).
 - **`ADMIN_URL` moves the Django admin off its predictable path**, defaulting to
   `"admin"` so dev still needs no `.env`. `env_url_path()` in
   [`settings.py`](backend/backgammon/settings.py) strips slashes and whitespace
@@ -119,11 +135,11 @@ Deploy target is **Railway** — runbook and its traps in
 
 | Suite | Count | Command (cwd) |
 |-------|-------|---------------|
-| Backend | **596** | `python manage.py test game` (`backend/`, in-memory DB) |
-| Web | **411** | `CI=true npm test -- --watchAll=false` (`frontend/`) |
-| Mobile | **292** | `CI=true npx jest` (`mobile/`) |
+| Backend | **646** | `python manage.py test game` (`backend/`, in-memory DB) |
+| Web | **445** | `CI=true npm test -- --watchAll=false` (`frontend/`) |
+| Mobile | **309** | `CI=true npx jest` (`mobile/`) |
 
-All three suites were **green as of 2026-08-03** (596 / 411 / 292, 1299 total, zero
+All three suites were **green as of 2026-08-03** (646 / 445 / 309, 1400 total, zero
 failures). If you see a failure, it is yours — the baseline is clean.
 
 > **Use `backend/venv/Scripts/python.exe`**, not bare `python` — the system
@@ -212,13 +228,39 @@ Board is `points[24]` (index = point − 1), plus `bar` and `off` counts per pla
   match point (`match.games.filter(crawford_game=True)` marks it already played).
 - **Stats are computed on read**, not stored — see `UserSerializer` in
   [`serializers.py`](backend/game/serializers.py).
-- **`UserPreferences` is the third app model**, and the only one hanging off
-  `User`. Auth uses Django's stock user model, so there is nowhere to add a
-  column without swapping it out from under six migrations of FKs — a
-  `OneToOneField` is the least invasive answer. **The row is optional and created
-  lazily** on the first PATCH that changes something, so *absence means "all
-  defaults"* and `UserPreferences.reminders_enabled(user)` is the single source
-  of truth that both the serializer and `send_turn_reminders` read.
+- **Email is required at registration, and verification gates exactly one
+  thing.** An account is fully usable while unverified — you can log in, play,
+  reset a password, everything — and the *only* capability behind confirmation
+  is turn-reminder mail. There is deliberately **no timed lockout** ("verify in
+  N days or you're locked"): that is a B2B SaaS convention, and against this
+  app's own 48-hour turn clock it would mean returning on day three to find your
+  account locked *and* your game forfeited. See
+  [ADR-003](docs/decisions/adr-003-email-verification.md). Verification uses
+  `django.core.signing` (stateless — no token table), **not** password reset's
+  `default_token_generator`: that generator hashes the password hash in to get
+  single-use semantics, which is right for a credential change and wrong for a
+  pending link that a password change should not silently kill. The address is
+  signed *into* the token, so a link mailed to one address can never confirm
+  another. `PATCH /api/auth/me/` may change an address but **may not blank it** —
+  registration requires one, and the two things a user actually wants there have
+  their own routes (`turn_reminder_emails` stops the mail, `DELETE` removes the
+  data).
+- **`UserPreferences` and `EmailVerification` are the two models hanging off
+  `User`**, and they share a convention worth learning once. Auth uses Django's
+  stock user model, so there is nowhere to add a column without swapping it out
+  from under six migrations of FKs — a `OneToOneField` is the least invasive
+  answer. **Both rows are optional and created lazily**, so *absence means
+  "defaults"*: all-defaults for preferences, unverified for email. Each exposes
+  one static reader that is the single source of truth —
+  `UserPreferences.reminders_enabled(user)` and `EmailVerification.is_verified(user)`
+  — and both the serializer and `send_turn_reminders` go through them rather
+  than touching the rows.
+- **`EmailVerification` stores *which address* was proven, not a boolean.**
+  `is_verified` compares `verified_email` to the account's live `user.email`, so
+  **changing your email un-verifies you automatically** — no signal, no hook,
+  nothing a future writer has to remember to call. A bare flag would stay True
+  after a PATCH moved the address and the next cron tick would mail an unproven
+  mailbox with the flag insisting it was fine.
   **Trap:** the serializer resolves it in `to_representation`, **not** with a DRF
   `default=`. DRF applies defaults on the way *in*, so a dotted source with no
   row serialises as `None` — and since both clients render this as a checkbox,
@@ -313,10 +355,22 @@ Board is `points[24]` (index = point − 1), plus `bar` and `off` counts per pla
   defaults, because a cron scheduled early would blast dead `localhost` links
   from a bogus sender. `--dry-run` still rehearses on defaults;
   `--allow-dev-defaults` is the escape hatch.
+  **Reminders only go to confirmed addresses** (ADR-003), which is the other
+  half of making that cron safe to schedule. `send_turn_reminders` checks
+  `EmailVerification.is_verified` per recipient and skips otherwise —
+  deliberately *without* stamping `turn_reminder_sent_at`, so confirming an
+  address a minute later still earns that turn's reminder. The reason is
+  deliverability, not security: this is the only bulk, scheduled, unprompted
+  sender in the app, and mailing typo'd or abandoned addresses earns the bounces
+  and spam complaints that sink a sending domain — which lands the reminders in
+  spam for the players who *did* confirm. **Verification therefore has to be
+  live before the first cron is scheduled**; you cannot un-burn a reputation.
+
   **Mobile push notifications still do not exist** — they need EAS credentials
   and a device-token system, so that gap is owner-blocked, not code-blocked. A
-  player with no email address on file still gets no warning at all, and
-  **email is optional at registration by design**, so that is a real state.
+  player whose address is missing or unconfirmed gets no warning at all. Email
+  is **required at registration** now, but accounts predating that are not
+  rewritten, so a blank address remains a real state.
 - **Throttle counters are per-process *unless* `REDIS_URL` is set.** `CACHES` is
   env-driven: a set `REDIS_URL` selects `RedisCache` and makes limits global,
   unset falls back to `LocMemCache`, which is per-gunicorn-worker and wiped on
@@ -390,3 +444,8 @@ These are intended but **do not exist in the code today** — don't assume them:
 - **Chat.** No chat feature exists anywhere.
 - **httpOnly cookie auth.** Auth is JWT **Bearer** tokens stored in `localStorage`
   (web) and `expo-secure-store` (mobile). Cookie-based sessions are not implemented.
+- **A mobile deep link for the verification email.** Same limitation as the reset
+  email above, and for the same reason: the link is built from
+  `FRONTEND_BASE_URL`, so `POST /api/auth/verify-email/confirm/` is only wired up
+  in the **web** client and a mobile user finishes verification in a browser.
+  Mobile implements the *resend* half only.

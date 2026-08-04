@@ -21,10 +21,12 @@ Related: [auth.md](auth.md) (token lifecycle), [data-model.md](data-model.md)
   only authentication class in
   [`settings.py`](../../backend/backgammon/settings.py)
   (`rest_framework_simplejwt.authentication.JWTAuthentication`).
-- **Default permission is `AllowAny`.** `/api/auth/me/` (`MeView` — `GET`,
-  `PATCH` and `DELETE`) is the *only* route with `IsAuthenticated`. Everything else
-  accepts anonymous requests —
-  guest play depends on it. Authorization for gameplay is per-action seat
+- **Default permission is `AllowAny`.** Exactly **two** routes carry
+  `IsAuthenticated`: `/api/auth/me/` (`MeView` — `GET`, `PATCH` and `DELETE`) and
+  `POST /api/auth/verify-email/resend/` (`EmailVerificationResendView`, which can
+  only ever mail the caller's own address). Everything else accepts anonymous
+  requests — guest play depends on it. Note the *confirm* half of email
+  verification is deliberately anonymous: the link is followed from a mailbox. Authorization for gameplay is per-action seat
   enforcement, not a permission class (see [Seat enforcement](#seat-enforcement)).
 - **Token lifetimes** (`SIMPLE_JWT`): access **1 hour**, refresh **7 days**.
   `ROTATE_REFRESH_TOKENS` and `BLACKLIST_AFTER_ROTATION` are both on, backed by
@@ -41,7 +43,8 @@ Related: [auth.md](auth.md) (token lifecycle), [data-model.md](data-model.md)
 - **Throttling is on.** DRF's `anon`/`user` rates apply globally
   (`120/min` / `240/min` by default), plus scoped rates on the auth views:
   `login` `10/hour`, `register` `5/hour`, `refresh` `60/hour`,
-  `password_reset` `5/hour`, `password_reset_confirm` `20/hour`. All rates are
+  `password_reset` `5/hour`, `password_reset_confirm` `20/hour`,
+  `email_verify_resend` `5/hour`, `email_verify_confirm` `20/hour`. All rates are
   env-overridable and are **disabled while running the test suite**. Over the
   limit → **429**.
 - **Ordering:** both `Game` and `Match` use `Meta.ordering = ["-created_at", "-id"]`,
@@ -61,6 +64,8 @@ Related: [auth.md](auth.md) (token lifecycle), [data-model.md](data-model.md)
 | `POST` | `/api/auth/refresh/` | none (refresh token in body) |
 | `POST` | `/api/auth/password-reset/` | none |
 | `POST` | `/api/auth/password-reset/confirm/` | none (uid + token in body) |
+| `POST` | `/api/auth/verify-email/confirm/` | none (signed token in body) |
+| `POST` | `/api/auth/verify-email/resend/` | **required** (no body) |
 | `GET` | `/api/auth/me/` | **required** |
 | `PATCH` | `/api/auth/me/` | **required** |
 | `DELETE` | `/api/auth/me/` | **required** (+ password in body) |
@@ -101,21 +106,41 @@ pair immediately** — no second login round-trip.
 |-------|------|----------|
 | `username` | string, ≤ 150 chars, unique | yes |
 | `password` | string, ≥ 8 chars (write-only) | yes |
-| `email` | string, valid address (blank allowed) | no |
+| `email` | string, valid address, **not blank** | **yes** |
 
-`email` is optional and **not** unique-checked — `User.email` has no unique
-constraint, and adding one would turn registration into an "is this address
-already registered?" oracle. Only the domain half is normalised
-(`normalise_email` → `BaseUserManager.normalize_email`), so all lookups elsewhere
-use `email__iexact`. Supplying an address is what buys the account password
-recovery; without one, `POST /api/auth/password-reset/` can never reach it.
+**`email` is required** ([ADR-003](../decisions/adr-003-email-verification.md)) —
+`required=True, allow_blank=False`, so both an omitted field and `""` are 400s.
+It was optional until 2026-08-03; the reasoning for the change is that *guest
+seats*, not a permissive registration form, are what carry play-without-an-account,
+and that the [inactivity forfeit](../decisions/adr-002-inactivity-forfeit.md) can
+now lose a player a game whose only warning channel is email.
 
-**201** → `{ "user": <UserSerializer>, "refresh": "<jwt>", "access": "<jwt>" }`
+It is still **not** unique-checked — `User.email` has no unique constraint, and
+adding one would turn registration into an "is this address already registered?"
+oracle. Only the domain half is normalised (`normalise_email` →
+`BaseUserManager.normalize_email`, so `A@Example.COM` is stored `A@example.com`),
+and all lookups elsewhere use `email__iexact`.
 
-**400** — username taken (`"Username already taken."`), password shorter than 8
-characters, or any failure from Django's `AUTH_PASSWORD_VALIDATORS`, which
-`RegisterSerializer.validate` runs explicitly (`create_user` does not) and
-re-raises keyed on `"password"` as a normal DRF field error.
+**Accounts created before the requirement are not rewritten and not locked out.**
+The serializer validates input; it does not audit the table. An older account
+with a blank address keeps working, and `email_verified` simply reads `false`.
+
+**A verification mail is sent here**, by `issue_email_verification` after
+`serializer.save()`. It cannot fail the request — `send_email_verification`
+swallows and logs mail-backend errors — and it does **not** gate the response:
+the token pair is minted and the account is immediately usable unverified. The
+only thing verification gates anywhere in the app is turn-reminder mail.
+
+**201** → `{ "user": <UserSerializer>, "refresh": "<jwt>", "access": "<jwt>" }`,
+with `user.email_verified` **`false`** (a link has been mailed, not followed).
+
+| Status | Trigger |
+|--------|---------|
+| 400 | `{"email": ["This field is required."]}` — omitted |
+| 400 | `{"email": ["This field may not be blank."]}` — sent as `""` |
+| 400 | `{"email": ["Enter a valid email address."]}` — malformed |
+| 400 | `{"username": ["Username already taken."]}` |
+| 400 | `{"password": [...]}` — under 8 chars, or any failure from Django's `AUTH_PASSWORD_VALIDATORS`, which `RegisterSerializer.validate` runs explicitly (`create_user` does not) and re-raises keyed on the field |
 
 ### `POST /api/auth/login/`
 
@@ -136,7 +161,8 @@ single-use.
 
 `MeView`, `IsAuthenticated`. Returns `UserSerializer` for the bearer's user.
 
-**200** → `id`, `username`, `email` (`""` when never set),
+**200** → `id`, `username`, `email` (`""` only on an account predating the
+registration requirement), `email_verified` (**bool**, see below),
 `turn_reminder_emails` (**bool**, see below), plus stats **computed
 on read** (never stored): `wins`, `losses`, `total_games`, `total_gammons`,
 `total_backgammons`, `total_points_won`, `total_points_lost`, `win_percentage`,
@@ -149,6 +175,27 @@ Excluding it from `total_games` too keeps `wins + losses == total_games`, which
 `winner`, so the same `total − wins` derivation scores it correctly on both
 sides, and no stats code changed to support it. It never counts as a
 gammon/backgammon, since those filter on `win_type`.
+
+#### `email_verified` — derived on read, never asserted
+
+Whether the address **currently** on the account has been proven, via
+`POST /api/auth/verify-email/confirm/`
+([ADR-003](../decisions/adr-003-email-verification.md)). **Read-only**: proof of
+an address is something you do to a mailbox, not something a `PATCH` body can
+claim, and the field is a `SerializerMethodField` over
+`EmailVerification.is_verified(user)`.
+
+It is `false` for an account with no `EmailVerification` row (absence means
+unverified — the same "optional row" convention as `UserPreferences`), and
+**`false` again the moment `PATCH` moves the address**, with nothing having to
+clear a flag: the model stores *which* address was proven and compares it to the
+live one on every read (case-folded), so an email change self-invalidates. See
+[data-model.md](data-model.md) and the ADR.
+
+**What it gates: only turn-reminder mail.** An unverified account logs in,
+plays, resets its password, edits its profile and deletes itself exactly like a
+verified one. Both clients use this field purely to decide whether to show a
+"confirm your address" prompt.
 
 #### `turn_reminder_emails` — always a real boolean
 
@@ -174,16 +221,36 @@ consent. See
 
 ### `PATCH /api/auth/me/`
 
-`MeView` + `UserSerializer`, `IsAuthenticated`. Sets or clears the bearer's own
-email address — the account's only route to password recovery, and the reason
-this exists: email is optional at registration, so an account created without
-one (or created before the field existed) would otherwise be permanently
-unrecoverable — and toggles the turn-reminder opt-out.
+`MeView` + `UserSerializer`, `IsAuthenticated`. Changes the bearer's own email
+address, and toggles the turn-reminder opt-out. Addresses change, and accounts
+created before email was required at registration have none at all — without
+this, password recovery and turn reminders would be permanently out of reach for
+exactly the users who need them.
 
 | Field | Type | Required |
 |-------|------|----------|
-| `email` | string, valid address | no — send `""` to **clear** it |
+| `email` | string, valid address, **not blank** | no — but `""` is a **400**, not a clear |
 | `turn_reminder_emails` | bool | no — `false` stops turn-reminder mail |
+
+**`email` can no longer be cleared** ([ADR-003](../decisions/adr-003-email-verification.md)).
+`allow_blank=False`, so `{"email": ""}` — which both clients used to send for an
+empty field — is rejected. Registration requires an address, so a `PATCH` that
+blanks one would let an account walk into a state the front door forbids, and it
+is the wrong tool for either thing a user actually wants: "stop mailing me" is
+`turn_reminder_emails`, and "remove my address from your system" is
+[`DELETE`](#delete-apiauthme) on this same endpoint, which removes all of it.
+`required=False` still holds, so a `PATCH` that only toggles reminders need not
+resend the address.
+
+**Changing the address un-verifies it and re-mails a confirmation link.**
+`email_verified` in the response is already `false` — nothing clears a flag; the
+stored proven address no longer matches ([above](#email_verified--derived-on-read-never-asserted)).
+`MeView.perform_update` compares the pre-`save()` value case-folded, so
+re-typing your own address in different case is **not** treated as a change and
+sends no mail. A genuine change calls `issue_email_verification`, which is capped
+by the per-account cool-down (`EMAIL_VERIFICATION_RESEND_COOLDOWN_SECONDS`,
+default 60s) rather than by a throttle scope on this view — a scope here would
+also throttle `GET`, which both clients call routinely.
 
 **`email` and `turn_reminder_emails` are the only writable fields on
 `UserSerializer`.** `username` is in
@@ -205,6 +272,7 @@ row is therefore a normal, supported first write, not an error.
 | Status | Trigger |
 |--------|---------|
 | 400 | `{"email": ["Enter a valid email address."]}` — malformed address |
+| 400 | `{"email": ["This field may not be blank."]}` — `""`; use `turn_reminder_emails` or `DELETE` instead |
 | 400 | `{"turn_reminder_emails": ["Must be a valid boolean."]}` — non-boolean value |
 | 401 | missing/invalid bearer token |
 
@@ -283,14 +351,18 @@ link) — and defaults to `http://localhost:3000`. With `EMAIL_HOST` unset Djang
 **console** backend prints the mail to stdout, so the whole flow works in dev
 with no `.env` and no mail provider.
 
-This is no longer the app's only outbound mail: `manage.py send_turn_reminders`
-([railway-deploy.md step 8](../operations/railway-deploy.md#8-schedule-the-turn-reminder-cron))
-sends a turn reminder through the same `EMAIL_*` configuration. It is the only
-other one, it carries no token or credential, and it is dormant until a cron
-schedules it. Unlike the reset — which is only ever sent because the recipient
-just asked for it — the reminder is unsolicited, so it has an opt-out
-(`turn_reminder_emails`, [above](#turn_reminder_emails--always-a-real-boolean))
-and every message carries a footer naming that setting.
+**There are three kinds of outbound mail now**, all through the same `EMAIL_*`
+configuration: this reset link, the
+[verification link](#post-apiauthverify-emailconfirm), and the turn reminder
+`manage.py send_turn_reminders` sends
+([railway-deploy.md step 8](../operations/railway-deploy.md#8-schedule-the-turn-reminder-cron)).
+Only the reset carries a credential. The reminder is the only one that is
+**unsolicited** — the other two are sent because the recipient just asked, or
+just registered — which is why it alone has an opt-out
+(`turn_reminder_emails`, [above](#turn_reminder_emails--always-a-real-boolean),
+named in a footer on every message) and why it alone requires a **verified**
+address ([ADR-003](../decisions/adr-003-email-verification.md)). It is still
+dormant until a cron schedules it.
 
 Django's HTML `PasswordResetView` is deliberately not used: this project has no
 session login, no templates and no server-rendered pages, so the HTML flow would
@@ -322,7 +394,7 @@ expiring by hand.
 
 | Status | Trigger |
 |--------|---------|
-| 400 | `{"token": "This password reset link is invalid or has expired."}` — bad/garbage uid, tampered token, uid+token from different users, an expired token, or a token already used |
+| 400 | `{"token": ["This password reset link is invalid or has expired."]}` — bad/garbage uid, tampered token, uid+token from different users, an expired token, or a token already used |
 | 400 | `{"new_password": [...]}` — under 8 chars, or any `AUTH_PASSWORD_VALIDATORS` failure (too common, all-numeric, too similar to the username) |
 
 A bad uid and a bad token are **indistinguishable** in the error response —
@@ -341,10 +413,106 @@ confirm half — which is why `FRONTEND_BASE_URL` points at the web origin from 
 |---|---|---|
 | Ask for a link | `/forgot-password` ([`ForgotPasswordPage.jsx`](../../frontend/src/pages/ForgotPasswordPage.jsx)), linked from the login page | `app/login.jsx`'s third mode (`"reset"`), reached from the sign-in screen |
 | Follow the link | `/reset-password/:uid/:token` ([`ResetPasswordPage.jsx`](../../frontend/src/pages/ResetPasswordPage.jsx)) — the exact shape `build_password_reset_url` emits | none; the emailed link opens in the browser, and the screen says so |
-| Set the address | optional `email` field on register, editable later on the profile ([`EmailSettings.jsx`](../../frontend/src/components/EmailSettings.jsx) / [`EmailSection.jsx`](../../mobile/src/components/EmailSection.jsx) via `PATCH /api/auth/me/`) | same |
+| Set the address | **required** `email` field on register, editable later on the profile ([`EmailSettings.jsx`](../../frontend/src/components/EmailSettings.jsx) / [`EmailSection.jsx`](../../mobile/src/components/EmailSection.jsx) via `PATCH /api/auth/me/`) | same |
 
 Both render the server's flat "if an account with that email exists…" reply verbatim
 and never branch on hit-vs-miss — there is no such distinction to render.
+
+### `POST /api/auth/verify-email/confirm/`
+
+`EmailVerificationConfirmView` + `EmailVerificationConfirmSerializer`.
+**Unauthenticated** — the link is followed from a mail client, possibly on a
+device that never logged in, and the token already proves the only thing this
+endpoint cares about. Marks the account's *current* address proven
+([ADR-003](../decisions/adr-003-email-verification.md)).
+
+| Field | Type | Required |
+|-------|------|----------|
+| `token` | string — the signed token from the emailed link | yes |
+
+**200** → `{"detail": "Your email address is confirmed.", "email": "<address>",
+"email_verified": true}`
+
+**Idempotent.** Following the same link twice is completely ordinary — mail
+clients prefetch, people double-click — so the second call is another **200**,
+not an error. Telling a user their verification failed at the exact moment it had
+already worked would be worse than useless.
+
+**The token is signed, not stored.** `django.core.signing.dumps` over
+`{"uid", "email"}` with `settings.EMAIL_VERIFICATION_SALT`, expiring via
+`loads(max_age=...)` against `EMAIL_VERIFICATION_TIMEOUT_HOURS` (**default 72**).
+There is no token table to write, expire or clean up. It deliberately does **not**
+use password reset's `default_token_generator`: that generator hashes the user's
+password hash into the token to get single-use semantics, which is right for a
+token that changes a credential and wrong for a pending verification link that a
+password change should not silently kill.
+
+**The address is inside the signature.** Request a link for `a@x.com`, `PATCH`
+the account to `b@y.com`, then follow the old link: the token verifies (it is
+genuinely ours and unexpired) but names an address the account no longer holds,
+so it is refused rather than marking `b@y.com` proven on the strength of mail
+sent to `a@x.com`.
+
+| Status | Trigger |
+|--------|---------|
+| 400 | `{"token": ["This verification link is invalid or has expired."]}` — garbage, tampered, expired, signed for a since-deleted account, or naming an address the account no longer holds |
+| 400 | `{"token": ["This field is required."]}` — token omitted |
+| 429 | over the `email_verify_confirm` scope (**20/hour**) |
+
+**Expired, forged and wrong-account are one flat message, deliberately.** They
+are all "this link is no good, get another one" to the person reading it, and
+splitting them tells a prober which of their guesses was structurally valid —
+the same reasoning as the reset confirm
+([above](#post-apiauthpassword-resetconfirm)).
+
+**Nothing is blacklisted here**, unlike the reset confirm: no credential changed,
+so there is no session to invalidate. The response carries no tokens and grants
+no session — a caller who was logged out stays logged out.
+
+The emailed link is `{FRONTEND_BASE_URL}/verify-email/{token}`
+(`build_email_verification_url`), built from the same setting and in the same
+shape as `build_password_reset_url`. **It points at the web client**, so a mobile
+user finishes verification in a browser
+([auth.md](auth.md#email-verification)).
+
+### `POST /api/auth/verify-email/resend/`
+
+`EmailVerificationResendView` (a plain `APIView` — there is no request body to
+deserialise), **`IsAuthenticated`**. Sends another confirmation link to the
+caller's own address. No body.
+
+**Authentication is what makes this endpoint simple.** It can only ever mail the
+address on the caller's own account, so unlike
+[`password-reset`](#post-apiauthpassword-reset) it has no enumeration problem and
+no third party to protect — hence a truthful, branching response rather than a
+flat one.
+
+| Status | Body | Trigger |
+|--------|------|---------|
+| 200 | `{"detail": "Confirmation email sent.", "email_verified": false}` | a mail was handed to the backend |
+| 200 | `{"detail": "Your email address is already confirmed.", "email_verified": true}` | already verified — **not** an error (see below) |
+| 400 | `{"detail": "Add an email address to your account first."}` | the account has no address (only possible on an account predating the registration requirement) |
+| 401 | `{"detail": "Authentication credentials were not provided."}` | missing/invalid bearer token |
+| 429 | `{"detail": "A confirmation email was just sent. Check your inbox and spam folder, then try again in a minute."}` | inside the per-account cool-down |
+| 429 | DRF's own throttle body | over the `email_verify_resend` scope (**5/hour**) |
+
+**An already-verified account gets a 200, not a 4xx.** A user who clicks Resend
+after the link already worked in another tab has done nothing wrong, and an error
+there would suggest their verified account is not verified.
+
+**Two independent limits, and both 429.** The `email_verify_resend` scope
+(5/hour) and `EmailVerification.last_sent_at` (**default 60s**, from
+`EMAIL_VERIFICATION_RESEND_COOLDOWN_SECONDS`). The row-level cool-down is not
+redundant: throttle counters live in `CACHES`, which is `LocMemCache` **per
+gunicorn worker** unless `REDIS_URL` is set, so on the deployment as configured
+today the scope is not actually a global limit. Note the two 429s have different
+bodies — the cool-down's is the app's own message, the throttle's is DRF's.
+
+**`last_sent_at` is stamped before the send, and stays stamped on failure.**
+`issue_email_verification` claims first and mails second, the same ordering
+`send_turn_reminders` uses: a provider can accept a message and *then* error, so
+treating a failure as "nothing was sent" would turn a retry into a way to flood
+an inbox. Trade-off, deliberately: at most one lost mail, never a duplicate.
 
 ---
 
@@ -1069,14 +1237,18 @@ Not in the code today — do not assume them:
   It is inert until a platform cron invokes it.
 - **Push notifications.** The reminder above is email only. There is no device
   token, no APNs/FCM registration and no notification endpoint anywhere in the
-  tree, so a player with no address on file is still told nothing.
+  tree, so a player who has not **confirmed** their address is still told nothing
+  ([ADR-003](../decisions/adr-003-email-verification.md) — an address is now
+  required at registration, but only a verified one is mailed).
 - **Live chess-style clocks.** `turn_deadline` is a single per-turn deadline.
   There is no reserve time, no Fischer/Bronstein increment, no per-player
   accumulated-time field, and no clock mode at game creation — deferred until
   presence exists ([ADR-002](../decisions/adr-002-inactivity-forfeit.md)).
-- **A mobile reset-confirm screen.** Mobile can *request* a reset link, but the
-  emailed link is a web URL and opens in the browser; there is no
-  `backgammon://reset-password/...` deep-link route.
+- **Mobile deep links for either emailed link.** Both the reset link and the
+  verification link are built from `FRONTEND_BASE_URL` — the **web** origin — so
+  a mobile user who taps either finishes in a browser. There is no
+  `backgammon://reset-password/...` or `backgammon://verify-email/...` route, and
+  `FRONTEND_BASE_URL` is a single value with nowhere to put a second one.
 - **Chat.** No endpoint exists.
 - **A logout endpoint.** The blacklist app *is* installed and is used by refresh
   rotation and by account deletion, but no route revokes a token on demand —

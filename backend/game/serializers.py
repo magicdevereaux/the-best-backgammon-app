@@ -1,13 +1,17 @@
+from datetime import timedelta
+
+from django.conf import settings
 from django.contrib.auth import password_validation
 from django.contrib.auth.models import User
 from django.contrib.auth.tokens import default_token_generator
+from django.core import signing
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db.models import Sum
 from django.utils import timezone
 from django.utils.http import urlsafe_base64_decode
 from rest_framework import serializers
 
-from .models import Game, Match, UserPreferences
+from .models import EmailVerification, Game, Match, UserPreferences
 
 
 def normalise_email(value):
@@ -162,11 +166,26 @@ class MatchSerializer(serializers.ModelSerializer):
 
 
 class UserSerializer(serializers.ModelSerializer):
-    # Optional, and writable via PATCH /api/auth/me/ — an address is the only
-    # way to recover a forgotten password, but requiring one would lock out
-    # every account registered before this field existed and would tax the
-    # guest-friendly "pick a name, start playing" path this app is built around.
-    email = serializers.EmailField(required=False, allow_blank=True)
+    # Writable via PATCH /api/auth/me/, and **not blankable** (ADR-003).
+    # Registration requires an address, so allowing a PATCH to clear one would
+    # let an account walk into a state the front door forbids — and it would be
+    # the wrong tool for both things a user actually wants there. "Stop mailing
+    # me" is `turn_reminder_emails`, right below. "Remove my address from your
+    # system" is DELETE on this same endpoint, which removes all of it.
+    #
+    # `required=False` still: a PATCH that only toggles reminders must not have
+    # to resend the address. Accounts predating the requirement keep their blank
+    # address until they set one; nothing here rewrites them.
+    email = serializers.EmailField(required=False, allow_blank=False)
+
+    # Read-only: proof of the address is something you do to a mailbox, not
+    # something you can assert in a PATCH body. Set by
+    # POST /api/auth/verify-email/confirm/ and nowhere else.
+    #
+    # Resolved through `EmailVerification.is_verified`, which compares the proven
+    # address to the live one — so this flips back to False on its own the moment
+    # a PATCH above moves the email somewhere new.
+    email_verified = serializers.SerializerMethodField()
 
     # Turn-reminder mail opt-out. Writable, like `email`, and through the same
     # endpoint — `PATCH /api/auth/me/ {"turn_reminder_emails": false}` is the
@@ -195,7 +214,7 @@ class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = [
-            "id", "username", "email", "turn_reminder_emails",
+            "id", "username", "email", "email_verified", "turn_reminder_emails",
             "wins", "losses", "total_games",
             "total_gammons", "total_backgammons",
             "total_points_won", "total_points_lost",
@@ -209,6 +228,9 @@ class UserSerializer(serializers.ModelSerializer):
 
     def validate_email(self, value):
         return normalise_email(value)
+
+    def get_email_verified(self, obj):
+        return EmailVerification.is_verified(obj)
 
     def to_representation(self, instance):
         """
@@ -358,16 +380,27 @@ class AccountDeleteSerializer(serializers.Serializer):
 class RegisterSerializer(serializers.Serializer):
     username = serializers.CharField(max_length=150)
     password = serializers.CharField(write_only=True, min_length=8)
-    # Optional on purpose: registration with username + password alone must keep
-    # working byte-for-byte as it always has. Supplying an address is what buys
-    # you password recovery — and, because account deletion re-checks the
-    # password, self-service deletion after a forgotten one.
+    # **Required** (ADR-003). It was optional for most of this app's life, on the
+    # reasoning that requiring one would tax the guest-friendly "pick a name,
+    # start playing" path. That path is now served properly by *guest seats* —
+    # you need no account at all to play locally or hotseat — so the argument no
+    # longer reaches registration. What an account is *for* is online play, and
+    # online play has a 48-hour forfeit clock whose only warning is email: an
+    # optional address means shipping a mechanic that loses you games with an
+    # opt-out-by-omission notification layer.
+    #
+    # `allow_blank=False` matters as much as `required`: both clients previously
+    # sent "" for an empty field, and a blank address is exactly as unreachable
+    # as a missing one.
     #
     # Not unique-checked: Django's `User.email` has no unique constraint, and
     # adding one here would both need a migration and turn registration into an
     # "is this address already registered?" oracle. A shared address simply
     # means the reset flow mails every account that uses it.
-    email = serializers.EmailField(required=False, allow_blank=True)
+    #
+    # Accounts created *before* this became required keep working untouched —
+    # this validates input, it does not audit the table.
+    email = serializers.EmailField(required=True, allow_blank=False)
 
     def validate_username(self, value):
         if User.objects.filter(username=value).exists():
@@ -478,4 +511,83 @@ class PasswordResetConfirmSerializer(serializers.Serializer):
         user = self.validated_data["user"]
         user.set_password(self.validated_data["new_password"])
         user.save(update_fields=["password"])
+        return user
+
+
+class EmailVerificationConfirmSerializer(serializers.Serializer):
+    """
+    Input for ``POST /api/auth/verify-email/confirm/`` — ``{"token": "..."}``.
+
+    **Signed, not stored.** The token is ``django.core.signing.dumps`` over
+    ``{"uid", "email"}`` with its own salt, so there is no token table to write,
+    expire or clean up, and the expiry is enforced by ``loads(max_age=...)``.
+    Password reset uses ``default_token_generator`` instead, and the difference
+    is deliberate: that generator hashes the user's password hash into the token
+    to get single-use semantics, which is exactly what you want for a token that
+    *changes a credential* — and exactly wrong here, where a user who changes
+    their password mid-flight should not have their pending verification link
+    silently stop working.
+
+    **The address is inside the signature**, which is what makes the flow safe
+    against a change of mind. Request a link for ``a@x.com``, then PATCH the
+    account to ``b@y.com``, then click the old link: the token verifies (it is
+    genuinely ours, and unexpired) but names an address the account no longer
+    holds, so it is refused rather than marking ``b@y.com`` proven on the
+    strength of mail sent to ``a@x.com``.
+
+    Unauthenticated on purpose. The link is followed from a mail client, quite
+    possibly on a device that never logged in — requiring a session would make
+    the common case fail, and the token already proves the only thing this
+    endpoint cares about.
+
+    Errors are deliberately one flat message. "Expired" and "forged" and "wrong
+    account" are all "this link is no good, get another one" to the person
+    reading it, and splitting them tells a prober which of their guesses was
+    structurally valid.
+    """
+
+    token = serializers.CharField()
+
+    INVALID = "This verification link is invalid or has expired."
+
+    def validate(self, attrs):
+        try:
+            payload = signing.loads(
+                attrs["token"],
+                salt=settings.EMAIL_VERIFICATION_SALT,
+                max_age=timedelta(hours=settings.EMAIL_VERIFICATION_TIMEOUT_HOURS),
+            )
+        except signing.BadSignature:
+            # Covers SignatureExpired too — it is a subclass.
+            raise serializers.ValidationError({"token": self.INVALID})
+
+        if not isinstance(payload, dict):
+            raise serializers.ValidationError({"token": self.INVALID})
+
+        user = User.objects.filter(pk=payload.get("uid")).first()
+        if user is None:
+            # Account deleted since the mail went out.
+            raise serializers.ValidationError({"token": self.INVALID})
+
+        signed_email = (payload.get("email") or "").strip()
+        current_email = (user.email or "").strip()
+        if not signed_email or signed_email.casefold() != current_email.casefold():
+            raise serializers.ValidationError({"token": self.INVALID})
+
+        attrs["user"] = user
+        attrs["email"] = current_email
+        return attrs
+
+    def save(self, **kwargs):
+        """
+        Mark the address proven. Idempotent — following the same link twice is
+        completely ordinary (mail clients prefetch, people double-click), and the
+        second call must be a success, not an error, or the user is told their
+        verification failed at the exact moment it had already worked.
+        """
+        user = self.validated_data["user"]
+        row = EmailVerification.for_user(user)
+        row.verified_email = self.validated_data["email"]
+        row.verified_at = timezone.now()
+        row.save(update_fields=["verified_email", "verified_at", "updated_at"])
         return user

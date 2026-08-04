@@ -61,6 +61,19 @@ describe("request() auth behaviour", () => {
     );
   });
 
+  test("tags the thrown error with the HTTP status", async () => {
+    // Some refusals are not failures — the verify-email resend's 60s cool-down
+    // 429 means a mail is already in flight — and the message alone can't say
+    // which is which without regex-sniffing the server's wording.
+    fetch.mockReturnValueOnce(
+      mockResponse({ detail: "A confirmation email was just sent." }, { ok: false, status: 429 })
+    );
+    await expect(request("/api/auth/verify-email/resend/", { method: "POST" })).rejects.toMatchObject({
+      message: "A confirmation email was just sent.",
+      status: 429,
+    });
+  });
+
   test("falls back to the status code when the body carries no message", async () => {
     fetch.mockReturnValueOnce(mockResponse(null, { ok: false, status: 500 }));
     await expect(request("/api/games/")).rejects.toThrow("API error: 500");

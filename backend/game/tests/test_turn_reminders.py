@@ -29,6 +29,14 @@ which makes two properties load-bearing and both are pinned here:
   must refuse rather than blast localhost links. See ``OptOutTest`` and
   ``DevDefaultsTest``.
 
+  **Only to confirmed addresses.** This command is the app's entire bulk sender,
+  so an unconfirmed address here is a bounce, and enough bounces sink the
+  sending domain for everybody (ADR-003). ``make_user`` below therefore mints a
+  *verified* account, because that is the state every test in this module is
+  about — the skip itself, and the fact that it does not burn the turn's
+  reminder, belong to ``test_email_verification.RemindersRequireVerificationTest``
+  and are asserted there rather than duplicated here.
+
 Mail lands in ``django.core.mail.outbox`` — the test runner swaps in the locmem
 backend, so nothing here needs (or touches) real mail configuration. It does
 *not* swap the two settings above, which still hold their dev defaults under
@@ -52,7 +60,7 @@ from rest_framework.test import APIClient
 
 from game.game_logic import get_initial_board_state
 from game.management.commands.send_turn_reminders import Command
-from game.models import Game, UserPreferences
+from game.models import EmailVerification, Game, UserPreferences
 
 
 PASSWORD = "securepass123"
@@ -72,12 +80,43 @@ INSIDE_WINDOW_HOURS = 40
 OUTSIDE_WINDOW_HOURS = 1
 
 
+def verify(user):
+    """
+    Stamp ``user``'s current address as confirmed.
+
+    Written directly rather than driven through
+    ``POST /api/auth/verify-email/confirm/`` on purpose: this module is about
+    the reminder command, and routing every fixture through a second endpoint
+    would make a bug in *that* endpoint fail thirty tests over here with a
+    misleading message. The confirm flow has its own module.
+
+    ``verified_email`` must be the live address, not merely a timestamp —
+    ``EmailVerification.is_verified`` compares the two, which is what makes an
+    email change self-invalidating.
+    """
+    row = EmailVerification.for_user(user)
+    row.verified_email = (user.email or "").strip()
+    row.verified_at = timezone.now()
+    row.save(update_fields=["verified_email", "verified_at", "updated_at"])
+    return user
+
+
 def make_user(username, email=None):
-    return User.objects.create_user(
+    """
+    A registered player with a **confirmed** address, which is the ordinary
+    state of an account that can receive turn reminders at all.
+
+    Callers that pass an empty ``email`` still get a row stamped against that
+    empty string, and ``is_verified`` answers False for it — an address-less
+    account is unverifiable by construction, so the two cases stay distinct
+    without the fixture needing a second flag.
+    """
+    user = User.objects.create_user(
         username=username,
         password=PASSWORD,
         email=f"{username}@example.com" if email is None else email,
     )
+    return verify(user)
 
 
 def auth(username):

@@ -52,7 +52,17 @@ export async function request(path, options = {}) {
       (data && (data.error || data.detail)) ||
       firstFieldError(data) ||
       `API error: ${res.status}`;
-    throw new Error(message);
+    const err = new Error(message);
+    // The status is carried on the Error as well as the sentence, because a few
+    // callers need to know *which kind* of refusal this was and the message
+    // alone can't tell them. The verify-email resend is the live case: its 60s
+    // cool-down 429 means "a confirmation mail is already on its way", which is
+    // a notice rather than a failure, while its 400 genuinely is one. Without
+    // this the only way to tell them apart is regex-sniffing the server's
+    // wording — see api/errors.js for how brittle that gets where it's
+    // unavoidable. Purely additive: nothing that only reads `.message` changes.
+    err.status = res.status;
+    throw err;
   }
   return data;
 }

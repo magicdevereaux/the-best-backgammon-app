@@ -123,12 +123,20 @@ export default function LoginScreen() {
           onChangeText={setPassword}
           style={styles.input}
         />
-        {/* Optional on purpose: an account with no email simply has no password
-            recovery, which is the trade guests are allowed to make. */}
+        {/* Required, and worth being plain about why. The two things an address
+            buys are both things you lose *silently* without one: the password
+            reset link, and the turn reminder that is the only warning before an
+            online game is forfeited on its 48-hour clock. Nothing is deliberately
+            left to the server here — `register()` always sends the field, so a
+            blank one is refused in the server's own words rather than by a
+            client-side rule that could drift from it. Anyone who would rather not
+            hand over an address still has "Continue as guest" below, which needs
+            no account at all — that, not an address-less account, is the
+            guest-friendly path. */}
         {mode === "register" && (
           <>
             <TextInput
-              placeholder="Email (optional)"
+              placeholder="Email address"
               placeholderTextColor={colors.textMuted}
               autoCapitalize="none"
               autoCorrect={false}
@@ -138,8 +146,10 @@ export default function LoginScreen() {
               style={styles.input}
             />
             <Text style={styles.help}>
-              Optional. Without an email address we can't send you a password
-              reset link — you can add one later from your profile.
+              Required. It's how we send you a password reset link, and how we
+              warn you when an online game is close to being forfeited on its
+              48-hour clock — without it, both happen silently. You can play
+              without an account at all: tap "Continue as guest" below.
             </Text>
           </>
         )}

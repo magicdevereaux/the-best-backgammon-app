@@ -15,9 +15,10 @@ at `[TODO: contact email address]`.
 
 ## Short version
 
-- We collect a **username and password**, and an **email address only if you
-  choose to give us one** — it is optional, and used only for two things: sending
-  you a password-reset link, and reminding you when a game is waiting on your
+- We collect a **username and password**, and an **email address**, which is
+  required to register — used only for three things: confirming the address
+  itself, sending you a password-reset link, and reminding you when a game is
+  waiting on your
   move. We do not ask for your phone number, real name, or date of birth.
 - **You can play without giving us an email address at all**, and everything
   except password recovery and those reminders works the same way.
@@ -46,15 +47,20 @@ When you register an account, we store:
 | Username | Chosen by you. Shown to your opponents. |
 | Password | Stored only as a salted **hash** (Django's default password hasher). We cannot read your password. |
 | Account creation date | Recorded automatically when the account is created. |
-| Email address | **Optional.** Only stored if you choose to supply one, at registration or later from your profile. Never shown to other players. |
+| Email address | **Required to register**, and changeable later from your profile. Never shown to other players. You can play without giving us one at all by using hotseat or guest seats, which need no account. Accounts created before we required an address may still have none. |
+| Email confirmation | Whether you have confirmed your address, when you confirmed it, which address you confirmed, and when we last sent you a confirmation link. Used only to decide whether we may send you turn reminders. |
 | Email preferences | Whether you want turn-reminder emails. Stored only once you change it — until then we simply treat it as "on", the default. |
 
-An email address is used for exactly two things, both about your own account and
+An email address is used for exactly three things, all about your own account and
 your own games:
 
-1. **Password reset** — sending you a reset link when you ask for one. We only
+1. **Confirming the address** — one link, sent when you register and again if you
+   change your address or ask us to resend it. Confirming is what lets us send
+   you turn reminders; nothing else about your account depends on it, and you can
+   play normally without ever confirming.
+2. **Password reset** — sending you a reset link when you ask for one. We only
    ever send this because you asked for it.
-2. **Turn reminders** — telling you that a game is waiting on you and roughly how
+3. **Turn reminders** — only ever to a **confirmed** address, and telling you that a game is waiting on you and roughly how
    long you have left to play before your opponent can claim the win. **At most
    one such message per turn**, only for games you are actually playing, and only
    when your time to move is genuinely running low. You did not ask for these
@@ -154,12 +160,11 @@ the code, not policy promises:
   we hold no payment or billing information.
 - **No chat or messaging.** The app has no chat feature, so there are no
   messages to store.
-- **No phone numbers.** (An email address is collected only if you volunteer
-  one, and only to send password-reset links and turn reminders — see "Account
-  information" above.)
-- **No marketing email, no newsletter, and no mailing list.** The only two
-  messages we ever send are the two described above, and one of them is
-  switchable.
+- **No phone numbers.** (An email address is collected to confirm the address,
+  send password-reset links and send turn reminders — see "Account information"
+  above.)
+- **No marketing email, no newsletter, and no mailing list.** The only messages
+  we ever send are the three described above, and one of them is switchable.
 - **No cross-app or cross-site tracking**, and no data brokers.
 
 ## How we use what we collect
@@ -170,10 +175,12 @@ We use your data only to run the game:
 2. To run and save your games and matches so you can come back to them, and so
    your opponent sees your moves.
 3. To calculate your statistics.
-4. To send you a password-reset link, if you asked for one and have an email
+4. To send you a link confirming your email address — when you register, when
+   you change the address, and when you ask us to send another.
+5. To send you a password-reset link, if you asked for one and have an email
    address on file.
-5. To email you a turn reminder when a game is waiting on your move and your time
-   to play it is running out — if you have an email address on file and have not
+6. To email you a turn reminder when a game is waiting on your move and your time
+   to play it is running out — if you have **confirmed** your address and have not
    switched reminders off. At most one message per turn.
 
    We send no other mail. In particular we do not email you about other people's
@@ -263,9 +270,14 @@ or UK representative if one is required of you.]`
 
 - You can play the App **without an account** using hotseat and guest seats.
   Guest seats are not linked to any identity.
-- You can play a registered account **without giving us an email address**. The
-  address is optional at registration and can be added or removed later from your
-  profile.
+- You can play **without giving us an email address** by using hotseat or guest
+  seats, which need no account at all. A registered account does require an
+  address, and you can change it later from your profile — but you cannot blank
+  it, because registration requires one. If you want the address gone, delete the
+  account (see below), which removes it along with everything else. If you only
+  want the mail to stop, switch off turn reminders.
+- You can leave your address **unconfirmed** indefinitely. Nothing is locked or
+  taken away; the only consequence is that we will not send you turn reminders.
 - You can **switch off turn-reminder emails** from your profile at any time, from
   either app. See
   [Turn reminders, and how to switch them off](#turn-reminders-and-how-to-switch-them-off).

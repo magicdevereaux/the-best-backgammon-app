@@ -280,9 +280,16 @@ class RegisterPasswordValidationTest(TestCase):
         self.client = APIClient()
 
     def _register(self, username, password):
+        # An address is required at registration (ADR-003); supplied here so the
+        # only thing left for the endpoint to object to is the password, which
+        # is what this class is about.
         return self.client.post(
             "/api/auth/register/",
-            {"username": username, "password": password},
+            {
+                "username": username,
+                "password": password,
+                "email": f"{username}@example.com",
+            },
             format="json",
         )
 
@@ -496,14 +503,22 @@ class RegisterThrottleTest(TestCase):
         for i in range(2):
             res = self.client.post(
                 "/api/auth/register/",
-                {"username": f"user{i}", "password": "quiet-harbour-97"},
+                {
+                    "username": f"user{i}",
+                    "password": "quiet-harbour-97",
+                    "email": f"user{i}@example.com",
+                },
                 format="json",
             )
             self.assertEqual(res.status_code, 201)
 
         res = self.client.post(
             "/api/auth/register/",
-            {"username": "user99", "password": "quiet-harbour-97"},
+            {
+                "username": "user99",
+                "password": "quiet-harbour-97",
+                "email": "user99@example.com",
+            },
             format="json",
         )
         self.assertEqual(res.status_code, 429)

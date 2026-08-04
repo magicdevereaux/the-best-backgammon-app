@@ -6,17 +6,29 @@ import { setTokens, clearTokens, getAccessToken } from "./tokenStore";
 // persist the returned JWT pair to SecureStore.
 
 /**
- * Create an account. `email` is optional by design — an address is what buys
- * the account password recovery, but requiring one would shut out the
- * guest-friendly path the whole app is built around. Omitted entirely from the
- * body when blank rather than sent as "", so the request stays byte-identical
- * to the no-email registration it always was.
+ * Create an account. `email` is **required** as of ADR-003: the server rejects a
+ * missing or blank address with `{"email": ["This field is required."]}`.
+ *
+ * It used to be optional, on the reasoning that requiring an address would shut
+ * out the guest-friendly path the app is built around. That reasoning was wrong
+ * about *which* path is the guest-friendly one — guest play needs no account at
+ * all, so nobody has to register to play. What an account without an address
+ * actually got was a permanently unrecoverable password and no turn reminders,
+ * the reminder mail being the only warning a player gets before a game is
+ * forfeited on its 48-hour inactivity clock. Both losses are silent, which is
+ * the worst way to lose something.
+ *
+ * Nothing is gated on *verifying* the address — an unconfirmed account plays
+ * exactly like a confirmed one — so this asks for a way to reach the player, not
+ * for proof of anything.
+ *
+ * The field is sent unconditionally, even when blank, so the required-field
+ * refusal is the server's own message rather than a client-side guess at the
+ * same rule that could drift from it.
  */
 export async function register(username, password, email) {
   assertApiConfigured();
-  const trimmedEmail = (email || "").trim();
-  const body = { username, password };
-  if (trimmedEmail) body.email = trimmedEmail;
+  const body = { username, password, email: (email || "").trim() };
 
   const res = await fetch(`${API_BASE_URL}/api/auth/register/`, {
     method: "POST",
@@ -61,15 +73,24 @@ export async function fetchMe() {
 }
 
 /**
- * Set or clear the logged-in account's email address. `email` is the only
- * writable field on `/api/auth/me/` (`username` is read-only and a PATCH naming
- * it is silently ignored), and passing `""` clears the address.
+ * Change the logged-in account's email address. One of two writable fields on
+ * `/api/auth/me/` (`username` is read-only and a PATCH naming it is silently
+ * ignored; `turn_reminder_emails` is the other).
+ *
+ * **The address can no longer be blanked.** It used to be clearable by sending
+ * `""`; since ADR-003 made it required at registration the server rejects an
+ * empty value, so this is change-only and callers must not offer a remove
+ * control. Nothing here guards against that — the trimmed value is sent as-is
+ * and the server's refusal is what the UI shows.
  *
  * Goes through `request()` for the bearer token and its 401 refresh-and-retry;
- * a malformed address comes back as `{"email": ["Enter a valid email
- * address."]}`, which `request` surfaces verbatim.
+ * a malformed or blank address comes back as `{"email": [...]}`, which
+ * `request` surfaces verbatim.
  *
- * Returns the full user payload, same shape as `GET /api/auth/me/`.
+ * Returns the full user payload, same shape as `GET /api/auth/me/`. That
+ * payload's read-only `email_verified` is the field to render afterwards:
+ * saving a *different* address makes the account unconfirmed again, so callers
+ * must trust the response over anything they had cached.
  */
 export async function updateEmail(email) {
   return request("/api/auth/me/", {
@@ -95,6 +116,37 @@ export async function updateTurnReminders(enabled) {
     method: "PATCH",
     body: JSON.stringify({ turn_reminder_emails: Boolean(enabled) }),
   });
+}
+
+/**
+ * Ask the backend to re-send the address-confirmation email. Authenticated,
+ * and takes no body — the address is whatever is on the requesting account.
+ *
+ * Goes through `request()` for the bearer token and its 401 refresh-and-retry,
+ * like `updateEmail` / `updateTurnReminders` above.
+ *
+ * Resolves with `{ detail, email_verified }`. **Both 200 shapes are ordinary
+ * outcomes, not errors**, and the second is easy to miss: a fresh send answers
+ * `email_verified: false`, while an address confirmed in a browser since this
+ * screen was last loaded answers `200` with `email_verified: true` and a detail
+ * saying it was already confirmed. Callers should render `detail` and trust the
+ * returned `email_verified` over whatever they had cached — that response is
+ * how a stale "unconfirmed" badge gets corrected.
+ *
+ * Throws on 400 (the account has no address at all) and on the 60-second
+ * cool-down's 429. The cool-down is not a failure either — it means a mail is
+ * already in flight — so callers should show `err.status === 429` as a notice.
+ * `request` tags the thrown Error with the status precisely so that is possible
+ * without sniffing the server's wording.
+ *
+ * There is no confirm call here on purpose: the emailed link points at the
+ * **web** client (`{FRONTEND_BASE_URL}/verify-email/{token}`) and there is no
+ * mobile deep link, exactly as with password reset. A mobile player finishes in
+ * a browser, and the UI copy has to say so rather than imply a tap in the app
+ * will do it.
+ */
+export async function resendEmailVerification() {
+  return request("/api/auth/verify-email/resend/", { method: "POST" });
 }
 
 /**

@@ -38,6 +38,7 @@ code moves on.
 |-----|----------|
 | [adr-001](decisions/adr-001-combined-moves.md) | Combined (multi-die) moves are expanded client-side; the backend only knows single hops. |
 | [adr-002](decisions/adr-002-inactivity-forfeit.md) | Inactivity forfeit is a pull-based claim on registered seats, separate from `abandon`; live clocks wait for presence. **Implemented** — the claim half only; reserve-time clocks are still deferred. |
+| [adr-003](decisions/adr-003-email-verification.md) | Email is required at registration, accounts work fine unverified, and verification gates exactly one thing — turn-reminder mail. **Implemented.** The gate is deliverability, not security; a lockout would collide with the 48-hour turn clock. |
 
 ## Adding to these docs
 

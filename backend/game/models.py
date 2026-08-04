@@ -78,6 +78,94 @@ class UserPreferences(models.Model):
             return True
 
 
+class EmailVerification(models.Model):
+    """
+    Proof that an account's address belongs to the person holding the account.
+
+    **What this gates, and what it deliberately does not.** The only thing that
+    consults it is ``manage.py send_turn_reminders``. Login, play, password
+    reset and account deletion are all untouched — an unverified account is a
+    fully working account. That is on purpose: a verification wall on a game
+    with a 48-hour turn clock would lock players out of live games mid-match
+    (ADR-003), and a reset link is self-proving anyway, since only the mailbox's
+    owner can follow it.
+
+    **Why it exists at all is deliverability, not security.** Turn reminders are
+    the entire notification layer — there is no push — and a cron mailing "move
+    now or lose" to typo'd and abandoned addresses earns bounces and spam
+    complaints, which sink the sending domain, which lands the *legitimate*
+    reminders in spam. Verification protects the channel for the people who did
+    verify.
+
+    **``verified_email`` is the field that makes this correct.** A bare boolean
+    would stay True after ``PATCH /api/auth/me/`` moved the address somewhere
+    else, and the very next cron tick would mail an unproven mailbox — with the
+    flag insisting it was fine. Recording *which* address was proven, and
+    comparing it to the live one on every read, makes an email change
+    self-invalidating with no signal, no hook and nothing to remember to call.
+
+    **The row is optional**, like ``UserPreferences``: absence means unverified,
+    which is the right default for every account that predates this table. That
+    is also why the migration adds no backfill — nobody has proven anything, and
+    since no cron has ever been scheduled, no reminder has ever been sent, so
+    there is nothing to regress.
+    """
+
+    user = models.OneToOneField(
+        User, on_delete=models.CASCADE, related_name="email_verification"
+    )
+    # The address that was proven, stored normalised, exactly as it was written
+    # to `User.email`. Blank = nothing proven yet (the row can exist unverified,
+    # because `last_sent_at` needs somewhere to live from the first send on).
+    verified_email = models.EmailField(blank=True, default="")
+    verified_at = models.DateTimeField(null=True, blank=True)
+    # When a verification mail last went out, for the resend cool-down. Kept per
+    # *account* rather than relying on the DRF throttle alone: the throttle is
+    # keyed by user and would be the same guard, but its counters live in
+    # `CACHES`, which is `LocMemCache` per gunicorn worker unless `REDIS_URL` is
+    # set — so on the deployment as configured today it is not actually a global
+    # limit. This is.
+    last_sent_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        state = "verified" if self.verified_at else "unverified"
+        return f"Email verification for {self.user} ({state})"
+
+    @classmethod
+    def for_user(cls, user):
+        """The user's row, created empty if this is the first look."""
+        row, _ = cls.objects.get_or_create(user=user)
+        return row
+
+    @staticmethod
+    def is_verified(user):
+        """
+        Whether ``user.email`` — the address on the account *right now* — has
+        been proven. Never writes; read on the cron's hot path.
+
+        The comparison is the whole point (see the class docstring): a stored
+        match is required, not merely a stored timestamp, so changing the
+        address silently drops verification. ``casefold`` rather than ``lower``
+        because both sides went through ``normalise_email``, which folds only
+        the domain half, and an account whose local part was re-typed in a
+        different case is the same mailbox for every practical purpose.
+        """
+        if user is None:
+            return False
+        address = (user.email or "").strip()
+        if not address:
+            return False
+        try:
+            row = user.email_verification
+        except EmailVerification.DoesNotExist:
+            return False
+        if row.verified_at is None:
+            return False
+        return row.verified_email.casefold() == address.casefold()
+
+
 class Match(models.Model):
     player1_user = models.ForeignKey(
         User, null=True, blank=True, on_delete=models.SET_NULL, related_name="matches_as_p1"

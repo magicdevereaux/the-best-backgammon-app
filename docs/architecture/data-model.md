@@ -11,7 +11,8 @@ and managed by Django migrations in `backend/game/migrations/`.
 
 ## What is (and isn't) a model
 
-There are **three app models — `Match`, `Game` and `UserPreferences`** — plus
+There are **four app models — `Match`, `Game`, `UserPreferences` and
+`EmailVerification`** — plus
 Django's built-in `auth.User`. The first two are the game itself; the third is a
 single optional row hanging off a user, and is described in
 [`UserPreferences`](#userpreferences) below. Several concepts that sound like
@@ -379,7 +380,8 @@ cron command rather than a side effect of a request.
 ```
 User ──< Game  (player1_user / player2_user)
 User ──< Match (player1_user / player2_user)
-User ──1 UserPreferences (one-to-one, optional, CASCADE)
+User ──1 UserPreferences   (one-to-one, optional, CASCADE)
+User ──1 EmailVerification (one-to-one, optional, CASCADE)
 Match ──< Game (match, related_name="games")
 ```
 
@@ -388,9 +390,40 @@ match leaves game rows intact (with null references) rather than cascading. For
 users that anonymisation is paired with the `player*_deleted` flags above, which
 is what keeps an orphaned seat from being mistaken for a guest seat.
 
-`UserPreferences` is the exception and is meant to be: it is `CASCADE`, because a
-settings row for a deleted account is not history anybody wants preserved — and
-unlike a seat, nothing points at it.
+`UserPreferences` and `EmailVerification` are the exceptions and are meant to be:
+both are `CASCADE`, because a settings row or a proof-of-address for a deleted
+account is not history anybody wants preserved — and unlike a seat, nothing
+points at either.
+
+## `EmailVerification`
+
+Proof that an account's address belongs to whoever holds the account. Defined in
+[`models.py`](../../backend/game/models.py); see
+[ADR-003](../decisions/adr-003-email-verification.md) for why it exists.
+
+| Field | Meaning |
+|-------|---------|
+| `user` | `OneToOneField(User, CASCADE, related_name="email_verification")` |
+| `verified_email` | The address that was proven. Blank = nothing proven yet. |
+| `verified_at` | When it was proven. Null = never. |
+| `last_sent_at` | When a confirmation link last went out — the resend cool-down. |
+
+It shares `UserPreferences`' **optional-row** convention: no row means
+unverified, so no backfill had to walk the user table, and every account
+predating the table simply reads as unconfirmed.
+
+- **`EmailVerification.is_verified(user)` is the single source of truth**, read by
+  `UserSerializer` (as the `email_verified` field) and by
+  `manage.py send_turn_reminders`, which will not mail an unconfirmed address.
+- **It stores *which address* was proven, not a boolean — and that is the whole
+  design.** `is_verified` compares `verified_email` against the account's live
+  `user.email`, so **changing the address un-verifies it automatically**, with no
+  signal, no hook and nothing a future writer has to remember to call. A bare flag
+  would stay `True` after a `PATCH /api/auth/me/` moved the address, and the next
+  cron tick would mail an unproven mailbox with the flag insisting it was fine.
+- The confirmation token is **not stored here**. It is a stateless
+  `django.core.signing` value carrying `{uid, email}`, so there is no token table
+  to expire or clean up — this row records only the *outcome*.
 
 ## Stats derivation
 

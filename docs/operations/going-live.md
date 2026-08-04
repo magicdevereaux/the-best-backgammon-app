@@ -46,6 +46,22 @@ correct, the line numbers may be a few off.
 > dormant until a cron is scheduled, and push still does not exist. The privacy
 > policy changed with it ([1.5](#15-publish-the-legal-documents)) — an
 > unsolicited second mail type needed describing, and an opt-out to describe.
+>
+> **And after *that*: email verification ([3.39](#3-done)),
+> [ADR-003](../decisions/adr-003-email-verification.md).** An address is now
+> **required at registration**, an `EmailVerification` row records which address
+> was proven (migration `0008_emailverification`), and
+> `send_turn_reminders` **mails only confirmed addresses**. Accounts stay fully
+> usable unverified — the gate is on that one bulk sender and nothing else,
+> because the risk being managed is **sender reputation, not account security**.
+> **This adds a hard ordering constraint to the cron work in
+> [1.6](#16-backups-admin-credentials-and-the-three-dormant-subsystems): the
+> verification gate had to exist before the cron's first run**, because a first
+> blast at an unfiltered table is irreversible — you cannot un-burn a domain.
+> That constraint is now satisfied in code; what remains is not scheduling the
+> cron ahead of `FRONTEND_BASE_URL` / `DEFAULT_FROM_EMAIL`, as before.
+> `models.py`, `serializers.py`, `views.py`, `urls.py` and `settings.py` all
+> moved with this; the symbols cited below did not.
 
 ## Current state
 
@@ -191,8 +207,10 @@ in [`backend/.env.example`](../../backend/.env.example):
 | `REDIS_URL` | **Optional, strongly recommended.** Unset → `LocMemCache`, so DRF's throttle counters are per gunicorn worker and reset on deploy. Set → `RedisCache` and the limits become global ([`settings.py:63–90, 196–204`](../../backend/backgammon/settings.py)). Provisioning is owner work; see [3.22](#3-done). |
 | `SENTRY_DSN` | **Optional, strongly recommended.** Unset → `sentry_sdk.init()` is never called and a 500 reports nowhere. Set → errors ship, tagged by `SENTRY_ENVIRONMENT` / `SENTRY_RELEASE` ([`settings.py:445–473`](../../backend/backgammon/settings.py)). See [3.25](#3-done). |
 | `ADMINS` | Optional. `Name <addr>` pairs, comma-separated; attaches Django's `mail_admins` handler to `django.request` ([`settings.py:429–443`](../../backend/backgammon/settings.py)). Needs `EMAIL_HOST` to actually send. |
-| `EMAIL_HOST` + `EMAIL_PORT` / `EMAIL_HOST_USER` / `EMAIL_HOST_PASSWORD` / `EMAIL_USE_TLS` / `DEFAULT_FROM_EMAIL` | **Required for password reset to leave the box.** With `EMAIL_HOST` unset the backend is Django's **console** backend — the reset mail is printed to the log and never delivered ([`settings.py:317–345`](../../backend/backgammon/settings.py)). |
-| `FRONTEND_BASE_URL` | The origin **every emailed link** points at — the reset link `/reset-password/{uid}/{token}` and, since [3.37](#3-done), the turn reminder's `/game/{id}` (`build_game_url`). Defaults to `http://localhost:3000`, which is wrong in production and silently so — the mail still sends, carrying a link nobody can open ([`settings.py:348–352`](../../backend/backgammon/settings.py)). |
+| `EMAIL_VERIFICATION_TIMEOUT_HOURS` | Optional; **defaults to 72**. How long a verification link stays valid ([3.39](#3-done)). Longer than a reset window on purpose — the token proves a mailbox and grants nothing else, and a resend path exists. Read at confirm time only. |
+| `EMAIL_VERIFICATION_RESEND_COOLDOWN_SECONDS` | Optional; **defaults to 60**. Smallest gap between two verification mails to one account, stored on the row rather than in `CACHES` — which is why it still holds when `REDIS_URL` is unset and the `email_verify_resend` throttle is per-worker ([3.39](#3-done)). |
+| `EMAIL_HOST` + `EMAIL_PORT` / `EMAIL_HOST_USER` / `EMAIL_HOST_PASSWORD` / `EMAIL_USE_TLS` / `DEFAULT_FROM_EMAIL` | **Required for password reset *and email verification* to leave the box.** With `EMAIL_HOST` unset the backend is Django's **console** backend — the mail is printed to the log and never delivered ([`settings.py:317–345`](../../backend/backgammon/settings.py)). Since [3.39](#3-done) this matters at **registration**, not only on a forgotten password: a new account is mailed a confirmation link, and an unconfirmed address is never sent a turn reminder. |
+| `FRONTEND_BASE_URL` | The origin **every emailed link** points at — the reset link `/reset-password/{uid}/{token}`, the turn reminder's `/game/{id}` (`build_game_url`, [3.37](#3-done)), and the verification link `/verify-email/{token}` (`build_email_verification_url`, [3.39](#3-done)). Defaults to `http://localhost:3000`, which is wrong in production and silently so — the mail still sends, carrying a link nobody can open ([`settings.py:348–352`](../../backend/backgammon/settings.py)). |
 
 ### 1.3 Store the mobile API URL and submission credentials
 
@@ -274,6 +292,35 @@ listings.
 > defensible, so the policy and the code have to keep agreeing about it — see
 > [3.37](#3-done).
 
+> **A fifth correction is now OUTSTANDING, and it is owner/lawyer work on
+> `docs/legal/`, not a code gap.** Email verification ([3.39](#3-done),
+> [ADR-003](../decisions/adr-003-email-verification.md)) invalidated three of the
+> statements the drafts currently make, and the drafts have **not** been updated:
+>
+> - **"Optional" is now wrong for a registered account.** The policy calls the
+>   address optional in at least four places
+>   ([`privacy-policy.md:18, 49, 157, 266`](../legal/privacy-policy.md)) —
+>   *"only if you choose to supply one"*. `RegisterSerializer.email` is now
+>   `required=True, allow_blank=False`. What is still true, and what the wording
+>   should be rebuilt around, is **"you can play without an account at all"**
+>   (guest seats), not "you can register without an address".
+> - **"Exactly two things" / "the only two" mail types**
+>   ([`privacy-policy.md:52, 160, 173–179`](../legal/privacy-policy.md), including
+>   the flat *"We send no other mail"*) is now **three**: reset, turn reminder,
+>   and the verification link sent at registration and on every address change.
+> - **"Can be added or removed later from your profile"**
+>   ([`privacy-policy.md:266–268`](../legal/privacy-policy.md)) is now **false**:
+>   `PATCH /api/auth/me/` rejects a blank address. The real routes are the
+>   reminder opt-out and `DELETE /api/auth/me/` — which the policy already
+>   describes correctly at
+>   [`privacy-policy.md:238–240`](../legal/privacy-policy.md) and which remains
+>   the actual erasure path.
+>
+> Nothing here is a new *category* of data — it is the same `User.email` field
+> the policy already describes — so this is a wording reconciliation, not a
+> re-consent. It is listed here because the same rule applies as to the fourth
+> correction: the policy and the code have to keep agreeing.
+
 ### 1.6 Backups, admin credentials, and the three dormant subsystems
 
 > **There are four now.** The heading is left exactly as it was because
@@ -302,9 +349,12 @@ listings.
   Pick any SMTP-speaking provider (SES, Postmark, Resend, Mailgun), set the
   `EMAIL_*` vars, and set `FRONTEND_BASE_URL` to the web client's origin — the
   link is served by the web router and by nothing else, so a wrong value produces
-  mail nobody can act on. **The same `EMAIL_*` values now carry a second kind of
-  mail**, the turn reminder below, so switching them on buys two features rather
-  than one.
+  mail nobody can act on. **The same `EMAIL_*` values now carry three kinds of
+  mail**: the reset link, the turn reminder below, and the **email-verification
+  link** ([3.39](#3-done)) that every registration and address change sends. So
+  switching them on buys three features, and leaving them off now has a visible
+  effect on day one — a new player is told to check an inbox that receives
+  nothing, and can never confirm, and so is never sent a turn reminder.
 - **A cron schedule for `send_turn_reminders`.** The fourth dormant subsystem,
   and the newest. The command is written and tested ([3.37](#3-done)) but
   **nothing invokes it** — there is no Celery and no in-process scheduler by
@@ -322,8 +372,24 @@ listings.
   > waiting player at once, from `no-reply@localhost`, with a dead
   > `http://localhost:3000` link. Unrecallable, and to everybody. `--dry-run`
   > still rehearses on defaults; `--allow-dev-defaults` is the escape hatch and
-  > belongs in no cron start command. This is the one ordering constraint in the
-  > step.
+  > belongs in no cron start command.
+
+  > **The second ordering constraint, and the one you cannot walk back.**
+  > Reminders are sent **only to confirmed addresses** ([3.39](#3-done),
+  > [ADR-003](../decisions/adr-003-email-verification.md)). That gate exists in
+  > code *today*, which is the point — it had to land **before the cron's first
+  > run**, not after, because the first run is the one that would mail every
+  > typo'd and abandoned address in the table at once. Bounces and spam
+  > complaints from a blast like that sink the sending domain's reputation, and
+  > **a burned domain cannot be un-burned** — the cost is paid by the players who
+  > *did* confirm, whose reminders then land in spam. Nothing more is required of
+  > the owner here beyond not reverting the gate; it is recorded so nobody
+  > "helpfully" relaxes it to reach more players.
+  >
+  > Practical consequence for the rollout: **verified users are a small set on
+  > day one**, and they only grow once `EMAIL_*` is real, because an address
+  > cannot be confirmed while the confirmation mail is going to the console
+  > backend. Configure mail first, then schedule the cron.
 
   Until this
   is done, players are still forfeited without warning
@@ -434,6 +500,17 @@ treat the four items above as the real fix.
   server-side link setting, since `FRONTEND_BASE_URL` is a single value) or a
   proper universal-link / app-link setup so the web URL opens the app when it is
   installed. Neither exists today.
+
+  > **The verification link ([3.39](#3-done)) has the identical shape and the
+  > identical gap.** `build_email_verification_url` builds
+  > `{FRONTEND_BASE_URL}/verify-email/{token}`, the web client serves
+  > `/verify-email/:token`
+  > ([`VerifyEmailPage.jsx`](../../frontend/src/pages/VerifyEmailPage.jsx)), and
+  > `mobile/app/` has no route for it — so a mobile player confirms in a browser
+  > and comes back verified. Mobile implements the *resend* half only
+  > ([`EmailSection.jsx`](../../mobile/src/components/EmailSection.jsx)). Same
+  > fix, same blocker: one deep-link/universal-link setup would close both, and
+  > `FRONTEND_BASE_URL` being a single value is the reason neither is closed now.
 - ~~**Tracked scratch files.**~~ **Closed 2026-08-02.** `mobile/MOBILE_PROGRESS.md`
   and `mobile/.claude/settings.json` were removed from the index with
   `git rm --cached` (both still exist on disk) and
@@ -467,9 +544,12 @@ treat the four items above as the real fix.
     sends nothing at all; it becomes real the moment the owner adds the cron
     service in
     [railway-deploy.md step 8](railway-deploy.md#8-schedule-the-turn-reminder-cron)
-    — and only for players who have set an email address, since the app never
-    requires one, **and who have not opted out** (`turn_reminder_emails`, default
-    on, on `PATCH /api/auth/me/`). A subsequent hardening pass added that opt-out,
+    — and then only for players who have **confirmed** their address
+    ([3.39](#3-done): an address is required at registration now, but a *proven*
+    one is what the command checks) **and who have not opted out**
+    (`turn_reminder_emails`, default on, on `PATCH /api/auth/me/`). Those two
+    filters are the audience, and it is deliberately narrower than "everyone with
+    an address". A subsequent hardening pass added that opt-out,
     a refusal to send while `FRONTEND_BASE_URL` / `DEFAULT_FROM_EMAIL` are at
     their dev defaults, a claim-before-send stamp that makes overlapping cron runs
     duplicate-proof, and a per-row re-read so a slow run cannot mail a stale
@@ -484,9 +564,11 @@ treat the four items above as the real fix.
     needs **EAS push credentials** (an Apple push key, an FCM server key) that
     only the owner can create, *and then* a device-token system to store and
     target. Nobody should read the reminder command as having closed this.
-  So a player who never opens the app and never set an email can still be
-  forfeited without ever having seen the clock — mitigated by the 48-hour default
-  rather than solved. The badge/in-app-presence side remains the same missing
+  So a player who never opens the app and never confirmed their address can
+  still be forfeited without ever having seen the clock — mitigated by the
+  48-hour default rather than solved. Requiring an address at registration
+  ([3.39](#3-done)) shrinks that population but does not empty it: an address
+  that is never confirmed, or is confirmed and then changed, is not mailed. The badge/in-app-presence side remains the same missing
   "presence" layer that defers live clocks
   ([ADR-002](../decisions/adr-002-inactivity-forfeit.md)).
 - **No load testing.** Nobody knows what concurrency this survives. One `k6` or
@@ -687,7 +769,10 @@ each was verified by reading the file, not by trusting a changelog.
     counter resets on deploy. What closed is the *code* gap; the operational one
     is now one env var away.
 23. **Password reset exists end to end on the server, and accounts can carry an
-    email.** `RegisterSerializer.email` is optional and blank-tolerant
+    email.** *(Superseded in one detail by [3.39](#3-done): `email` is
+    **required** at registration now, and `PATCH /api/auth/me/` no longer accepts
+    a blank value. Everything else in this entry still holds.)*
+    `RegisterSerializer.email` is optional and blank-tolerant
     ([`serializers.py:240`](../../backend/game/serializers.py)) so existing
     username+password registration is unchanged, and `PATCH /api/auth/me/` can
     add one later ([`MeView`, `views.py:211–270`](../../backend/game/views.py);
@@ -847,6 +932,9 @@ each was verified by reading the file, not by trusting a changelog.
     by [`test_match_list_scoping.py`](../../backend/game/tests/test_match_list_scoping.py).
 32. **Password reset is reachable from both clients, and both can supply an
     email.** The server half ([3.23](#3-done)) had no caller; it has three now.
+    *(Superseded in one detail by [3.39](#3-done): the register forms' email
+    field is no longer optional, and the profile screens can no longer clear an
+    address.)*
 
     - **Email collection.** Both register forms take an optional email
       ([`RegisterPage.jsx:61–72`](../../frontend/src/pages/RegisterPage.jsx),
@@ -1140,3 +1228,65 @@ each was verified by reading the file, not by trusting a changelog.
     its own refusals mention claims and clocks and mean something else. See
     [api.md](../architecture/api.md#the-claim-vs-move-race) and
     [clients.md](../architecture/clients.md#when-a-claim-beats-your-move).
+39. **An email address is required, and confirmed addresses are the only ones the
+    cron will mail.** [ADR-003](../decisions/adr-003-email-verification.md).
+    Three changes, and the third is the one that matters for going live.
+
+    - **Required at registration.** `RegisterSerializer.email` is
+      `required=True, allow_blank=False` (both clients previously sent `""` for
+      an empty field, so blank had to be refused explicitly), and
+      `UserSerializer.email` is no longer blankable on `PATCH /api/auth/me/` —
+      an account must not reach a state the front door forbids. **Existing
+      accounts are not rewritten and not locked out**; the serializer validates
+      input, it does not audit the table.
+    - **Verification exists.** `EmailVerification` (a `OneToOneField` on stock
+      `User`, migration `0008_emailverification`, **no backfill**),
+      `POST /api/auth/verify-email/confirm/` (unauthenticated — the link is
+      followed from a mailbox) and `POST /api/auth/verify-email/resend/`
+      (authenticated — it can only mail the caller), a read-only `email_verified`
+      on `/api/auth/me/`, and the settings
+      `EMAIL_VERIFICATION_TIMEOUT_HOURS` (72),
+      `EMAIL_VERIFICATION_RESEND_COOLDOWN_SECONDS` (60) and a fixed
+      `EMAIL_VERIFICATION_SALT`. Tokens are `django.core.signing` — **no token
+      table**, nothing to expire or sweep — and deliberately **not**
+      `default_token_generator`, whose password-hash-derived single-use property
+      is right for a credential change and wrong for a link a password change
+      should not kill. The row stores **which address was proven**, not a
+      boolean, so changing the address self-invalidates verification with no
+      signal and no hook.
+    - **`send_turn_reminders` checks it**, and that is the whole point. It is the
+      app's only bulk, scheduled, unprompted sender; mailing "move now or lose"
+      to typo'd and abandoned addresses earns bounces and complaints, those sink
+      the sending domain, and a sunk domain lands the *legitimate* reminders in
+      spam. **The gate is deliverability, not security** — which is also why it
+      gates nothing else: login, play, password reset and deletion are untouched,
+      and a verification wall on a game with a 48-hour forfeit clock would lock
+      players out of live matches
+      ([2.3](#23-polish-and-hygiene), [ADR-002](../decisions/adr-002-inactivity-forfeit.md)).
+      An unverified seat is skipped **without stamping
+      `Game.turn_reminder_sent_at`**, so confirming an address a minute later
+      still gets that turn's reminder.
+
+    **The ordering constraint is the operational takeaway**, and it is recorded
+    in [1.6](#16-backups-admin-credentials-and-the-three-dormant-subsystems):
+    this had to ship **before** the first cron run, because the first run against
+    an unfiltered table is irreversible. It did. Nothing else about the cron's
+    status changed — still unscheduled, still dormant.
+
+    Send safety mirrors the reminder command: `issue_email_verification` stamps
+    `last_sent_at` **before** mailing and leaves it stamped on failure
+    (a provider can accept and then error, so "retry on failure" is an
+    inbox-flooding tool), and the row-level cool-down is what actually holds
+    while `CACHES` is per-worker `LocMemCache` and the `email_verify_resend`
+    throttle is therefore not global. `send_email_verification` never raises, so
+    a bad mail afternoon cannot 500 a registration.
+
+    Client half shipped with it: the web client serves `/verify-email/:token`
+    ([`VerifyEmailPage.jsx`](../../frontend/src/pages/VerifyEmailPage.jsx)) and
+    both clients expose Resend from their email settings. **Mobile has no route
+    for the link** — same browser hand-off as password reset, same cause, tracked
+    together in [2.3](#23-polish-and-hygiene). Backend coverage is
+    [`test_email_verification.py`](../../backend/game/tests/test_email_verification.py).
+    Endpoint reference:
+    [api.md](../architecture/api.md#post-apiauthverify-emailconfirm); flow:
+    [auth.md](../architecture/auth.md#email-verification).

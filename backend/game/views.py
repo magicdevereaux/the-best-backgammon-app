@@ -1,9 +1,11 @@
 import copy
 import logging
+from datetime import timedelta
 
 from django.conf import settings
 from django.contrib.auth.models import User
 from django.contrib.auth.tokens import default_token_generator
+from django.core import signing
 from django.core.mail import send_mail
 from django.db import transaction
 from django.db.models import Q
@@ -16,14 +18,16 @@ from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.settings import api_settings
+from rest_framework.views import APIView
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken, OutstandingToken
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
-from .models import Game, Match
+from .models import EmailVerification, Game, Match
 from .serializers import (
     AccountDeleteSerializer,
+    EmailVerificationConfirmSerializer,
     GameSerializer,
     MatchSerializer,
     PasswordResetConfirmSerializer,
@@ -166,6 +170,19 @@ class RefreshView(TokenRefreshView):
 
 
 class RegisterView(generics.CreateAPIView):
+    """
+    ``POST /api/auth/register/`` — ``{"username", "password", "email"}``.
+
+    **An address is required** (ADR-003) and a confirmation mail goes out here.
+    Registration still returns a working token pair immediately: the account is
+    usable unverified, and the only thing verification gates is turn-reminder
+    mail. A verification wall on a game with a 48-hour forfeit clock would lock
+    players out of live matches, which is a worse bug than the one it prevents.
+
+    The mail is sent *after* the transaction that created the user, not inside
+    it — see ``issue_email_verification``. It cannot fail the request.
+    """
+
     serializer_class = RegisterSerializer
     throttle_classes = [OptionalScopedRateThrottle]
     throttle_scope = "register"
@@ -174,6 +191,7 @@ class RegisterView(generics.CreateAPIView):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         user = serializer.save()
+        issue_email_verification(user)
         refresh = RefreshToken.for_user(user)
         return Response(
             {
@@ -254,11 +272,19 @@ class MeView(generics.RetrieveUpdateDestroyAPIView):
     ``PATCH /api/auth/me/``  — set or change the current user's email address.
     ``DELETE /api/auth/me/`` — permanently delete the current user's account.
 
-    **Why PATCH lives here.** Email is optional at registration, so an account
-    created before this field existed — or by someone who skipped it — needs a
-    way to add one later, otherwise password reset is permanently out of reach
-    for exactly the users who need it. ``UserSerializer`` marks every field but
-    ``email`` read-only, so this cannot become a general profile-rewrite hole.
+    **Why PATCH lives here.** Addresses change, and accounts created before
+    email was required at registration have none at all — without this, password
+    recovery and turn reminders would be permanently out of reach for exactly
+    the users who need them. ``UserSerializer`` marks every field but ``email``
+    and ``turn_reminder_emails`` read-only, so this cannot become a general
+    profile-rewrite hole, and ``email`` cannot be set *blank* (ADR-003): the two
+    things a user might want a blank address for have their own routes — the
+    reminder opt-out below, and DELETE on this endpoint.
+
+    **A changed address is an unverified address**, and re-mails a confirmation
+    link — see ``perform_update``. Nothing has to clear a flag for that to hold:
+    ``EmailVerification`` stores *which* address was proven and compares it to
+    the live one, so the change invalidates itself.
 
     Deletion is hung off the existing "me" resource rather than a new
     ``/api/auth/delete-account/`` route for three reasons: it is the plain REST
@@ -292,6 +318,44 @@ class MeView(generics.RetrieveUpdateDestroyAPIView):
 
     def get_object(self):
         return self.request.user
+
+    def perform_update(self, serializer):
+        """
+        Save, then re-mail a confirmation link if the address actually moved.
+
+        The comparison is against ``serializer.instance`` *before* ``save()``,
+        which is the only moment the old value is still readable. Case-folded so
+        a user who merely re-types their own address in different case isn't
+        told to go and confirm it again.
+
+        Mail volume here is capped by ``issue_email_verification``'s per-account
+        cool-down rather than by a throttle scope on this view: a scope would
+        also throttle GET, which both clients call routinely to refresh a
+        profile. The residual is that one authenticated account can send itself
+        (or a mistyped third party) a confirmation mail once a minute. That is a
+        poor spam tool — one recipient at a time, a fixed body, and every send
+        attributable to an account — and worth it to keep profile reads free.
+
+        **The cool-down is shared with Resend, and the return value is dropped
+        on purpose.** Change an address within a minute of hitting Resend and no
+        mail goes out for the new one, silently, behind a plain 200. The obvious
+        fix — exempt a *changed* address, since it is a different mailbox — is
+        the one thing that must not be done: it turns this endpoint into an
+        arbitrary-recipient mailer, one PATCH per victim, capped only by the
+        240/min ``user`` throttle. Reporting the miss in the response is the
+        honest alternative, but this endpoint answers with a user payload rather
+        than a detail envelope, and bending its shape for an edge case that
+        recovers on its own is a poor trade. It *does* recover on its own:
+        ``email_verified`` comes back false, so both clients render the
+        unconfirmed panel with its Resend button, and Resend works as soon as
+        the minute is up. Pinned by
+        ``test_a_change_inside_the_cool_down_is_silently_not_mailed``.
+        """
+        previous = (serializer.instance.email or "").strip().casefold()
+        user = serializer.save()
+        current = (user.email or "").strip().casefold()
+        if current and current != previous:
+            issue_email_verification(user)
 
     def destroy(self, request, *args, **kwargs):
         user = self.get_object()
@@ -446,6 +510,200 @@ class PasswordResetConfirmView(generics.GenericAPIView):
         _blacklist_refresh_tokens(user)
         return Response(
             {"detail": "Your password has been reset. You can now log in."},
+            status=status.HTTP_200_OK,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Email verification (ADR-003)
+# ---------------------------------------------------------------------------
+
+def build_email_verification_token(user):
+    """
+    A signed, stateless proof-of-request for ``user``'s *current* address.
+
+    The address travels inside the signature, not just the user id, so the token
+    can only ever verify the mailbox it was actually mailed to — see
+    ``EmailVerificationConfirmSerializer`` for the change-of-address case that
+    makes this necessary rather than merely tidy.
+    """
+    return signing.dumps(
+        {"uid": user.pk, "email": (user.email or "").strip()},
+        salt=settings.EMAIL_VERIFICATION_SALT,
+    )
+
+
+def build_email_verification_url(user):
+    """
+    The link that goes in the verification email.
+
+    Shape: ``{FRONTEND_BASE_URL}/verify-email/{token}`` — built from the same
+    setting, in the same shape, and for the same reason as
+    ``build_password_reset_url``: the server cannot know where a client is
+    served from, and there is still no mobile deep link, so every outbound link
+    in this app lands on the web client. A mobile user finishes verification in
+    a browser, exactly as they finish a password reset there.
+    """
+    return f"{settings.FRONTEND_BASE_URL}/verify-email/{build_email_verification_token(user)}"
+
+
+def send_email_verification(user):
+    """
+    Mail ``user`` a verification link. Never raises.
+
+    Swallowing the failure is the same call ``send_password_reset_email`` makes,
+    for a sharper reason here: this is fired as a *side effect* of registering
+    and of changing an address, and a mail backend having a bad afternoon must
+    not turn either of those into a 500. The account is created, the address is
+    saved, the user is simply not verified yet — a state the app is designed to
+    handle, with a resend button one screen away. The failure is logged.
+
+    Returns True if the mail was handed to the backend, so callers that report a
+    cool-down can tell a send from a no-op.
+    """
+    address = (user.email or "").strip()
+    if not address:
+        return False
+    try:
+        send_mail(
+            subject="Confirm your Backgammon email address",
+            message=(
+                f"Hi {user.username},\n\n"
+                "Confirm this address so we can warn you when your time to "
+                "move is running out — turn reminders are the only warning "
+                "before a game is lost on time, and we don't send them to "
+                "unconfirmed addresses.\n\n"
+                f"Confirm here:\n{build_email_verification_url(user)}\n\n"
+                f"The link is good for "
+                f"{settings.EMAIL_VERIFICATION_TIMEOUT_HOURS} hours. You can "
+                "keep playing in the meantime — nothing else is on hold.\n\n"
+                "If you didn't create this account, you can ignore this email.\n"
+            ),
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            recipient_list=[address],
+            fail_silently=False,
+        )
+        return True
+    except Exception:  # pragma: no cover - depends on a live mail backend
+        logger.exception("Failed to send verification email to user %s", user.pk)
+        return False
+
+
+def issue_email_verification(user):
+    """
+    Send a verification mail and stamp the cool-down, unless one went out too
+    recently. Returns True if a mail was sent.
+
+    Stamped **before** the send, and stamped even when the send fails. That is
+    the same claim-then-send ordering ``send_turn_reminders`` uses and it is
+    chosen the same way: a mail provider can accept a message and *then* error,
+    so treating a failure as "nothing was sent" turns a retry loop into a way to
+    flood someone's inbox. Losing one automatic mail to a genuine outage is
+    recoverable — the resend button is right there — and duplicates are not.
+    """
+    row = EmailVerification.for_user(user)
+    now = timezone.now()
+    cooldown = timedelta(
+        seconds=settings.EMAIL_VERIFICATION_RESEND_COOLDOWN_SECONDS
+    )
+    if row.last_sent_at is not None and now - row.last_sent_at < cooldown:
+        return False
+
+    row.last_sent_at = now
+    row.save(update_fields=["last_sent_at", "updated_at"])
+    send_email_verification(user)
+    return True
+
+
+class EmailVerificationConfirmView(generics.GenericAPIView):
+    """
+    ``POST /api/auth/verify-email/confirm/`` — ``{"token": "..."}``.
+
+    Unauthenticated: the link is followed from a mailbox, on whatever device
+    happens to be reading it, and the token already proves the one thing that
+    matters. Mirrors ``PasswordResetConfirmView``'s shape so both clients can
+    reuse the same "collect a token from the URL and POST it" page.
+
+    No tokens are blacklisted here, unlike the password-reset confirm — nothing
+    about a credential changed, so there is no session to invalidate.
+    """
+
+    serializer_class = EmailVerificationConfirmSerializer
+    throttle_classes = [OptionalScopedRateThrottle]
+    throttle_scope = "email_verify_confirm"
+
+    def post(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        user = serializer.save()
+        return Response(
+            {
+                "detail": "Your email address is confirmed.",
+                "email": user.email,
+                "email_verified": True,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class EmailVerificationResendView(APIView):
+    """
+    ``POST /api/auth/verify-email/resend/`` — no body.
+
+    **Authenticated**, which is what separates it from every other mail-sending
+    endpoint here: it can only ever mail the address on the caller's own
+    account, so unlike ``PasswordResetRequestView`` it has no anti-enumeration
+    problem to solve and no third party to protect. The abuse it *does* have is
+    the account owner hammering their own inbox, which the ``email_verify_resend``
+    throttle and ``EmailVerification.last_sent_at`` both cap.
+
+    Answers 200 for an already-verified account rather than an error. A user who
+    clicks Resend after the link already worked in another tab has not done
+    anything wrong, and telling them it failed would suggest their verified
+    account is not.
+    """
+
+    # A plain APIView, not GenericAPIView: there is no request body to
+    # deserialise, so a serializer_class would be decoration.
+    permission_classes = [IsAuthenticated]
+    throttle_classes = [OptionalScopedRateThrottle]
+    throttle_scope = "email_verify_resend"
+
+    def post(self, request, *args, **kwargs):
+        user = request.user
+
+        if not (user.email or "").strip():
+            return Response(
+                {"detail": "Add an email address to your account first."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if EmailVerification.is_verified(user):
+            return Response(
+                {
+                    "detail": "Your email address is already confirmed.",
+                    "email_verified": True,
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        sent = issue_email_verification(user)
+        if not sent:
+            return Response(
+                {
+                    "detail": (
+                        "A confirmation email was just sent. Check your inbox "
+                        "and spam folder, then try again in a minute."
+                    )
+                },
+                status=status.HTTP_429_TOO_MANY_REQUESTS,
+            )
+
+        return Response(
+            {
+                "detail": "Confirmation email sent.",
+                "email_verified": False,
+            },
             status=status.HTTP_200_OK,
         )
 

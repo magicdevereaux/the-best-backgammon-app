@@ -15,18 +15,33 @@ import { updateTurnReminders } from "../api/authApi";
  * resolved server-side (UserSerializer.to_representation), so it is rendered as
  * given and never re-defaulted here.
  *
- * `email` comes from the same payload and is *not* cosmetic: an account with no
- * address on file cannot be mailed whatever this says, and a toggle that
- * silently does nothing is worse than none. Mirrors
+ * `email` and `emailVerified` come from the same payload and are *not*
+ * cosmetic: they are the two conditions `send_turn_reminders` checks before it
+ * will mail anyone, so either one missing means this switch cannot do what it
+ * says whatever it is set to — and a toggle that silently does nothing is worse
+ * than none. Both therefore disable it, with copy naming the actual blocker.
+ *
+ * Verification is the newer of the two (ADR-003) and the easier one to render
+ * dishonestly: an unverified address *looks* like a working one on this screen,
+ * so a switch left enabled over it would read as "reminders on" to the one user
+ * who most needs to know they are off. Mirrors
  * mobile/src/components/TurnReminderSection.jsx — keep the copy in sync.
  */
-export default function TurnReminderSettings({ enabled, email = "", onSaved }) {
+export default function TurnReminderSettings({
+  enabled,
+  email = "",
+  emailVerified = false,
+  onSaved,
+}) {
   const [checked, setChecked] = useState(enabled);
   const [status, setStatus] = useState(null); // null | "on" | "off"
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
 
   const hasEmail = Boolean((email || "").trim());
+  // The server's two preconditions for sending, mirrored. Kept as one name so
+  // the disable rule and the explanation below cannot drift apart.
+  const deliverable = hasEmail && Boolean(emailVerified);
 
   async function handleChange(e) {
     const next = e.target.checked;
@@ -63,7 +78,7 @@ export default function TurnReminderSettings({ enabled, email = "", onSaved }) {
           <input
             type="checkbox"
             checked={!!checked}
-            disabled={busy || !hasEmail}
+            disabled={busy || !deliverable}
             onChange={handleChange}
           />{" "}
           Turn reminder emails
@@ -74,6 +89,18 @@ export default function TurnReminderSettings({ enabled, email = "", onSaved }) {
           No email address is saved on your account, so reminders can't be sent
           no matter what this is set to. Add an address above and save it to
           turn them on.
+        </p>
+      )}
+      {/* Deliberately not a re-run of EmailSettings' "this address isn't
+          confirmed yet" sentence, which sits a few inches up the same page.
+          Repeating it would read as a stutter, and it buries what this section
+          is actually telling you — that reminders are off right now. Lead with
+          the consequence and point at the fix. */}
+      {hasEmail && !emailVerified && (
+        <p style={{ color: "var(--text-secondary)" }}>
+          Reminders are paused until your email address is confirmed. Open the
+          link we emailed you — or send another from the email section above —
+          and this switches on by itself.
         </p>
       )}
       {error && <p style={{ color: "var(--error)" }}>{error}</p>}

@@ -2,6 +2,8 @@ from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 
 from .views import (
+    EmailVerificationConfirmView,
+    EmailVerificationResendView,
     GameViewSet,
     MatchViewSet,
     LoginView,
@@ -24,4 +26,6 @@ urlpatterns = [
     path("auth/me/", MeView.as_view()),
     path("auth/password-reset/", PasswordResetRequestView.as_view()),
     path("auth/password-reset/confirm/", PasswordResetConfirmView.as_view()),
+    path("auth/verify-email/confirm/", EmailVerificationConfirmView.as_view()),
+    path("auth/verify-email/resend/", EmailVerificationResendView.as_view()),
 ]

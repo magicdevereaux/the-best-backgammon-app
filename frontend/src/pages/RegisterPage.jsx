@@ -55,22 +55,30 @@ export default function RegisterPage() {
             />
           </label>
         </div>
-        {/* Optional on purpose: an address is the only route to password
-            recovery, but requiring one would shut out players who just want to
-            play. Say what it buys instead of insisting. */}
+        {/* Required as of ADR-003. It used to be optional, on the theory that
+            insisting would shut out players who just want to play — but an
+            account with no address can never recover a forgotten password, and
+            can be forfeited on the 48-hour turn clock without ever being told.
+            Both of those cost the player the account or the game, so the field
+            asks once at the only moment it is cheap to answer. Verifying it is
+            still optional: everything works unverified except the reminder mail
+            itself, so nothing here waits on the confirmation link. */}
         <div style={{ marginBottom: "0.75rem" }}>
           <label>
-            Email (optional)<br />
+            Email<br />
             <input
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               autoComplete="email"
+              required
             />
           </label>
           <p style={{ color: "var(--text-secondary)", fontSize: "0.8rem", margin: "0.25rem 0 0" }}>
-            Only used to reset your password. Without one, a forgotten password
-            can't be recovered. You can add it later from your profile.
+            Used to reset a forgotten password, and to warn you when an online
+            game is running out of time — that reminder is the only notice you
+            get before an opponent can claim the win. We'll send a link to
+            confirm the address; you can play straight away either way.
           </p>
         </div>
         {error && <p style={{ color: "var(--error)" }}>{error}</p>}

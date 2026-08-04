@@ -57,8 +57,14 @@ export default function ProfilePage() {
       </table>
 
       {/* Mounted only after the stats load (the page returns early while
-          loading), so the field starts from the server's value. */}
-      <EmailSettings initialEmail={stats.email} onSaved={setStats} />
+          loading), so the field and the confirmed badge both start from the
+          server's values. `email_verified` is read-only on /me/ — the only
+          things that move it are the emailed link and a change of address. */}
+      <EmailSettings
+        initialEmail={stats.email}
+        initialVerified={stats.email_verified}
+        onSaved={setStats}
+      />
 
       {/* Directly below the email field on purpose: it is the same address, and
           saving one here re-renders the other with `stats` fresh from the
@@ -66,6 +72,7 @@ export default function ProfilePage() {
       <TurnReminderSettings
         enabled={stats.turn_reminder_emails}
         email={stats.email}
+        emailVerified={stats.email_verified}
         onSaved={setStats}
       />
 

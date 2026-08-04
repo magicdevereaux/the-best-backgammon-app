@@ -5,6 +5,7 @@ import {
   logout,
   deleteAccount,
   updateEmail,
+  resendEmailVerification,
   requestPasswordReset,
 } from "../auth";
 import { getAccessToken, getRefreshToken, setTokens, clearTokens } from "../tokenStore";
@@ -37,9 +38,12 @@ afterEach(() => {
 describe("register()", () => {
   test("POSTs credentials, stores the returned tokens, returns the user", async () => {
     fetch.mockReturnValueOnce(
-      mockResponse({ user: { username: "alice" }, access: "acc", refresh: "ref" }, { status: 201 })
+      mockResponse(
+        { user: { username: "alice" }, access: "acc", refresh: "ref" },
+        { status: 201 }
+      )
     );
-    const user = await register("alice", "securepass123");
+    const user = await register("alice", "securepass123", "a@example.com");
 
     expect(user).toEqual({ username: "alice" });
     expect(await getAccessToken()).toBe("acc");
@@ -48,18 +52,24 @@ describe("register()", () => {
     const [url, options] = fetch.mock.calls[0];
     expect(url).toMatch(/\/api\/auth\/register\/$/);
     expect(options.method).toBe("POST");
-    expect(JSON.parse(options.body)).toEqual({ username: "alice", password: "securepass123" });
+    expect(JSON.parse(options.body)).toEqual({
+      username: "alice",
+      password: "securepass123",
+      email: "a@example.com",
+    });
   });
 
   test("surfaces the server's field error and stores nothing", async () => {
     fetch.mockReturnValueOnce(
       mockResponse({ username: ["Username already taken."] }, { ok: false, status: 400 })
     );
-    await expect(register("alice", "securepass123")).rejects.toThrow("Username already taken.");
+    await expect(register("alice", "securepass123", "a@example.com")).rejects.toThrow(
+      "Username already taken."
+    );
     expect(await getAccessToken()).toBeNull();
   });
 
-  test("includes an email address when one is given", async () => {
+  test("trims the email address before sending it", async () => {
     fetch.mockReturnValueOnce(
       mockResponse({ user: { username: "alice", email: "a@example.com" }, access: "acc", refresh: "ref" }, { status: 201 })
     );
@@ -72,15 +82,34 @@ describe("register()", () => {
     });
   });
 
-  test("omits email entirely when blank — an account with no address is fine", async () => {
+  test("always sends the email field, even blank — the server owns the rule", async () => {
+    // Email is required as of ADR-003. The field goes out unconditionally so the
+    // refusal is the server's own required-field message rather than a
+    // client-side guess that could drift from it.
     fetch.mockReturnValue(
-      mockResponse({ user: { username: "alice" }, access: "acc", refresh: "ref" }, { status: 201 })
+      mockResponse({ email: ["This field is required."] }, { ok: false, status: 400 })
     );
     for (const blank of [undefined, "", "   "]) {
       fetch.mockClear();
-      await register("alice", "securepass123", blank);
-      expect(JSON.parse(fetch.mock.calls[0][1].body)).not.toHaveProperty("email");
+      await expect(register("alice", "securepass123", blank)).rejects.toThrow(
+        "This field is required."
+      );
+      expect(JSON.parse(fetch.mock.calls[0][1].body)).toEqual({
+        username: "alice",
+        password: "securepass123",
+        email: "",
+      });
     }
+  });
+
+  test("surfaces the required-email 400 and stores nothing", async () => {
+    fetch.mockReturnValueOnce(
+      mockResponse({ email: ["This field is required."] }, { ok: false, status: 400 })
+    );
+    await expect(register("alice", "securepass123", "")).rejects.toThrow(
+      "This field is required."
+    );
+    expect(await getAccessToken()).toBeNull();
   });
 
   test("surfaces a malformed-email field error", async () => {
@@ -109,13 +138,25 @@ describe("updateEmail()", () => {
     expect(JSON.parse(options.body)).toEqual({ email: "a@example.com" }); // trimmed
   });
 
-  test("sends an empty string to clear the address", async () => {
+  test("returns the server's email_verified, which a changed address resets", async () => {
     await setTokens("acc", "ref");
-    fetch.mockReturnValueOnce(mockResponse({ username: "alice", email: "" }));
+    fetch.mockReturnValueOnce(
+      mockResponse({ username: "alice", email: "new@example.com", email_verified: false })
+    );
+    const user = await updateEmail("new@example.com");
+    expect(user.email_verified).toBe(false);
+  });
 
-    const user = await updateEmail("");
+  test("a blank address is refused by the server, not swallowed here", async () => {
+    // Clearing used to be supported ("" removed the address). Email is required
+    // as of ADR-003, so the server 400s it — this wrapper still sends what it
+    // was given, and the refusal is what the UI shows.
+    await setTokens("acc", "ref");
+    fetch.mockReturnValueOnce(
+      mockResponse({ email: ["This field may not be blank."] }, { ok: false, status: 400 })
+    );
+    await expect(updateEmail("")).rejects.toThrow("This field may not be blank.");
     expect(JSON.parse(fetch.mock.calls[0][1].body)).toEqual({ email: "" });
-    expect(user.email).toBe("");
   });
 
   test("surfaces the server's validation message for a malformed address", async () => {
@@ -124,6 +165,66 @@ describe("updateEmail()", () => {
       mockResponse({ email: ["Enter a valid email address."] }, { ok: false, status: 400 })
     );
     await expect(updateEmail("nope")).rejects.toThrow("Enter a valid email address.");
+  });
+});
+
+describe("resendEmailVerification()", () => {
+  test("POSTs to the resend endpoint with the bearer token and no body", async () => {
+    await setTokens("acc", "ref");
+    fetch.mockReturnValueOnce(
+      mockResponse({ detail: "Confirmation email sent.", email_verified: false })
+    );
+
+    const res = await resendEmailVerification();
+    expect(res).toEqual({ detail: "Confirmation email sent.", email_verified: false });
+
+    const [url, options] = fetch.mock.calls[0];
+    expect(url).toMatch(/\/api\/auth\/verify-email\/resend\/$/);
+    expect(options.method).toBe("POST");
+    expect(options.headers.Authorization).toBe("Bearer acc");
+    expect(options.body).toBeUndefined();
+  });
+
+  test("an already-confirmed address is a 200, not an error", async () => {
+    // The address may have been confirmed in a browser since this screen loaded.
+    // The server says so with a 200 and email_verified: true, and the caller is
+    // meant to trust that over its cached badge.
+    await setTokens("acc", "ref");
+    fetch.mockReturnValueOnce(
+      mockResponse({ detail: "Your email address is already confirmed.", email_verified: true })
+    );
+
+    const res = await resendEmailVerification();
+    expect(res.email_verified).toBe(true);
+    expect(res.detail).toBe("Your email address is already confirmed.");
+  });
+
+  test("the cool-down 429 throws with the server's copy AND the status", async () => {
+    // The status is what lets the UI render this as a notice rather than an
+    // error — a mail is already on its way, which is what was asked for.
+    await setTokens("acc", "ref");
+    fetch.mockReturnValueOnce(
+      mockResponse(
+        { detail: "A confirmation email was just sent. Please wait a minute before asking again." },
+        { ok: false, status: 429 }
+      )
+    );
+
+    await expect(resendEmailVerification()).rejects.toMatchObject({
+      message: "A confirmation email was just sent. Please wait a minute before asking again.",
+      status: 429,
+    });
+  });
+
+  test("a 400 for an account with no address is a genuine error", async () => {
+    await setTokens("acc", "ref");
+    fetch.mockReturnValueOnce(
+      mockResponse({ detail: "Your account has no email address." }, { ok: false, status: 400 })
+    );
+    await expect(resendEmailVerification()).rejects.toMatchObject({
+      message: "Your account has no email address.",
+      status: 400,
+    });
   });
 });
 

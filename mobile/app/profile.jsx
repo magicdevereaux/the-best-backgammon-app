@@ -116,6 +116,7 @@ export default function ProfileScreen() {
 
         <EmailSection
           email={stats.email}
+          emailVerified={stats.email_verified}
           onUpdated={(me) => {
             setStats(me);
             updateUser(me);
@@ -128,6 +129,7 @@ export default function ProfileScreen() {
         <TurnReminderSection
           enabled={stats.turn_reminder_emails}
           email={stats.email}
+          emailVerified={stats.email_verified}
           onUpdated={(me) => {
             setStats(me);
             updateUser(me);

@@ -17,18 +17,33 @@ import { colors } from "../theme";
  * resolved server-side (UserSerializer.to_representation), so it is rendered as
  * given and never re-defaulted here.
  *
- * `email` comes from the same payload and is *not* cosmetic: an account with no
- * address on file cannot be mailed whatever this says, and a toggle that
- * silently does nothing is worse than none. Mirrors
+ * `email` and `emailVerified` come from the same payload and are *not*
+ * cosmetic: they are the two conditions `send_turn_reminders` checks before it
+ * will mail anyone, so either one missing means this switch cannot do what it
+ * says whatever it is set to — and a toggle that silently does nothing is worse
+ * than none. Both therefore disable it, with copy naming the actual blocker.
+ *
+ * Verification is the newer of the two (ADR-003) and the easier one to render
+ * dishonestly: an unverified address *looks* like a working one on this screen,
+ * so a switch left enabled over it would read as "reminders on" to the one user
+ * who most needs to know they are off. Mirrors
  * frontend/src/components/TurnReminderSettings.jsx — keep the copy in sync.
  */
-export default function TurnReminderSection({ enabled, email, onUpdated }) {
+export default function TurnReminderSection({
+  enabled,
+  email,
+  emailVerified = false,
+  onUpdated,
+}) {
   const [checked, setChecked] = useState(enabled);
   const [error, setError] = useState(null);
   const [notice, setNotice] = useState(null);
   const [busy, setBusy] = useState(false);
 
   const hasEmail = Boolean((email || "").trim());
+  // The server's two preconditions for sending, mirrored. Kept as one name so
+  // the disable rule and the explanation below cannot drift apart.
+  const deliverable = hasEmail && Boolean(emailVerified);
 
   async function toggle(next) {
     setError(null);
@@ -66,7 +81,7 @@ export default function TurnReminderSection({ enabled, email, onUpdated }) {
           testID="turn-reminder-switch"
           accessibilityLabel="Turn reminder emails"
           value={!!checked}
-          disabled={busy || !hasEmail}
+          disabled={busy || !deliverable}
           onValueChange={toggle}
           trackColor={{ true: colors.gold, false: colors.border }}
         />
@@ -77,6 +92,19 @@ export default function TurnReminderSection({ enabled, email, onUpdated }) {
           No email address is saved on your account, so reminders can't be sent
           no matter what this is set to. Add an address above and save it to
           turn them on.
+        </Text>
+      ) : null}
+
+      {/* Deliberately not a re-run of EmailSection's "this address isn't
+          confirmed yet" sentence, which sits just above on the same screen.
+          Repeating it would read as a stutter, and it buries what this section
+          is actually telling you — that reminders are off right now. Lead with
+          the consequence and point at the fix. */}
+      {hasEmail && !emailVerified ? (
+        <Text style={styles.body}>
+          Reminders are paused until your email address is confirmed. Open the
+          link we emailed you — or send another from the email section above —
+          and this switches on by itself.
         </Text>
       ) : null}
 

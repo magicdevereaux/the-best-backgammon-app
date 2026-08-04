@@ -15,11 +15,12 @@ gammon/backgammon detection. Both clients talk to the same backend.
 - **Doubling cube** — offer/accept/drop before rolling, cube ownership, redoubles to 64, points multiplied by cube value, Crawford rule in match play
 - **Game over screen** — shows win type, points awarded, and running match score
 - **User accounts** — register/login, JWT auth, win/loss and stats tracking, and self-serve account deletion (your games are anonymised, not destroyed, so opponents keep their history)
-- **Password recovery** — add an email address at signup or later on your profile, then reset a forgotten password by emailed link. An address is entirely optional: you can register and play with just a username and password
-- **Turn reminders** — if you've saved an email address, you get a heads-up before your clock runs out in an online game. On by default, switched off any time from your profile
+- **Password recovery** — reset a forgotten password by emailed link. An address is collected at signup and can be changed later from your profile
+- **Confirm your email, but play right away** — signing up asks for an email and sends a confirmation link, and your account works completely in the meantime. The one thing confirming unlocks is turn reminders, which we don't send to unconfirmed addresses. There's no deadline and nothing gets locked: you can play for a month unconfirmed and lose nothing but the warning mail. (Just want a quick game? You don't need an account at all — local and hotseat play are open to everyone.)
+- **Turn reminders** — once your address is confirmed, you get a heads-up before your clock runs out in an online game. On by default, switched off any time from your profile
 - **Profile page** — lifetime stats: games, wins, losses, gammons, backgammons, points won/lost, win %, gammon rate
 - **Online play** — create an online game, share a deep link, join by code, open-games list, with both clients polling for the opponent's moves
-- **Nobody gets stranded** — if an opponent walks away mid-game, a countdown appears for both players, and after 48 hours the one still at the board can claim the win. Only between registered players, and you always see your own clock before it runs out. Countdowns follow the server's clock, so a device with the wrong time still shows you the truth. A reminder email can be sent before your time runs out, once the deploy schedules it
+- **Nobody gets stranded** — if an opponent walks away mid-game, a countdown appears for both players, and after 48 hours the one still at the board can claim the win. Only between registered players, and you always see your own clock before it runs out. Countdowns follow the server's clock, so a device with the wrong time still shows you the truth. A reminder email can be sent to a confirmed address before your time runs out, once the deploy schedules it
 - **Turn-ownership security** — the server rejects gameplay actions (403) from anyone who doesn't own the current seat; online, the mobile app also gates its UI so a device only acts on the seat it owns and only on its turn (read-only "waiting"/"spectating" views otherwise)
 - **Graceful exit from a dead game** — if your opponent deletes their account mid-game, both apps say so and offer to close the game out unscored rather than leaving you stuck
 - **Mobile app** — native SVG board, tap-to-roll, per-move undo, pull-to-refresh, opponent move sync
@@ -252,8 +253,10 @@ seat-permission rules — lives in
 | POST | `/api/auth/refresh/` | Refresh access token |
 | POST | `/api/auth/password-reset/` | Email yourself a reset link |
 | POST | `/api/auth/password-reset/confirm/` | Set a new password from that link's `uid` + `token` |
-| GET | `/api/auth/me/` | Current user + stats |
-| PATCH | `/api/auth/me/` | Set or clear your email address (send `""` to clear) |
+| POST | `/api/auth/verify-email/confirm/` | Confirm your address from that link's `token` |
+| POST | `/api/auth/verify-email/resend/` | Send yourself another confirmation link (needs a login) |
+| GET | `/api/auth/me/` | Current user + stats (including `email_verified`) |
+| PATCH | `/api/auth/me/` | Change your email address, or toggle turn reminders |
 | DELETE | `/api/auth/me/` | Delete your account (requires your password) |
 | GET/POST | `/api/games/` | List games visible to you / create game |
 | GET | `/api/games/?status=waiting` | Open lobby games |
@@ -300,8 +303,13 @@ All win values are multiplied by the **doubling cube**: a gammon at cube value 4
 
 ---
 
-_Last updated 2026-08-03. Test counts (596 / 411 / 292 = 1299) verified green on that
-date, on both SQLite and Postgres 16. The most recent pass hardened the inactivity
+_Last updated 2026-08-03. Test counts (646 / 445 / 309 = 1400) verified green on that
+date. The most recent pass made an email address required at signup and added
+confirmation: accounts work fully while unconfirmed, and the single thing
+confirming unlocks is turn-reminder mail — which protects the sending domain's
+reputation, since bounces and spam complaints from unconfirmed addresses would
+land everyone else's reminders in spam. There is deliberately no timed lockout.
+Before that, a pass hardened the inactivity
 forfeit: countdowns now follow the server's clock rather than the device's, the
 claim-vs-move race explains itself instead of reading like a bug, and a
 `send_turn_reminders` command can email the player on the clock once a deploy

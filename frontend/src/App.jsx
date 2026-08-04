@@ -8,6 +8,7 @@ import RegisterPage from "./pages/RegisterPage";
 import ProfilePage from "./pages/ProfilePage";
 import ForgotPasswordPage from "./pages/ForgotPasswordPage";
 import ResetPasswordPage from "./pages/ResetPasswordPage";
+import VerifyEmailPage from "./pages/VerifyEmailPage";
 
 function Nav() {
   const { user, logout } = useAuth();
@@ -51,6 +52,10 @@ export default function App() {
           <Route path="/forgot-password" element={<ForgotPasswordPage />} />
           {/* Exact shape of the emailed link: FRONTEND_BASE_URL + this path. */}
           <Route path="/reset-password/:uid/:token" element={<ResetPasswordPage />} />
+          {/* Likewise fixed by the server: the confirmation mail links to
+              FRONTEND_BASE_URL + this path. Unauthenticated — the token is the
+              credential, and the mail is often read on a logged-out device. */}
+          <Route path="/verify-email/:token" element={<VerifyEmailPage />} />
           <Route path="/game/:id" element={<GamePage />} />
           <Route path="/profile" element={<ProfilePage />} />
         </Routes>

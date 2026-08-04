@@ -10,23 +10,41 @@ For how auth relates to seat ownership and online play, see
 ## Model
 
 There is **no custom user model** — accounts are Django's stock
-`django.contrib.auth.models.User`. A user has a `username`, a `password` and an
-**optional `email`**; everything shown on the profile (wins, losses, gammons, points,
+`django.contrib.auth.models.User`. A user has a `username`, a `password` and a
+**required `email`**; everything shown on the profile (wins, losses, gammons, points,
 rates) is **computed on read** by `UserSerializer`, never stored. See
 [data-model.md](data-model.md).
+
+**`email` became required at registration on 2026-08-03**
+([ADR-003](../decisions/adr-003-email-verification.md)) — `required=True,
+allow_blank=False` on `RegisterSerializer`, and `PATCH /api/auth/me/` will no
+longer blank one either. It was optional for most of this app's life; what
+changed is that *guest seats* now carry play-without-an-account, so the
+"pick a name and play" argument no longer reaches the registration form, and the
+[inactivity forfeit](../decisions/adr-002-inactivity-forfeit.md) can lose a
+player a game whose only warning channel is email. **Accounts predating the
+requirement are not rewritten and not locked out** — the serializer validates
+input, it does not audit the table — so a blank `User.email` is still a state
+this code has to handle, and it does.
 
 `email` is deliberately **not** unique-checked (`User.email` carries no unique
 constraint, and adding one would turn registration into a "is this address already
 registered?" oracle), so every lookup uses `email__iexact` and a reset mails *each*
-matching account its own token. It is the account's only route to password recovery:
-without one, `POST /api/auth/password-reset/` can never reach it. `email` and
-`turn_reminder_emails` are the **only two writable fields** on `UserSerializer` —
-`username` is read-only because games and
+matching account its own token. It is the account's only route to password recovery.
+`email` and `turn_reminder_emails` are the **only two writable fields** on
+`UserSerializer` — `username` is read-only because games and
 matches carry a denormalised copy of it in `player1_name`/`player2_name`, and
-everything else on the payload is a computed stat. `turn_reminder_emails` is the
+everything else on the payload is a computed stat, including the read-only
+`email_verified`. `turn_reminder_emails` is the
 turn-reminder opt-out; it does not live on `User` at all but on an optional
 [`UserPreferences`](data-model.md#userpreferences) row, and is described with the
 endpoint in [api.md](api.md#patch-apiauthme).
+
+**Two optional one-to-one rows hang off `User`**, and they share a convention:
+[`UserPreferences`](data-model.md#userpreferences) and `EmailVerification`. Both
+are lazily created, and for both **absence means "the default"** — all
+preferences on, nothing verified. Neither is a place to put anything that a
+missing row would misreport.
 
 ## Endpoints
 
@@ -36,22 +54,29 @@ endpoint in [api.md](api.md#patch-apiauthme).
 | `POST /api/auth/login/` | SimpleJWT `TokenObtainPairView` | `{ access, refresh }` |
 | `POST /api/auth/refresh/` | SimpleJWT `TokenRefreshView` | `{ access, refresh }` (rotated) |
 | `GET /api/auth/me/` | `MeView` (`IsAuthenticated`) | current user + computed stats |
-| `PATCH /api/auth/me/` | `MeView` (`IsAuthenticated`) | sets/clears `email` (send `""` to clear); toggles `turn_reminder_emails` |
+| `PATCH /api/auth/me/` | `MeView` (`IsAuthenticated`) | changes `email` (**`""` is a 400**, not a clear); toggles `turn_reminder_emails` |
 | `DELETE /api/auth/me/` | `MeView.destroy` (`IsAuthenticated`) | 204; requires the caller's current password |
 | `POST /api/auth/password-reset/` | `PasswordResetRequestView` | flat 200 whether or not the address matches |
 | `POST /api/auth/password-reset/confirm/` | `PasswordResetConfirmView` | 200; `{uid, token, new_password}` |
+| `POST /api/auth/verify-email/confirm/` | `EmailVerificationConfirmView` | **no auth**; 200; `{token}` from the emailed link |
+| `POST /api/auth/verify-email/resend/` | `EmailVerificationResendView` | `IsAuthenticated`; no body; 200 sent / 200 already verified / 429 cooling down |
 
 - **Register** ([`views.py`](../../backend/game/views.py)) validates via
   `RegisterSerializer` (username unique, password ≥ 8 chars plus Django's
-  `AUTH_PASSWORD_VALIDATORS`, optional `email`), creates the user with `create_user`
-  (hashes the password), and **mints a token pair immediately** so the client is
-  logged in on signup with no second round-trip.
+  `AUTH_PASSWORD_VALIDATORS`, **required non-blank `email`**), creates the user with
+  `create_user` (hashes the password), **mails a verification link**
+  (`issue_email_verification`, which cannot fail the request), and **mints a token
+  pair immediately** so the client is logged in on signup with no second
+  round-trip. The account is usable straight away; verification is not a gate on
+  anything but reminder mail.
 - **Login / refresh** are the stock SimpleJWT views, wired in
   [`urls.py`](../../backend/game/urls.py). Rotation is on, so each refresh mints a
   new refresh token and blacklists the one it replaced — a refresh token is
   single-use.
-- **`/me/`** is the only auth-gated route (`IsAuthenticated`, all three verbs).
-  Everything else is `AllowAny` (see the security note below).
+- **`/me/`** (all three verbs) and **`verify-email/resend/`** are the only
+  auth-gated routes (`IsAuthenticated`). Everything else is `AllowAny` (see the
+  security note below) — including `verify-email/confirm/`, deliberately: the
+  link is followed from a mailbox, possibly on a device that never logged in.
 - **Password reset** is token-based and stateless: `default_token_generator` hashes
   the current password hash and `last_login` into the token, so writing the new
   password invalidates every token minted against the old one. On success **every
@@ -61,19 +86,26 @@ endpoint in [api.md](api.md#patch-apiauthme).
   request/response detail, including the anti-enumeration properties, is in
   [api.md](api.md#post-apiauthpassword-reset).
 
-**Outbound mail: there are two kinds now, and they share one configuration.**
+**Outbound mail: there are three kinds now, and they share one configuration.**
 The password-reset link is no longer the only thing this app sends. `manage.py
 send_turn_reminders` mails the player on the clock before an inactivity forfeit
 becomes claimable ([ADR-002](../decisions/adr-002-inactivity-forfeit.md),
-[railway-deploy.md step 8](../operations/railway-deploy.md#8-schedule-the-turn-reminder-cron)).
-Consequences for anyone reasoning about auth:
+[railway-deploy.md step 8](../operations/railway-deploy.md#8-schedule-the-turn-reminder-cron)),
+and registering or changing an address mails a **verification link**
+([below](#email-verification)). Consequences for anyone reasoning about auth:
 
-- **The same `EMAIL_*` settings gate both.** With `EMAIL_HOST` unset both land in
-  Django's console backend; configuring SMTP switches on both at once.
-- **`User.email` now has a second consumer.** It was purely a recovery address;
-  it is also the reminder address. The field is still **optional**, still
-  unverified, and still not unique — an account without one simply gets neither
-  mail. Nothing about the auth flow changed to accommodate this.
+- **The same `EMAIL_*` settings gate all three.** With `EMAIL_HOST` unset they all
+  land in Django's console backend; configuring SMTP switches them on at once.
+- **`User.email` now has three consumers.** It was purely a recovery address; it
+  is also the reminder address and the thing verification proves. The field is
+  **required at registration** and still not unique. An older account with no
+  address gets none of the three mails, which the code treats as an ordinary
+  state rather than an error.
+- **Only the reminder requires a *verified* address**
+  ([ADR-003](../decisions/adr-003-email-verification.md)). The reset and
+  verification mails go to whatever is on file, because each is sent to one
+  person who just asked for it; the reminder is the only bulk, scheduled,
+  unprompted sender, and that is the one that can burn a sending domain.
 - **The reminder is not an auth surface.** Its only link is
   `{FRONTEND_BASE_URL}/game/{id}` (`build_game_url`, built exactly as
   `build_password_reset_url` is) — a plain game URL that authenticates nobody and
@@ -81,7 +113,7 @@ Consequences for anyone reasoning about auth:
   credential. Note this makes **`FRONTEND_BASE_URL` load-bearing for both mails**.
 - **Only the reminder is refusable, and that asymmetry is deliberate.** A reset
   mail is sent *because the recipient just asked for it*; a reminder is
-  unsolicited, to an address collected for recovery. So the reminder honours
+  unsolicited. So the reminder honours
   `UserPreferences.reminders_enabled(user)` (default **on**, switched at
   `PATCH /api/auth/me/`) and carries a footer naming the setting, while the reset
   mail has no opt-out and should not grow one — suppressing it would silently
@@ -95,7 +127,77 @@ Consequences for anyone reasoning about auth:
 Token lifetimes are set in [`settings.py`](../../backend/backgammon/settings.py):
 **access 1 hour, refresh 7 days**. The auth routes also carry scoped DRF throttles —
 `login` 10/hour, `register` 5/hour, `refresh` 60/hour, `password_reset` 5/hour,
-`password_reset_confirm` 20/hour — all env-overridable and disabled under test.
+`password_reset_confirm` 20/hour, `email_verify_resend` 5/hour,
+`email_verify_confirm` 20/hour — all env-overridable and disabled under test.
+
+## Email verification
+
+Built 2026-08-03 ([ADR-003](../decisions/adr-003-email-verification.md)). Read
+the ADR for *why*; this section is the flow. Endpoint detail is in
+[api.md](api.md#post-apiauthverify-emailconfirm).
+
+**What it gates: turn-reminder mail, and nothing else.** There is exactly one
+consumer, `EmailVerification.is_verified(user)` inside `send_turn_reminders`.
+Login, play, `/me/`, password reset and account deletion are all untouched by it,
+and an unverified account is a fully working account. The reason is
+deliverability, not security: the reminder cron is the only bulk, scheduled,
+unprompted sender in the app, and mailing unproven addresses in volume costs the
+sending domain its reputation — which lands the *legitimate* reminders in spam.
+
+### The flow
+
+1. **A link is mailed** by `issue_email_verification`
+   ([`views.py`](../../backend/game/views.py)) from two places: `RegisterView.create`,
+   and `MeView.perform_update` when the address actually changed (compared
+   case-folded against the pre-`save()` value, so re-typing the same address in a
+   different case mails nothing).
+2. **The link is `{FRONTEND_BASE_URL}/verify-email/{token}`**
+   (`build_email_verification_url`), built exactly as `build_password_reset_url`
+   is. The token is `django.core.signing.dumps({"uid", "email"})` under
+   `EMAIL_VERIFICATION_SALT` — **stateless, with no token table** — and expires
+   via `max_age` against `EMAIL_VERIFICATION_TIMEOUT_HOURS` (default **72**).
+3. **The user follows it** and the page POSTs the token to
+   `/api/auth/verify-email/confirm/`, which is **unauthenticated** — the mail may
+   be read on a device that never logged in, and the token proves the only thing
+   that matters. Confirming is idempotent and grants no session.
+4. **`EmailVerification` records which address was proven** (`verified_email`,
+   `verified_at`), and `email_verified` on `/api/auth/me/` reports the comparison
+   of that against the live `User.email`.
+5. **A lost mail is recovered** with `POST /api/auth/verify-email/resend/`
+   (authenticated, no body), capped by both the `email_verify_resend` throttle
+   and `EmailVerification.last_sent_at` (default 60s cool-down — the row-level
+   check is what actually holds when `CACHES` is per-worker `LocMemCache`).
+
+### Three properties worth not re-deriving
+
+- **The proven *address* is stored, not a boolean.** `is_verified` compares it to
+  `User.email` on every read, so **changing the address self-invalidates
+  verification** with no signal, no hook and nothing to remember to call. A bare
+  flag would survive a `PATCH` and the next cron tick would mail an unproven
+  mailbox.
+- **The address is inside the token's signature.** A link mailed to `a@x.com`
+  cannot confirm an account that has since moved to `b@y.com`; the token verifies
+  but is refused.
+- **Not `default_token_generator`.** Password reset uses it *because* it hashes
+  the password hash in and is therefore single-use. That property is wrong here —
+  a password change should not silently kill a verification link in flight — so
+  verification uses plain signing instead.
+
+### Where a mobile user ends up: a browser
+
+**The emailed link is a web URL and there is no mobile deep link**, exactly as
+with password reset and for the same cause: `FRONTEND_BASE_URL` is a **single**
+setting pointing at the **web** client, and `mobile/app/` has no
+`verify-email/[token]` route (nor a `backgammon://` handler for one). So a mobile
+player who taps Confirm finishes in the browser and returns to the app already
+verified — the next `/me/` fetch reports it.
+
+Mobile therefore implements only the *resend* half, in
+[`EmailSection.jsx`](../../mobile/src/components/EmailSection.jsx); the web client
+owns the confirm screen at `/verify-email/:token`
+([`VerifyEmailPage.jsx`](../../frontend/src/pages/VerifyEmailPage.jsx)). Tracked
+alongside the identical reset-link gap in
+[going-live.md 2.3](../operations/going-live.md#23-polish-and-hygiene).
 
 ## Client token lifecycle
 
@@ -112,6 +214,8 @@ injects the bearer token and does a **single silent refresh-and-retry on a 401**
 | Login screen | [`pages/LoginPage.jsx`](../../frontend/src/pages/LoginPage.jsx) + `RegisterPage.jsx` | [`app/login.jsx`](../../mobile/app/login.jsx) (login/register/reset modes) |
 | Reset request | [`pages/ForgotPasswordPage.jsx`](../../frontend/src/pages/ForgotPasswordPage.jsx) (`/forgot-password`) | the `"reset"` mode of `app/login.jsx` |
 | Reset confirm | [`pages/ResetPasswordPage.jsx`](../../frontend/src/pages/ResetPasswordPage.jsx) (`/reset-password/:uid/:token`) | **none** — the emailed link is a web URL and opens in the browser |
+| Verify confirm | [`pages/VerifyEmailPage.jsx`](../../frontend/src/pages/VerifyEmailPage.jsx) (`/verify-email/:token`) | **none** — same reason as the reset link |
+| Verify resend | `EmailSettings.jsx` (`resendEmailVerification`) | `EmailSection.jsx` (same call) |
 | Email settings | [`components/EmailSettings.jsx`](../../frontend/src/components/EmailSettings.jsx) | [`components/EmailSection.jsx`](../../mobile/src/components/EmailSection.jsx) |
 | Account deletion | [`components/DeleteAccountPanel.jsx`](../../frontend/src/components/DeleteAccountPanel.jsx) | [`components/DeleteAccountSection.jsx`](../../mobile/src/components/DeleteAccountSection.jsx) |
 
@@ -135,8 +239,9 @@ rejected, so a guest is a normal, non-error state.
 
 | Layer | File | Focus |
 |-------|------|-------|
-| Backend | [`tests/test_auth.py`](../../backend/game/tests/test_auth.py) | register (dupe/short-password/optional email), login (wrong password → 401), `/me/` gating + stat counts, `PATCH /me/` email set/clear, refresh |
+| Backend | [`tests/test_auth.py`](../../backend/game/tests/test_auth.py) | register (dupe username, short password, initial stat counts), login (wrong password → 401), `/me/` gating + stat counts, `PATCH /me/` email change, refresh. Its registration helper now always supplies an address — **note no test asserts that a missing or blank one is a 400**, though both are ([api.md](api.md#post-apiauthregister)) |
 | Backend | [`tests/test_password_reset.py`](../../backend/game/tests/test_password_reset.py) | flat request body on hit and miss, case-insensitive lookup, token single-use, refresh blacklisting, uid/token indistinguishability |
+| Backend | [`tests/test_email_verification.py`](../../backend/game/tests/test_email_verification.py) | registration mails exactly one link and starts unverified; confirm is idempotent, session-free and disturbs no password; bad/tampered/expired/wrong-salt/deleted-account tokens; change-of-address un-verifies, re-mails, and refuses the old token; resend cool-down (429), already-verified 200, anonymous 401; and the reminder gate — an unverified seat is skipped **without burning the turn's reminder** |
 | Backend | [`tests/test_account_deletion.py`](../../backend/game/tests/test_account_deletion.py) | password re-check, refresh blacklisting, lobby purge, seat closure |
 | Backend | [`tests/test_seat_security.py`](../../backend/game/tests/test_seat_security.py) | seat/turn enforcement: wrong user → 403, out-of-turn → 403, owner accepted, guest-seat rules (hotseat / anonymous / other accounts) |
 | Backend | [`tests/test_cube.py`](../../backend/game/tests/test_cube.py) (`CubeSeatSecurityTest`) | same enforcement on the cube actions: only the current player may offer, non-participants 403, the offerer can't answer their own double |
@@ -184,10 +289,20 @@ on a guest seat anonymously. Enforcement is exactly as strong as the seat FKs.
   already-issued **access** token stays valid until it expires (≤ 1 hour).
 - **An authenticated change-password endpoint.** Reset by emailed token exists;
   there is no route for a logged-in user to change a password they still know.
-- **Email verification.** An address is accepted as typed — never confirmed — so a
-  typo silently costs the account its recovery route. Nothing else keys off it.
-- **A mobile reset-confirm screen.** Mobile requests the link; the link itself is a
-  web URL and opens in the browser (no `backgammon://` deep-link route for it).
+- **Verification as a *gate* on anything but reminder mail.** Verification itself
+  now exists ([above](#email-verification)), but by design it blocks nothing else:
+  an unverified address still receives password-reset links and still identifies
+  the account for recovery, so a typo still costs recovery until the user fixes
+  it. There is no lockout, no grace period, and no plan for one
+  ([ADR-003](../decisions/adr-003-email-verification.md)).
+- **A backfill or audit of pre-existing accounts.** Migration
+  `0008_emailverification` adds the table and writes no rows. Accounts created
+  before email was required keep a blank address; nothing sweeps them, prompts
+  them on login, or refuses them service.
+- **Mobile screens for either emailed link.** Mobile can *request* a reset and
+  *resend* a verification, but both links are web URLs that open in the browser —
+  there is no `backgammon://reset-password/…` or `…/verify-email/…` deep-link
+  route, and `FRONTEND_BASE_URL` is a single value with nowhere to put a second.
 - **Guest seat identity** (see security note): anonymous requests on guest seats
   are unverifiable; a guest token/session concept would close this.
 - **Account lockout.** Scoped throttles now cap login/register/refresh/reset

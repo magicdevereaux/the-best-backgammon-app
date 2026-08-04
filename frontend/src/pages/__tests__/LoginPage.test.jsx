@@ -71,45 +71,67 @@ describe("LoginPage", () => {
   });
 });
 
+/*
+ * Registration, post-ADR-003: the email field is required. It used to be
+ * optional, and the tests below used to prove a blank one still registered —
+ * that is now the opposite of the contract, since an account with no address
+ * can neither recover its password nor be warned before the 48-hour turn clock
+ * forfeits a game.
+ */
 describe("RegisterPage", () => {
-  test("registers without an email and navigates home on success", async () => {
-    // Email is optional by design — leaving it blank must still register.
-    authApi.register.mockResolvedValue({ username: "bob", wins: 0, losses: 0 });
-    renderPage(<RegisterPage />);
-
-    await userEvent.type(screen.getByLabelText(/username/i), "bob");
-    await userEvent.type(screen.getByLabelText(/^password/i), "securepass123");
+  async function fillAndSubmit({
+    username = "bob",
+    password = "securepass123",
+    email = "bob@example.com",
+  } = {}) {
+    await userEvent.type(screen.getByLabelText(/username/i), username);
+    await userEvent.type(screen.getByLabelText(/^password/i), password);
+    if (email) await userEvent.type(screen.getByLabelText(/email/i), email);
     await userEvent.click(screen.getByRole("button", { name: /register/i }));
+  }
 
-    await waitFor(() => expect(authApi.register).toHaveBeenCalledWith("bob", "securepass123", ""));
-    await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith("/"));
+  test("the email field is required", async () => {
+    renderPage(<RegisterPage />);
+    expect(screen.getByLabelText(/email/i)).toBeRequired();
+    // The old label advertised the field as optional; it must not any more.
+    expect(screen.queryByLabelText(/optional/i)).not.toBeInTheDocument();
   });
 
-  test("the email field is present, optional, and passed through when filled", async () => {
+  test("explains what the address is for — recovery and the turn clock", async () => {
+    renderPage(<RegisterPage />);
+    expect(screen.getByText(/reset a forgotten password/i)).toBeInTheDocument();
+    expect(screen.getByText(/running out of time/i)).toBeInTheDocument();
+  });
+
+  test("passes the address through and navigates home on success", async () => {
     authApi.register.mockResolvedValue({ username: "bob", wins: 0, losses: 0 });
     renderPage(<RegisterPage />);
 
-    const email = screen.getByLabelText(/email/i);
-    expect(email).not.toBeRequired();
-
-    await userEvent.type(screen.getByLabelText(/username/i), "bob");
-    await userEvent.type(screen.getByLabelText(/^password/i), "securepass123");
-    await userEvent.type(email, "bob@example.com");
-    await userEvent.click(screen.getByRole("button", { name: /register/i }));
+    await fillAndSubmit();
 
     await waitFor(() =>
       expect(authApi.register).toHaveBeenCalledWith("bob", "securepass123", "bob@example.com")
     );
+    await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith("/"));
+  });
+
+  test("surfaces the server's missing-email error", async () => {
+    // The browser's own `required` catches this first in a real browser, but
+    // the server is authoritative and its wording has to land somewhere.
+    authApi.register.mockRejectedValue(new Error("This field is required."));
+    renderPage(<RegisterPage />);
+
+    await fillAndSubmit({ email: "" });
+
+    expect(await screen.findByText("This field is required.")).toBeInTheDocument();
+    expect(mockNavigate).not.toHaveBeenCalled();
   });
 
   test("surfaces the server's email validation error", async () => {
     authApi.register.mockRejectedValue(new Error("Enter a valid email address."));
     renderPage(<RegisterPage />);
 
-    await userEvent.type(screen.getByLabelText(/username/i), "bob");
-    await userEvent.type(screen.getByLabelText(/^password/i), "securepass123");
-    await userEvent.type(screen.getByLabelText(/email/i), "bob@example.com");
-    await userEvent.click(screen.getByRole("button", { name: /register/i }));
+    await fillAndSubmit();
 
     expect(await screen.findByText("Enter a valid email address.")).toBeInTheDocument();
     expect(mockNavigate).not.toHaveBeenCalled();
@@ -119,9 +141,7 @@ describe("RegisterPage", () => {
     authApi.register.mockRejectedValue(new Error("Username already taken."));
     renderPage(<RegisterPage />);
 
-    await userEvent.type(screen.getByLabelText(/username/i), "alice");
-    await userEvent.type(screen.getByLabelText(/password/i), "securepass123");
-    await userEvent.click(screen.getByRole("button", { name: /register/i }));
+    await fillAndSubmit({ username: "alice" });
 
     expect(await screen.findByText("Username already taken.")).toBeInTheDocument();
     expect(mockNavigate).not.toHaveBeenCalled();

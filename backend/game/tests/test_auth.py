@@ -9,6 +9,20 @@ def make_user(username="alice", password="securepass123"):
     return User.objects.create_user(username=username, password=password)
 
 
+# Registration requires an address (ADR-003), so every payload below carries
+# one — a request without it is a 400 before any of the behaviour these tests
+# are actually about gets a chance to run. The requirement itself is pinned in
+# test_password_reset.RegistrationEmailTest, not here.
+def register_payload(username="alice", password="securepass123", **overrides):
+    payload = {
+        "username": username,
+        "password": password,
+        "email": f"{username}@example.com",
+    }
+    payload.update(overrides)
+    return payload
+
+
 def get_tokens(client, username="alice", password="securepass123"):
     resp = client.post(
         "/api/auth/login/",
@@ -24,9 +38,7 @@ class RegisterTest(TestCase):
 
     def test_register_creates_user_and_returns_tokens(self):
         resp = self.client.post(
-            "/api/auth/register/",
-            {"username": "alice", "password": "securepass123"},
-            format="json",
+            "/api/auth/register/", register_payload(), format="json"
         )
         self.assertEqual(resp.status_code, 201)
         data = resp.json()
@@ -38,25 +50,23 @@ class RegisterTest(TestCase):
     def test_register_duplicate_username_returns_400(self):
         make_user()
         resp = self.client.post(
-            "/api/auth/register/",
-            {"username": "alice", "password": "securepass123"},
-            format="json",
+            "/api/auth/register/", register_payload(), format="json"
         )
         self.assertEqual(resp.status_code, 400)
+        # Specifically the *username*: with a valid address in the payload the
+        # only thing left to reject is the collision this test names.
+        self.assertIn("username", resp.json())
 
     def test_register_short_password_returns_400(self):
         resp = self.client.post(
-            "/api/auth/register/",
-            {"username": "alice", "password": "short"},
-            format="json",
+            "/api/auth/register/", register_payload(password="short"), format="json"
         )
         self.assertEqual(resp.status_code, 400)
+        self.assertIn("password", resp.json())
 
     def test_register_returns_initial_win_loss_counts(self):
         resp = self.client.post(
-            "/api/auth/register/",
-            {"username": "alice", "password": "securepass123"},
-            format="json",
+            "/api/auth/register/", register_payload(), format="json"
         )
         self.assertEqual(resp.json()["user"]["wins"], 0)
         self.assertEqual(resp.json()["user"]["losses"], 0)

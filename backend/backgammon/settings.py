@@ -307,6 +307,17 @@ THROTTLE_RATES = {
     "password_reset_confirm": os.environ.get(
         "THROTTLE_RATE_PASSWORD_RESET_CONFIRM", "20/hour"
     ),
+    # Email verification (ADR-003). `resend` mails a third party on demand, so
+    # it is the same shape of abuse as `password_reset` and gets the same rate —
+    # note it is authenticated, so the throttle keys on the account, and the
+    # per-row `EmailVerification.last_sent_at` cool-down backs it up for the
+    # deployment-as-configured case where throttle counters are per-worker.
+    # `confirm` is looser for the same reason `password_reset_confirm` is: it is
+    # guessing against a signed token, but the space still shouldn't be hammered.
+    "email_verify_resend": os.environ.get("THROTTLE_RATE_EMAIL_VERIFY_RESEND", "5/hour"),
+    "email_verify_confirm": os.environ.get(
+        "THROTTLE_RATE_EMAIL_VERIFY_CONFIRM", "20/hour"
+    ),
 }
 if TESTING:
     THROTTLE_RATES = {scope: None for scope in THROTTLE_RATES}
@@ -351,6 +362,32 @@ TURN_TIMEOUT_HOURS = int(os.environ.get("TURN_TIMEOUT_HOURS", "48"))
 # a platform cron has to invoke the command (see the docstring there). Env-
 # driven and defaulted, so local dev still needs no .env file.
 TURN_REMINDER_LEAD_HOURS = int(os.environ.get("TURN_REMINDER_LEAD_HOURS", "12"))
+
+# --------------------------------------------------------------------------
+# Email verification (ADR-003)
+# --------------------------------------------------------------------------
+# How long a verification link stays good. Longer than a password-reset window
+# would be, on purpose: this token proves *ownership of a mailbox* and nothing
+# more — it grants no session, changes no password, and is useless to anyone who
+# is not already reading that inbox — so the usual "expire it fast" reflex buys
+# very little here and costs a real user the link they opened on Monday and got
+# back to on Thursday. A resend path exists either way.
+EMAIL_VERIFICATION_TIMEOUT_HOURS = int(
+    os.environ.get("EMAIL_VERIFICATION_TIMEOUT_HOURS", "72")
+)
+
+# Smallest gap between two verification mails to the same account, backing up
+# the `email_verify_resend` throttle above with a check that does not depend on
+# `CACHES` being shared across workers. Short enough that a genuinely lost mail
+# can be re-sent while the user is still sitting there.
+EMAIL_VERIFICATION_RESEND_COOLDOWN_SECONDS = int(
+    os.environ.get("EMAIL_VERIFICATION_RESEND_COOLDOWN_SECONDS", "60")
+)
+
+# Namespace for the signed verification token (django.core.signing). Fixed, not
+# configurable: changing it invalidates every link already in flight, which is a
+# migration problem and not a knob.
+EMAIL_VERIFICATION_SALT = "game.email-verification"
 
 SIMPLE_JWT = {
     "ACCESS_TOKEN_LIFETIME": timedelta(hours=1),
