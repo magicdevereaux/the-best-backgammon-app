@@ -27,6 +27,22 @@ Re-run on **2026-08-03** after `0006_game_turn_reminder_sent_at` and
 tests green. Both are plain additive schema changes — a nullable column and a new
 table — with no data migration between them.
 
+> **Not re-verified on Postgres since: `0008_emailverification` (2026-08-03).**
+> The counts above are therefore stale — the tree now has **38** migrations and
+> **646** backend tests, and the numbers here are left as-written because they
+> record what was actually observed on a real Postgres, which is the point of
+> this file. What *has* been checked since, on SQLite:
+> `makemigrations --check --dry-run` reports no drift, all 646 tests pass, and
+> `manage.py check --deploy` still reports zero issues under `DEBUG=False`.
+>
+> The risk is low and worth stating precisely rather than hand-waving:
+> `0008` creates one table with a `OneToOneField`, two nullable datetimes, an
+> `EmailField` and a `CharField` — plain additive DDL with **no data migration**,
+> no backfill, and nothing to reverse-engineer. There is no `0005`-style
+> row-rewriting step to get wrong. Still, **re-run this file's procedure against
+> a real Postgres before cutover**; the reason this document exists is that
+> "should be fine" is not the same as "was run".
+
 Both signals matter: the test runner builds its own `test_` database, so a clean
 plain `migrate` against the real database was confirmed separately.
 
