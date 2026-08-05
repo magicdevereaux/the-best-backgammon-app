@@ -136,11 +136,15 @@ Deploy target is **Railway** — runbook and its traps in
 | Suite | Count | Command (cwd) |
 |-------|-------|---------------|
 | Backend | **646** | `python manage.py test game` (`backend/`, in-memory DB) |
-| Web | **445** | `CI=true npm test -- --watchAll=false` (`frontend/`) |
-| Mobile | **309** | `CI=true npx jest` (`mobile/`) |
+| Web | **462** | `CI=true npm test -- --watchAll=false` (`frontend/`) |
+| Mobile | **336** | `CI=true npx jest` (`mobile/`) |
 
-All three suites were **green as of 2026-08-03** (646 / 445 / 309, 1400 total, zero
+All three suites were **green as of 2026-08-04** (646 / 462 / 336, 1444 total, zero
 failures). If you see a failure, it is yours — the baseline is clean.
+
+> **Mobile route tests live in `mobile/src/screens/__tests__/`, deliberately not
+> under `app/`** — expo-router would register them as routes and pull a test
+> library into the production bundle. See [`mobile/CLAUDE.md`](mobile/CLAUDE.md).
 
 > **Use `backend/venv/Scripts/python.exe`**, not bare `python` — the system
 > interpreter has no `dj_database_url` and dies at import.
@@ -422,11 +426,23 @@ These are intended but **do not exist in the code today** — don't assume them:
 - **WebSockets / real-time push.** There is no Channels/ASGI setup. Opponent moves
   are synced by **polling on both clients** (~3.5s), not pushed. A socket layer is
   future work.
-- **A mobile deep link for the reset email.** Password reset is built end to end:
-  both clients collect an optional email and can request a reset, and the web
-  client serves `/forgot-password` and `/reset-password/:uid/:token`. But the
-  emailed link is built from `FRONTEND_BASE_URL`, i.e. the **web** client, and
-  there is no app deep link — so a mobile user finishes the reset in a browser.
+- **Universal links / App Links — configured but inert.** This is the *only*
+  remaining piece of mobile deep linking, and it is owner-blocked, not
+  code-blocked. Both emailed links now have matching in-app routes
+  (`app/verify-email/[token].jsx`, `app/reset-password/[uid]/[token].jsx`),
+  reachable today two ways: the `backgammon://` custom scheme, and an "open in
+  the app" button the web pages show to mobile browsers
+  ([`appLink.js`](frontend/src/utils/appLink.js)). What is *not* live is the
+  mechanism that makes an **emailed** link open the app, because mail clients
+  will not follow a custom scheme. `app.json` carries `associatedDomains` and an
+  `autoVerify` intent filter, and [`frontend/public/.well-known/`](frontend/public/.well-known/)
+  carries the AASA and `assetlinks.json` — all with placeholders for three values
+  nobody can supply yet: the domain, an Apple Team ID, and the Android signing
+  fingerprint. See [going-live 1.8](docs/operations/going-live.md) and
+  [`mobile/CLAUDE.md`](mobile/CLAUDE.md).
+  **Do not "fix" this by mailing a `backgammon://` link** — the server keeps
+  mailing one ordinary `https://` URL, and the OS decides whether the app or the
+  browser handles it, with browser fallback for free.
 - **Automated matchmaking.** No auto-pairing queue, ranking/ELO, or "quick play vs
   a random opponent." Online pairing is always player-initiated via link/code or the
   open-games list. See [overview.md](docs/architecture/overview.md#online-multiplayer).

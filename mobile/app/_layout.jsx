@@ -26,6 +26,15 @@ export default function RootLayout() {
           <Stack.Screen name="login" options={{ title: "Sign in" }} />
           <Stack.Screen name="profile" options={{ title: "Profile" }} />
           <Stack.Screen name="game/[id]" options={{ title: "Game" }} />
+          {/* The two link-landing screens. Their paths are not a design choice —
+              they mirror the URLs the backend mails
+              (`/verify-email/{token}`, `/reset-password/{uid}/{token}`) so the
+              same path resolves whether it arrives over the custom scheme, as a
+              hand-off from the web client, or, once a domain exists, as a
+              universal link. Registered here for titles only; expo-router would
+              route to them regardless. */}
+          <Stack.Screen name="verify-email/[token]" options={{ title: "Confirm email" }} />
+          <Stack.Screen name="reset-password/[uid]/[token]" options={{ title: "New password" }} />
         </Stack>
       </AuthProvider>
     </SafeAreaProvider>

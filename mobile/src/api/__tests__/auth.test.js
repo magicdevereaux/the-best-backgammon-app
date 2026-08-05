@@ -6,7 +6,9 @@ import {
   deleteAccount,
   updateEmail,
   resendEmailVerification,
+  confirmEmailVerification,
   requestPasswordReset,
+  confirmPasswordReset,
 } from "../auth";
 import { getAccessToken, getRefreshToken, setTokens, clearTokens } from "../tokenStore";
 
@@ -265,6 +267,140 @@ describe("requestPasswordReset()", () => {
       mockResponse({ detail: "Request was throttled." }, { ok: false, status: 429 })
     );
     await expect(requestPasswordReset("a@example.com")).rejects.toThrow("Request was throttled.");
+  });
+});
+
+describe("confirmEmailVerification()", () => {
+  test("POSTs the token unauthenticated and returns the server's payload", async () => {
+    // The token *is* the credential, so no bearer header should go out — the
+    // person holding the link is often on a device that never logged in.
+    await setTokens("acc", "ref"); // even with a session stored
+    fetch.mockReturnValueOnce(
+      mockResponse({
+        detail: "Your email address is confirmed.",
+        email: "a@example.com",
+        email_verified: true,
+      })
+    );
+
+    const data = await confirmEmailVerification("  tok123  ");
+    expect(data.email_verified).toBe(true);
+    expect(data.detail).toBe("Your email address is confirmed.");
+
+    const [url, options] = fetch.mock.calls[0];
+    expect(url).toMatch(/\/api\/auth\/verify-email\/confirm\/$/);
+    expect(options.method).toBe("POST");
+    expect(options.headers.Authorization).toBeUndefined();
+    expect(JSON.parse(options.body)).toEqual({ token: "tok123" }); // trimmed
+  });
+
+  test("is idempotent as far as this wrapper is concerned — a second 200 is a 200", async () => {
+    // The server accepts the same token twice. Nothing here caches or refuses a
+    // repeat, so a remount cannot turn a good confirmation into a failure.
+    fetch.mockReturnValue(
+      mockResponse({ detail: "Your email address is confirmed.", email_verified: true })
+    );
+    const first = await confirmEmailVerification("tok123");
+    const second = await confirmEmailVerification("tok123");
+    expect(second).toEqual(first);
+  });
+
+  test("surfaces the dead-link field error", async () => {
+    fetch.mockReturnValueOnce(
+      mockResponse(
+        { token: ["This verification link is invalid or has expired."] },
+        { ok: false, status: 400 }
+      )
+    );
+    await expect(confirmEmailVerification("bad")).rejects.toThrow(
+      "This verification link is invalid or has expired."
+    );
+  });
+
+  test("falls back to its own wording when the body carries nothing useful", async () => {
+    fetch.mockReturnValueOnce(mockResponse(null, { ok: false, status: 500 }));
+    await expect(confirmEmailVerification("tok123")).rejects.toThrow(
+      "Could not confirm your email address."
+    );
+  });
+
+  test("a transport failure rejects rather than resolving empty", async () => {
+    fetch.mockRejectedValueOnce(new TypeError("Network request failed"));
+    await expect(confirmEmailVerification("tok123")).rejects.toThrow(
+      "Network request failed"
+    );
+  });
+});
+
+describe("confirmPasswordReset()", () => {
+  test("POSTs uid/token/new_password unauthenticated and returns the detail", async () => {
+    await setTokens("acc", "ref");
+    fetch.mockReturnValueOnce(
+      mockResponse({ detail: "Your password has been reset. You can now log in." })
+    );
+
+    const data = await confirmPasswordReset("MQ", "tok-123", "newsecurepass");
+    expect(data.detail).toBe("Your password has been reset. You can now log in.");
+
+    const [url, options] = fetch.mock.calls[0];
+    expect(url).toMatch(/\/api\/auth\/password-reset\/confirm\/$/);
+    expect(options.method).toBe("POST");
+    expect(options.headers.Authorization).toBeUndefined();
+    expect(JSON.parse(options.body)).toEqual({
+      uid: "MQ",
+      token: "tok-123",
+      new_password: "newsecurepass",
+    });
+  });
+
+  test("posts the credential pair untouched — no trimming of opaque values", async () => {
+    fetch.mockReturnValueOnce(mockResponse({ detail: "ok" }));
+    await confirmPasswordReset(" MQ ", " tok-123 ", "newsecurepass");
+    expect(JSON.parse(fetch.mock.calls[0][1].body)).toMatchObject({
+      uid: " MQ ",
+      token: " tok-123 ",
+    });
+  });
+
+  test("a dead link throws with field: 'token' so the UI can stop offering the form", async () => {
+    fetch.mockReturnValueOnce(
+      mockResponse(
+        { token: ["This password reset link is invalid or has expired."] },
+        { ok: false, status: 400 }
+      )
+    );
+    await expect(confirmPasswordReset("MQ", "bad", "newsecurepass")).rejects.toMatchObject({
+      message: "This password reset link is invalid or has expired.",
+      field: "token",
+    });
+  });
+
+  test("a policy rejection throws with field: 'new_password' — retryable, same link", async () => {
+    fetch.mockReturnValueOnce(
+      mockResponse(
+        { new_password: ["This password is too short. It must contain at least 8 characters."] },
+        { ok: false, status: 400 }
+      )
+    );
+    await expect(confirmPasswordReset("MQ", "tok-123", "short")).rejects.toMatchObject({
+      message: "This password is too short. It must contain at least 8 characters.",
+      field: "new_password",
+    });
+  });
+
+  test("falls back to its own wording, with no field tag, on an unhelpful body", async () => {
+    fetch.mockReturnValueOnce(mockResponse(null, { ok: false, status: 500 }));
+    await expect(confirmPasswordReset("MQ", "tok-123", "newsecurepass")).rejects.toMatchObject({
+      message: "Could not reset your password.",
+      field: null,
+    });
+  });
+
+  test("a transport failure rejects", async () => {
+    fetch.mockRejectedValueOnce(new TypeError("Network request failed"));
+    await expect(confirmPasswordReset("MQ", "tok-123", "newsecurepass")).rejects.toThrow(
+      "Network request failed"
+    );
   });
 });
 

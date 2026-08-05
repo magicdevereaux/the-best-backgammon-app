@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { confirmEmailVerification } from "../api/authApi";
+import { isMobileBrowser, verifyEmailAppUrl } from "../utils/appLink";
 
 /*
  * The landing page for the emailed confirmation link. The route shape is fixed
@@ -23,12 +24,29 @@ import { confirmEmailVerification } from "../api/authApi";
  * unconfirmed address. So even the failure branch is a nudge to the profile,
  * where Resend lives, and never a dead end or a demand to try again before
  * playing.
+ *
+ * On a phone the page also offers a hand-off into the native app
+ * (`backgammon://verify-email/{token}` — see ../utils/appLink). It sits in the
+ * *success* branch, after the POST has already landed, and that ordering is
+ * safe here for a reason that does not generalise: confirmation is idempotent
+ * server-side, so the token surviving into a second consumer costs nothing. The
+ * app re-confirming an address this page just confirmed is a 200 either way.
+ * (ResetPasswordPage has the opposite constraint and offers its hand-off
+ * *before* submitting — changing the password kills the token.)
+ *
+ * It is an addition, never a redirect: the browser flow above it is already
+ * complete by the time the link renders, so a visitor who taps nothing has lost
+ * nothing.
  */
 export default function VerifyEmailPage() {
   const { token } = useParams();
   // "pending" | "confirmed" | "failed"
   const [state, setState] = useState("pending");
   const [message, setMessage] = useState(null);
+  // Read once per mount rather than per render — the user-agent cannot change
+  // under a mounted page, and this keeps the branch below out of render-loop
+  // territory.
+  const [showAppLink] = useState(isMobileBrowser);
 
   useEffect(() => {
     let cancelled = false;
@@ -63,6 +81,24 @@ export default function VerifyEmailPage() {
             Turn reminders can now reach you, so you'll get a warning before an
             online game runs out of time.
           </p>
+          {showAppLink && (
+            <p style={{ marginTop: "1rem" }}>
+              <a
+                href={verifyEmailAppUrl(token)}
+                style={{
+                  display: "inline-block",
+                  padding: "0.6rem 1rem",
+                  borderRadius: "6px",
+                  border: "1px solid var(--border)",
+                  background: "var(--surface-raised)",
+                  color: "var(--ivory)",
+                  textDecoration: "none",
+                }}
+              >
+                Open in the app
+              </a>
+            </p>
+          )}
           <p style={{ marginTop: "1rem" }}>
             <Link to="/">Back to the lobby</Link>
           </p>

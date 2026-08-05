@@ -15,7 +15,7 @@ gammon/backgammon detection. Both clients talk to the same backend.
 - **Doubling cube** — offer/accept/drop before rolling, cube ownership, redoubles to 64, points multiplied by cube value, Crawford rule in match play
 - **Game over screen** — shows win type, points awarded, and running match score
 - **User accounts** — register/login, JWT auth, win/loss and stats tracking, and self-serve account deletion (your games are anonymised, not destroyed, so opponents keep their history)
-- **Password recovery** — reset a forgotten password by emailed link. An address is collected at signup and can be changed later from your profile
+- **Password recovery** — reset a forgotten password by emailed link. An address is collected at signup and can be changed later from your profile. On a phone, the link's page offers to hand you straight into the app rather than making you finish in a browser
 - **Confirm your email, but play right away** — signing up asks for an email and sends a confirmation link, and your account works completely in the meantime. The one thing confirming unlocks is turn reminders, which we don't send to unconfirmed addresses. There's no deadline and nothing gets locked: you can play for a month unconfirmed and lose nothing but the warning mail. (Just want a quick game? You don't need an account at all — local and hotseat play are open to everyone.)
 - **Turn reminders** — once your address is confirmed, you get a heads-up before your clock runs out in an online game. On by default, switched off any time from your profile
 - **Profile page** — lifetime stats: games, wins, losses, gammons, backgammons, points won/lost, win %, gammon rate
@@ -303,8 +303,13 @@ All win values are multiplied by the **doubling cube**: a gammon at cube value 4
 
 ---
 
-_Last updated 2026-08-03. Test counts (646 / 445 / 309 = 1400) verified green on that
-date. The most recent pass made an email address required at signup and added
+_Last updated 2026-08-04. Test counts (646 / 462 / 336 = 1444) verified green on that
+date. The most recent pass finished the mobile side of both emailed links: the app
+now has its own confirm-email and reset-password screens, and the web pages offer
+a hand-off into the app on a phone. The last piece — making an *emailed* link open
+the app directly, via universal links — is committed but inert, waiting on a
+domain and store credentials nobody can supply until the first deploy.
+Before that, an email address became required at signup, with
 confirmation: accounts work fully while unconfirmed, and the single thing
 confirming unlocks is turn-reminder mail — which protects the sending domain's
 reputation, since bounces and spam complaints from unconfirmed addresses would

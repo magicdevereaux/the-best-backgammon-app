@@ -139,14 +139,106 @@ export async function updateTurnReminders(enabled) {
  * `request` tags the thrown Error with the status precisely so that is possible
  * without sniffing the server's wording.
  *
- * There is no confirm call here on purpose: the emailed link points at the
- * **web** client (`{FRONTEND_BASE_URL}/verify-email/{token}`) and there is no
- * mobile deep link, exactly as with password reset. A mobile player finishes in
- * a browser, and the UI copy has to say so rather than imply a tap in the app
- * will do it.
+ * The emailed link still points at the **web** client
+ * (`{FRONTEND_BASE_URL}/verify-email/{token}`), because that URL is built
+ * server-side from `FRONTEND_BASE_URL` and mail clients will not follow a
+ * custom scheme. So the copy next to this call must keep saying the link opens
+ * in a browser. `confirmEmailVerification` below is the *other* half — the app
+ * can now finish the job when it is handed a token some other way.
  */
 export async function resendEmailVerification() {
   return request("/api/auth/verify-email/resend/", { method: "POST" });
+}
+
+/**
+ * Confirm an address with the token from a verification link
+ * (`POST /api/auth/verify-email/confirm/`).
+ *
+ * **Unauthenticated, and that is the point.** The token *is* the credential, and
+ * the person holding it is very often on a device that has never logged in.
+ * Sending them to a login wall to prove ownership of the address they are in the
+ * middle of proving ownership of would be circular. So this is a bare `fetch`
+ * like `requestPasswordReset`, not `request()` — that helper attaches a bearer
+ * token and retries once through a refresh on a 401, both of which are
+ * meaningless for a call that never authenticates.
+ *
+ * **The server is idempotent here**: the same token posted twice answers 200
+ * both times. A double-tap, a mail client that prefetches links, or a screen
+ * that remounts cannot turn a good confirmation into a scary failure. Callers
+ * should still avoid firing twice — not for correctness, but because the outcome
+ * would flash twice.
+ *
+ * The single failure mode is a dead or expired link, which arrives as
+ * `{"token": [...]}`; a bad token and an expired one are deliberately
+ * indistinguishable, so there is one "this link is no good" outcome to render
+ * rather than two.
+ *
+ * Resolves to `{ detail, email, email_verified }`.
+ */
+export async function confirmEmailVerification(token) {
+  assertApiConfigured();
+  const res = await fetch(`${API_BASE_URL}/api/auth/verify-email/confirm/`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token: (token || "").trim() }),
+  });
+  const data = await res.json().catch(() => null);
+  if (!res.ok) {
+    throw new Error(
+      data?.token?.[0] || data?.detail || "Could not confirm your email address."
+    );
+  }
+  return data;
+}
+
+/**
+ * Finish a password reset with the `uid`/`token` pair from a reset link
+ * (`POST /api/auth/password-reset/confirm/`).
+ *
+ * Unauthenticated for the same reason as `confirmEmailVerification`: the pair
+ * *is* the credential, and someone resetting a password by definition cannot log
+ * in. Bare `fetch`, not `request()`.
+ *
+ * Both values are posted back exactly as they were received — no trimming, no
+ * normalising. A reset token is an opaque server-generated string and the client
+ * has no business tidying it; a bad `uid` and a bad `token` come back as the
+ * same refusal anyway.
+ *
+ * **On success the server blacklists every outstanding refresh token for the
+ * account**, so any session anywhere — including this device's — is dead. That
+ * is a security property, not a bug, but it looks exactly like one from the
+ * inside, so callers must say out loud that signing in again is required.
+ *
+ * Two different 400s land here and callers need to tell them apart, because one
+ * is retryable and the other is not. A `{"token": [...]}` body means the link
+ * itself is dead: re-typing the password cannot help, and leaving the form up
+ * would be an affordance that can only fail. A `{"new_password": [...]}` body is
+ * Django's `AUTH_PASSWORD_VALIDATORS` refusing the *password* — the link is
+ * fine, and the user should simply pick a better one. The thrown Error carries
+ * `.field` (`"token"` | `"new_password"` | `null`) so the UI can branch on that
+ * rather than regex-sniffing the server's wording, in the same spirit as the
+ * `.status` tagging in [`client.js`](./client.js).
+ *
+ * Resolves to `{ detail }`.
+ */
+export async function confirmPasswordReset(uid, token, newPassword) {
+  assertApiConfigured();
+  const res = await fetch(`${API_BASE_URL}/api/auth/password-reset/confirm/`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ uid, token, new_password: newPassword }),
+  });
+  const data = await res.json().catch(() => null);
+  if (!res.ok) {
+    const deadLink = data?.token?.[0];
+    const badPassword = data?.new_password?.[0];
+    const err = new Error(
+      deadLink || badPassword || data?.detail || "Could not reset your password."
+    );
+    err.field = deadLink ? "token" : badPassword ? "new_password" : null;
+    throw err;
+  }
+  return data;
 }
 
 /**
@@ -158,8 +250,12 @@ export async function resendEmailVerification() {
  * on whether an account was found; the client cannot know, and must not appear
  * to.
  *
- * The reset link itself opens the *web* client; there is no in-app confirm
- * screen.
+ * The emailed link itself still opens the *web* client — the URL is built
+ * server-side from `FRONTEND_BASE_URL`, and no mail client will follow a custom
+ * scheme — so the copy beside this call has to keep saying "in your browser".
+ * There *is* now an in-app confirm screen (`confirmPasswordReset` below), but it
+ * is reached by the custom scheme or a hand-off from the web client, not by
+ * tapping the link in a mail app.
  */
 export async function requestPasswordReset(email) {
   assertApiConfigured();

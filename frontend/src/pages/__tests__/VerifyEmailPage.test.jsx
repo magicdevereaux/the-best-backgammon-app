@@ -42,6 +42,27 @@ beforeEach(() => {
   jest.clearAllMocks();
 });
 
+/*
+ * The user-agent is mocked rather than inherited: jsdom's ambient one is
+ * neither a phone nor a browser anybody uses, so a test that leaned on it would
+ * be asserting an accident. Own properties shadow the Navigator prototype
+ * getter and `delete` puts the getter back.
+ */
+function setUserAgent(ua) {
+  Object.defineProperty(window.navigator, "userAgent", {
+    value: ua,
+    configurable: true,
+  });
+}
+const IPHONE_UA =
+  "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1";
+const DESKTOP_UA =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
+
+afterEach(() => {
+  delete window.navigator.userAgent;
+});
+
 describe("VerifyEmailPage", () => {
   test("posts the token from the URL, unprompted", async () => {
     authApi.confirmEmailVerification.mockResolvedValue({
@@ -125,6 +146,77 @@ describe("VerifyEmailPage", () => {
 
     expect(await screen.findByText(/nothing is locked/i)).toBeInTheDocument();
     expect(screen.getByText(/costs you is turn reminders/i)).toBeInTheDocument();
+  });
+});
+
+describe("the hand-off into the app", () => {
+  const CONFIRMED = {
+    detail: "Your email address is confirmed.",
+    email: "alice@example.com",
+    email_verified: true,
+  };
+
+  test("offers the app link on a phone, pointed at the app's own route", async () => {
+    setUserAgent(IPHONE_UA);
+    authApi.confirmEmailVerification.mockResolvedValue(CONFIRMED);
+    renderPage();
+
+    const link = await screen.findByRole("link", { name: /open in the app/i });
+    expect(link).toHaveAttribute("href", "backgammon://verify-email/tok-abc");
+  });
+
+  test("does not offer it on a desktop browser, where the scheme dies silently", async () => {
+    setUserAgent(DESKTOP_UA);
+    authApi.confirmEmailVerification.mockResolvedValue(CONFIRMED);
+    renderPage();
+
+    expect(await screen.findByText("Your email address is confirmed.")).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /open in the app/i })).not.toBeInTheDocument();
+  });
+
+  test("the browser flow is untouched by the link's presence", async () => {
+    // The hand-off is an addition, never a redirect or a gate: on a phone the
+    // confirmation still posts on mount and still reports success in the page.
+    setUserAgent(IPHONE_UA);
+    authApi.confirmEmailVerification.mockResolvedValue(CONFIRMED);
+    renderPage();
+
+    await waitFor(() =>
+      expect(authApi.confirmEmailVerification).toHaveBeenCalledWith("tok-abc")
+    );
+    expect(authApi.confirmEmailVerification).toHaveBeenCalledTimes(1);
+    expect(await screen.findByText("Your email address is confirmed.")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /back to the lobby/i })).toHaveAttribute("href", "/");
+  });
+
+  test("the POST lands first — verification is idempotent, so that is safe", async () => {
+    // The link may only appear once the browser has already confirmed, and it
+    // may appear *then* precisely because a second confirmation from the app is
+    // a 200 as well. Nothing here needs the token to still be unspent.
+    setUserAgent(IPHONE_UA);
+    let resolve;
+    authApi.confirmEmailVerification.mockReturnValue(
+      new Promise((r) => {
+        resolve = r;
+      })
+    );
+    renderPage();
+
+    expect(screen.queryByRole("link", { name: /open in the app/i })).not.toBeInTheDocument();
+
+    resolve(CONFIRMED);
+    expect(await screen.findByRole("link", { name: /open in the app/i })).toBeInTheDocument();
+  });
+
+  test("a dead link gets no app hand-off — there is nothing for the app to do", async () => {
+    setUserAgent(IPHONE_UA);
+    authApi.confirmEmailVerification.mockRejectedValue(
+      new Error("This verification link is invalid or has expired.")
+    );
+    renderPage("/verify-email/stale");
+
+    expect(await screen.findByText(/nothing is locked/i)).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /open in the app/i })).not.toBeInTheDocument();
   });
 });
 

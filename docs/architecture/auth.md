@@ -183,16 +183,37 @@ sending domain its reputation — which lands the *legitimate* reminders in spam
   a password change should not silently kill a verification link in flight — so
   verification uses plain signing instead.
 
-### Where a mobile user ends up: a browser
+### Where a mobile user ends up
 
-**The emailed link is a web URL and there is no mobile deep link**, exactly as
-with password reset and for the same cause: `FRONTEND_BASE_URL` is a **single**
-setting pointing at the **web** client, and `mobile/app/` has no
-`verify-email/[token]` route (nor a `backgammon://` handler for one). So a mobile
-player who taps Confirm finishes in the browser and returns to the app already
-verified — the next `/me/` fetch reports it.
+**The emailed link is still an ordinary `https://` web URL** — `FRONTEND_BASE_URL`
+is a single setting pointing at the web client, and that is deliberate rather
+than a limitation (see below). What has changed is that the app can now handle
+those paths natively:
 
-Mobile therefore implements only the *resend* half, in
+| Mechanism | Status |
+|---|---|
+| In-app routes at [`app/verify-email/[token].jsx`](../../mobile/app/verify-email/[token].jsx) and [`app/reset-password/[uid]/[token].jsx`](../../mobile/app/reset-password/[uid]/[token].jsx) | **live** |
+| `backgammon://` custom scheme (expo-router maps the path automatically) | **live** — but mail clients will not follow it |
+| Web "open in the app" button, shown to mobile browsers ([`appLink.js`](../../frontend/src/utils/appLink.js)) | **live** — the bridge that works before a domain exists |
+| Universal links / App Links, which make the *emailed* link open the app | **inert** — config committed, three owner-supplied values missing |
+
+The design keeps `FRONTEND_BASE_URL` as the one origin for every outbound link
+**on purpose**: universal links intercept that same URL and fall back to the
+browser when the app is not installed, so no second setting and no second link
+shape is ever needed. Mailing a `backgammon://` link instead would be the obvious
+alternative and is the wrong one — mail clients strip custom schemes, and it
+would only work for people who already have the app. See
+[going-live 1.8](../operations/going-live.md) for the three placeholders and the
+silent-failure traps.
+
+One asymmetry worth knowing: **verification is idempotent, password reset is
+not.** Django's `default_token_generator` hashes the current password hash into
+the reset token, so it stops verifying the instant the password changes — which
+is why the web page retracts its "open in the app" affordance once the reset
+succeeds, and offers it only *before* submission. The verification page can offer
+it either side.
+
+Mobile also implements the *resend* half, in
 [`EmailSection.jsx`](../../mobile/src/components/EmailSection.jsx); the web client
 owns the confirm screen at `/verify-email/:token`
 ([`VerifyEmailPage.jsx`](../../frontend/src/pages/VerifyEmailPage.jsx)). Tracked
@@ -213,8 +234,8 @@ injects the bearer token and does a **single silent refresh-and-retry on a 401**
 | Session context | [`context/AuthContext.jsx`](../../frontend/src/context/AuthContext.jsx) | [`context/AuthContext.jsx`](../../mobile/src/context/AuthContext.jsx) |
 | Login screen | [`pages/LoginPage.jsx`](../../frontend/src/pages/LoginPage.jsx) + `RegisterPage.jsx` | [`app/login.jsx`](../../mobile/app/login.jsx) (login/register/reset modes) |
 | Reset request | [`pages/ForgotPasswordPage.jsx`](../../frontend/src/pages/ForgotPasswordPage.jsx) (`/forgot-password`) | the `"reset"` mode of `app/login.jsx` |
-| Reset confirm | [`pages/ResetPasswordPage.jsx`](../../frontend/src/pages/ResetPasswordPage.jsx) (`/reset-password/:uid/:token`) | **none** — the emailed link is a web URL and opens in the browser |
-| Verify confirm | [`pages/VerifyEmailPage.jsx`](../../frontend/src/pages/VerifyEmailPage.jsx) (`/verify-email/:token`) | **none** — same reason as the reset link |
+| Reset confirm | [`pages/ResetPasswordPage.jsx`](../../frontend/src/pages/ResetPasswordPage.jsx) (`/reset-password/:uid/:token`) | [`app/reset-password/[uid]/[token].jsx`](../../mobile/app/reset-password/[uid]/[token].jsx) |
+| Verify confirm | [`pages/VerifyEmailPage.jsx`](../../frontend/src/pages/VerifyEmailPage.jsx) (`/verify-email/:token`) | [`app/verify-email/[token].jsx`](../../mobile/app/verify-email/[token].jsx) |
 | Verify resend | `EmailSettings.jsx` (`resendEmailVerification`) | `EmailSection.jsx` (same call) |
 | Email settings | [`components/EmailSettings.jsx`](../../frontend/src/components/EmailSettings.jsx) | [`components/EmailSection.jsx`](../../mobile/src/components/EmailSection.jsx) |
 | Account deletion | [`components/DeleteAccountPanel.jsx`](../../frontend/src/components/DeleteAccountPanel.jsx) | [`components/DeleteAccountSection.jsx`](../../mobile/src/components/DeleteAccountSection.jsx) |
@@ -299,10 +320,12 @@ on a guest seat anonymously. Enforcement is exactly as strong as the seat FKs.
   `0008_emailverification` adds the table and writes no rows. Accounts created
   before email was required keep a blank address; nothing sweeps them, prompts
   them on login, or refuses them service.
-- **Mobile screens for either emailed link.** Mobile can *request* a reset and
-  *resend* a verification, but both links are web URLs that open in the browser —
-  there is no `backgammon://reset-password/…` or `…/verify-email/…` deep-link
-  route, and `FRONTEND_BASE_URL` is a single value with nowhere to put a second.
+- **Universal links / App Links.** The in-app routes and the `backgammon://`
+  scheme both exist, and the web pages offer an "open in the app" hand-off — but
+  an *emailed* link still opens the browser, because mail clients will not follow
+  a custom scheme. The config is committed and inert, pending a domain, an Apple
+  Team ID and an Android signing fingerprint. See
+  [going-live 1.8](../operations/going-live.md).
 - **Guest seat identity** (see security note): anonymous requests on guest seats
   are unverifiable; a guest token/session concept would close this.
 - **Account lockout.** Scoped throttles now cap login/register/refresh/reset

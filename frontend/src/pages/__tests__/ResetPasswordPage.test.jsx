@@ -51,6 +51,26 @@ beforeEach(() => {
   jest.clearAllMocks();
 });
 
+/*
+ * The user-agent is mocked rather than inherited — jsdom's ambient one is
+ * neither a phone nor a browser anybody uses. An own property shadows the
+ * Navigator prototype getter; `delete` restores it.
+ */
+function setUserAgent(ua) {
+  Object.defineProperty(window.navigator, "userAgent", {
+    value: ua,
+    configurable: true,
+  });
+}
+const IPHONE_UA =
+  "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1";
+const DESKTOP_UA =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0";
+
+afterEach(() => {
+  delete window.navigator.userAgent;
+});
+
 describe("ResetPasswordPage", () => {
   test("posts the uid and token from the URL with the new password", async () => {
     authApi.confirmPasswordReset.mockResolvedValue({ detail: "ok" });
@@ -112,6 +132,69 @@ describe("ResetPasswordPage", () => {
 
     expect(await screen.findByText(/don't match/i)).toBeInTheDocument();
     expect(authApi.confirmPasswordReset).not.toHaveBeenCalled();
+  });
+});
+
+describe("the hand-off into the app", () => {
+  test("offers the app link on a phone, carrying uid and token", async () => {
+    setUserAgent(IPHONE_UA);
+    renderPage();
+
+    expect(screen.getByRole("link", { name: /open in the app/i })).toHaveAttribute(
+      "href",
+      "backgammon://reset-password/MQ/abc-def"
+    );
+  });
+
+  test("does not offer it on a desktop browser, where the scheme dies silently", async () => {
+    setUserAgent(DESKTOP_UA);
+    renderPage();
+
+    expect(screen.getByRole("button", { name: /set new password/i })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /open in the app/i })).not.toBeInTheDocument();
+  });
+
+  test("the hand-off is offered before submission, not after", async () => {
+    // The one real correctness trap on this page. The uid+token pair is
+    // single-use — Django hashes the current password into the token — so the
+    // link is live only until the reset lands. Handing a spent credential to
+    // the app would fail there and look like the app's fault.
+    setUserAgent(IPHONE_UA);
+    authApi.confirmPasswordReset.mockResolvedValue({ detail: "ok" });
+    renderPage();
+
+    expect(screen.getByRole("link", { name: /open in the app/i })).toBeInTheDocument();
+
+    await fillAndSubmit("securepass123");
+
+    await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith("/login"));
+    expect(screen.queryByRole("link", { name: /open in the app/i })).not.toBeInTheDocument();
+  });
+
+  test("a failed attempt keeps the link — that token is still good", async () => {
+    // A validator rejection doesn't change the password, so the credential in
+    // the address bar still verifies and the app can still take over.
+    setUserAgent(IPHONE_UA);
+    authApi.confirmPasswordReset.mockRejectedValue(new Error("This password is too common."));
+    renderPage();
+
+    await fillAndSubmit("password123");
+
+    expect(await screen.findByText("This password is too common.")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /open in the app/i })).toBeInTheDocument();
+  });
+
+  test("the browser flow still completes with the link on screen", async () => {
+    setUserAgent(IPHONE_UA);
+    authApi.confirmPasswordReset.mockResolvedValue({ detail: "ok" });
+    renderPage();
+
+    await fillAndSubmit("securepass123");
+
+    await waitFor(() =>
+      expect(authApi.confirmPasswordReset).toHaveBeenCalledWith("MQ", "abc-def", "securepass123")
+    );
+    expect(mockNavigate).toHaveBeenCalledWith("/login");
   });
 });
 

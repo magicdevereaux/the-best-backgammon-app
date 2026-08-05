@@ -420,6 +420,53 @@ store build rather than an OTA.
 
 ---
 
+### 1.8 Fill in the three placeholders that switch universal links on
+
+**The code half is done; only owner-supplied values are missing.** Both emailed
+links (`/verify-email/{token}` and `/reset-password/{uid}/{token}`) now have
+matching **in-app routes**, the web pages offer an "open in the app" hand-off via
+the `backgammon://` scheme, and the universal-link / App-Link configuration is
+committed but inert: [`app.json`](../../mobile/app.json) carries
+`ios.associatedDomains` and an `autoVerify` `android.intentFilters` block, and
+[`frontend/public/.well-known/`](../../frontend/public/.well-known/) carries the
+AASA and `assetlinks.json` files the domain must serve. See the README there.
+
+The point of this shape is that **nothing on the server changes**: universal
+links intercept the *same* `https://` URL the backend already mails and fall
+back to the browser when the app is not installed, so `FRONTEND_BASE_URL` stays
+the single origin for every outbound link.
+
+Three values are placeholders, and each is blocked on something only the owner
+can do:
+
+| Placeholder | Where | Comes from |
+|---|---|---|
+| `YOUR_DOMAIN` (×3) | `mobile/app.json` | The deployed web host — must match `FRONTEND_BASE_URL`'s host exactly. Blocked on [1.2](#12-domain-tls-and-the-production-environment). |
+| `YOUR_APPLE_TEAM_ID` (×2) | `apple-app-site-association` | developer.apple.com → Membership. Needs a paid Apple Developer account. |
+| SHA-256 fingerprint | `assetlinks.json` | `eas credentials`. Blocked on a first EAS build. |
+
+**Three traps, all of which fail silently** — the link simply opens the browser
+and nothing tells you why:
+
+- **Google Play App Signing re-signs your app.** The fingerprint that verifies
+  is Play Console's *app signing key*, **not** the upload key `eas credentials`
+  shows you. Following only the obvious path publishes a fingerprint that can
+  never match. List both.
+- **The AASA file must be served as `application/json` with no redirect.** It
+  deliberately has no extension, so static hosts serve it as `text/plain` and
+  iOS rejects it. Add an explicit header rule (`vercel.json` `headers`, or an
+  nginx `location`).
+- **An SPA `index.html` fallback will answer `/.well-known/*` with HTML and a
+  200.** Exclude that path from the fallback, or both files "exist" and neither
+  parses.
+
+This is **native configuration**, so per the `runtimeVersion` note above it
+cannot ship as an OTA to an existing binary, and it does not work in Expo Go —
+it needs a new store build. Until then the custom scheme and the web hand-off
+are the working paths.
+
+---
+
 ## 2. Still open in code
 
 Three items, and none of them is a bug. What used to live here — match-list

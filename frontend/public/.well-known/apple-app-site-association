@@ -1,0 +1,42 @@
+{
+  "applinks": {
+    "apps": [],
+    "details": [
+      {
+        "appID": "YOUR_APPLE_TEAM_ID.com.magicdevereaux.backgammon",
+        "appIDs": [
+          "YOUR_APPLE_TEAM_ID.com.magicdevereaux.backgammon"
+        ],
+        "paths": [
+          "/verify-email/*",
+          "/reset-password/*"
+        ],
+        "components": [
+          {
+            "/": "/verify-email/*",
+            "comment": "Email verification link mailed by the backend as {FRONTEND_BASE_URL}/verify-email/{token}."
+          },
+          {
+            "/": "/reset-password/*",
+            "comment": "Password reset link mailed by the backend as {FRONTEND_BASE_URL}/reset-password/{uid}/{token}."
+          }
+        ]
+      }
+    ]
+  },
+  "//": [
+    "OWNER TODO — this file is a template and is INERT until edited. Replace both occurrences of",
+    "YOUR_APPLE_TEAM_ID with the 10-character Apple Team ID from developer.apple.com -> Membership",
+    "(requires a paid Apple Developer account, which does not exist yet). The bundle identifier",
+    "com.magicdevereaux.backgammon is real and matches mobile/app.json ios.bundleIdentifier.",
+    "SERVING REQUIREMENTS — the single most common cause of silent universal-link failure:",
+    "must be reachable at https://<domain>/.well-known/apple-app-site-association, over valid TLS,",
+    "with Content-Type: application/json, HTTP 200, and NO redirect of any kind (not even http->https",
+    "or apex->www). The file must have NO extension; do not rename it to .json. It must not be signed.",
+    "Apple's CDN caches it, so edits can take up to 24h to reach devices on a fresh install.",
+    "'apps' is intentionally an empty array — Apple requires the key present and empty.",
+    "'appID'/'paths' are the legacy iOS 12-and-earlier form; 'appIDs'/'components' are the modern form.",
+    "Both are kept so one file serves every iOS version. Keep the two lists in agreement when editing.",
+    "See ./README.md for the full checklist and how to verify."
+  ]
+}

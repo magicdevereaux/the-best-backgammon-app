@@ -17,6 +17,10 @@
       "supportsTablet": true,
       "bundleIdentifier": "com.magicdevereaux.backgammon",
       "buildNumber": "1",
+      "//associatedDomains": "Universal Links. The backend emails plain https:// links built from FRONTEND_BASE_URL — {FRONTEND_BASE_URL}/verify-email/{token} and {FRONTEND_BASE_URL}/reset-password/{uid}/{token} — and this entitlement is what makes iOS hand those exact URLs to the app when it is installed, falling back to Safari when it is not. That is the whole point: NO server change and NO change to the emailed link is required, so do not add a backgammon:// link to the email. OWNER TODO, three parts, all required: (1) replace YOUR_DOMAIN below with the bare host of the deployed web client — host only, no scheme, no path, no port, and it must match FRONTEND_BASE_URL's host exactly; (2) serve frontend/public/.well-known/apple-app-site-association from that host over HTTPS as application/json with NO redirect (see that directory's README.md) and put the real Apple Team ID in it; (3) rebuild. The Team ID comes from the Apple Developer account (developer.apple.com -> Membership) and needs a paid membership, which does not exist yet. NOTE: associatedDomains is a native entitlement, so it does NOT work in Expo Go and does NOT arrive via an OTA update — see the //runtimeVersion note above; this is exactly the class of native change it warns about, so bump expo.version and cut a new store build. Until all three parts land this key is inert and the links simply open the browser, which is the correct fallback. To test the routes before a domain exists, use the backgammon:// scheme (`npx uri-scheme open backgammon:///verify-email/TOKEN --ios`).",
+      "associatedDomains": [
+        "applinks:YOUR_DOMAIN"
+      ],
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
       }
@@ -24,6 +28,29 @@
     "android": {
       "package": "com.magicdevereaux.backgammon",
       "versionCode": 1,
+      "//intentFilters": "Android App Links — the counterpart to ios.associatedDomains above; read that note first, the OWNER TODO and the no-OTA warning apply here identically. autoVerify:true asks Android to verify ownership by fetching https://YOUR_DOMAIN/.well-known/assetlinks.json, which must carry the SHA-256 fingerprint of the signing certificate (from `eas credentials`; no build has run, so it does not exist yet). Verification is all-or-nothing: if that file is missing, redirected, or the fingerprint is wrong, the filter silently degrades to a chooser dialog rather than erroring. DELIBERATE: the data entries below are scoped by pathPrefix to the two emailed link paths ONLY. Do not widen this to the bare host — a host-wide filter would hijack every link to the marketing site, the lobby and shared /game/ URLs into an app that has no screen for them. OWNER TODO: replace both occurrences of YOUR_DOMAIN with the same bare host used above. Verify after install with `adb shell pm verify-app-links --re-verify com.magicdevereaux.backgammon` then `adb shell pm get-app-links com.magicdevereaux.backgammon`.",
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "autoVerify": true,
+          "category": [
+            "BROWSABLE",
+            "DEFAULT"
+          ],
+          "data": [
+            {
+              "scheme": "https",
+              "host": "YOUR_DOMAIN",
+              "pathPrefix": "/verify-email/"
+            },
+            {
+              "scheme": "https",
+              "host": "YOUR_DOMAIN",
+              "pathPrefix": "/reset-password/"
+            }
+          ]
+        }
+      ],
       "adaptiveIcon": {
         "backgroundColor": "#181818",
         "foregroundImage": "./assets/adaptive-icon.png"
